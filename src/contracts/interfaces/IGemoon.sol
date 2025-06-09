@@ -9,9 +9,9 @@ struct DeploymentInfo {
 }
 
 struct RewardsConfig {
-    uint256 creatorRewars;
+    uint256 creatorRewards;
     address creatorAddress;
-    address rewardRecipient;
+    address rewardRecipient; // now is only
 }
 
 struct PoolConfig {
@@ -31,12 +31,12 @@ interface IGemoonController {
         address indexed tokenAddress,
         address indexed creatorAdmin,
         address creatorRewardRecipient,
-        address interfaceRewardRecipient,
         uint256 positionId,
         string name,
         string symbol,
         int24 startingTickIfToken0IsNewToken
     );
+
     // admins will be (address(this) + address(msg.sender))
     function deployToken(
         DeployConfig memory config
@@ -51,11 +51,15 @@ interface IGemoonController {
         address user
     ) external view returns (DeploymentInfo[] memory);
 
-    function changeAdmin(address oldAdmin, address newAdmin) external;
+    function changeAdmin(
+        address token,
+        address oldAdmin,
+        address newAdmin
+    ) external;
 
     function claimRewards(address token) external;
 
-    function MAX_CREATOR_REWARD() external pure returns (uint256);
+    function MAX_CREATOR_REWARD() external view returns (uint256);
 
-    function MAX_DEPLOYER_REWARD() external pure returns (uint256);
+    function MAX_DEPLOYER_REWARD() external view returns (uint256);
 }

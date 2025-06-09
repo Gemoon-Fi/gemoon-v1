@@ -3,10 +3,11 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
+uint8 constant DECIMALS = 18;
+
 struct TokenConfig {
     string imgUrl;
-    string description;
-    uint8 decimals;
+    string description; //TODO: change to metadata
     string name;
     string symbol;
     uint256 maxSupplyTokens;
@@ -24,7 +25,7 @@ interface IGemoonToken is IERC20 {
 
     function showAdmins() external view returns (address[] memory);
 
-    event UpdateImage(string addr);
+    event UpdateImage(string newAddress);
 
-    event UpdateDescription(string descr);
+    event UpdateDescription(string newDescription);
 }

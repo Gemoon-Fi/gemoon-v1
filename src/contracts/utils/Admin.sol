@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-error NotAdmin();
+error NotAdmin(string msg);
+error ZeroAddress(string msg);
 
 struct AdminConfig {
     address admin;
@@ -16,10 +17,12 @@ contract Admin {
     }
 
     function replaceAdmin(address newAdmin, address oldAdmin) public {
+        require(newAdmin != address(0) && oldAdmin != address(0), "newAdmin and oldAdmin must be valid address!");
         require(_isAdmin(msg.sender), "Only admin can replace admin");
+
         for (uint256 i = 0; i < _admins.length; i++) {
             if (_admins[i].admin == oldAdmin) {
-                require(_admins[i].removable, "Admin is not removable");
+                require(_admins[i].removable, "Admin is not removable!");
                 _admins[i].admin = newAdmin;
 
                 return;
@@ -36,7 +39,7 @@ contract Admin {
 
     function _isAdmin(address possibleAdmin) internal view returns (bool) {
         if (possibleAdmin == address(0)) {
-            revert NotAdmin();
+            revert ZeroAddress("Zero address cant be admin!");
         }
         for (uint i = 0; i < _admins.length; i++) {
             if (possibleAdmin == _admins[i].admin) {
@@ -51,6 +54,8 @@ contract Admin {
 function _toAdminConfigArray(
     address[] memory admins_
 ) pure returns (AdminConfig[] memory) {
+    require(admins_.length > 0, "Empty admins list");
+
     AdminConfig[] memory _conf = new AdminConfig[](admins_.length);
     for (uint256 i = 0; i < admins_.length; i++) {
         if (i == 0) {

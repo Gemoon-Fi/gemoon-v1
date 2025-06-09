@@ -29,7 +29,7 @@ contract GemoonToken is
     {
         _imgUrl = config.imgUrl;
         _description = config.description;
-        _decimals = config.decimals;
+        _decimals = DECIMALS;
 
         require(config.maxSupplyTokens > 0);
 
@@ -44,18 +44,19 @@ contract GemoonToken is
         return _imgUrl;
     }
 
-    function updateImage(string memory addr) external override {
+    modifier onlyAdmin() {
         require(_isAdmin(msg.sender), "Caller is not admin");
+        _;
+    }
 
+    function updateImage(string memory addr) external override onlyAdmin {
         _imgUrl = addr;
         emit UpdateImage(addr);
     }
 
     function changeDescription(
         string memory desc_
-    ) external override onlyOwner {
-        require(_isAdmin(address(msg.sender)), "Caller is not admin");
-
+    ) external override onlyOwner onlyAdmin {
         _description = desc_;
         emit UpdateDescription(desc_);
     }
