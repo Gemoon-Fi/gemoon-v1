@@ -19,5 +19,5 @@ node_modules/
 abi.js
 call.js
 Unitest.sol
-*test*
-!test/
+!test/*
+!test/**/*
