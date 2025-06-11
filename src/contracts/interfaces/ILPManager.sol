@@ -2,7 +2,6 @@
 pragma solidity ^0.8.20;
 
 import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
-import {RewardsConfig, PoolConfig} from "./IGemoon.sol";
 import "./IGemoon.sol";
 
 interface ILPManager is IERC721Receiver {

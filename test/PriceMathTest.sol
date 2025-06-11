@@ -33,4 +33,14 @@ contract PriceMathTest is Test {
 
         assertEq(roundedTick, -138180, "Rounded tick value mismatch");
     }
+
+    function testGetSqrtPriceX96() public pure {
+        uint160 sqrtPriceX96 = PriceMath.getSqrtPriceX96(1_000_000, 1);
+
+        assertEq(
+            sqrtPriceX96,
+            79228162514264337593543950336,
+            "Sqrt price mismatch"
+        );
+    }
 }

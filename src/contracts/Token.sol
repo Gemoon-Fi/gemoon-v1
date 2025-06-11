@@ -29,16 +29,16 @@ contract GemoonToken is
     {
         _imgUrl = config.imgUrl;
         _description = config.description;
-        _decimals = DECIMALS;
+        _decimals = 18;
 
-        require(config.maxSupplyTokens > 0);
+        require(100_000_000_000 * 10 ** 18 > 0);
 
         /// @notice Minting the maximum supply of tokens to the deployer.
-        _mint(msg.sender, config.maxSupplyTokens * 10 ** uint256(_decimals));
+        _mint(msg.sender, 100_000_000_000 * 10 ** uint256(_decimals));
     }
 
     function decimals() public view override returns (uint8) {
-        return _decimals;
+        return 18;
     }
 
     function imageAddress() external view override returns (string memory) {

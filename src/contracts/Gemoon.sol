@@ -19,6 +19,20 @@ import "./utils/Price.sol";
 contract GemoonController is Ownable, IGemoonController {
     error UserNotFound();
 
+    error MintingFailed(
+        string message,
+        address token0,
+        address token1,
+        uint160 sqrtX96Price,
+        uint256 balance,
+        uint256 approvedAmount,
+        uint256 amount0Desired,
+        uint256 amount1Desired,
+        int24 currentTick,
+        int24 tickLower,
+        int24 tickUpper
+    );
+
     uint24 public constant FEE_TIER = 10000;
     int24 public constant TICK_SPACING = 200;
 
@@ -130,20 +144,13 @@ contract GemoonController is Ownable, IGemoonController {
         require(
             IERC20(deployedToken).approve(
                 address(positionManager),
-                type(uint256).max
+                INITIAL_SUPPLY_X18
             ),
             "Deployed token approval failed"
         );
 
-        require(
-            IERC20(_weth).allowance(address(this), address(positionManager)) >=
-                config.tokenConfig.maxSupplyTokens,
-            "create position failed, insufficient allowance"
-        );
-
         DeploymentInfo memory depInfo = _configurePool(
             config.rewardsConfig,
-            PoolConfig({poolSupply: config.tokenConfig.maxSupplyTokens}),
             deployedToken
         );
 
@@ -154,14 +161,12 @@ contract GemoonController is Ownable, IGemoonController {
 
     function _configurePool(
         RewardsConfig memory rewardsConfig_,
-        PoolConfig memory poolConfig_,
         address deployedToken
     ) private returns (DeploymentInfo memory) {
         require(
             deployedToken != address(0),
             "Deployed token address cannot be zero"
         );
-
         require(
             rewardsConfig_.creatorAddress != address(0),
             "Creator address cannot be zero"
@@ -171,110 +176,122 @@ contract GemoonController is Ownable, IGemoonController {
             "Reward recipient address cannot be zero"
         );
 
-        PoolAddress.PoolKey memory poolKey = PoolAddress.getPoolKey(
-            deployedToken,
-            _weth,
-            FEE_TIER
-        );
+        address tokenA = deployedToken;
+        address tokenB = _weth;
 
-        bool token0IsNewToken = deployedToken < _weth;
+        // Сортируем токены вручную (Uniswap требует token0 < token1)
+        (address token0, address token1) = tokenA < tokenB
+            ? (tokenA, tokenB)
+            : (tokenB, tokenA);
 
-        address pool = factory.createPool(
-            poolKey.token0,
-            poolKey.token1,
-            FEE_TIER
-        );
+        PoolAddress.PoolKey memory poolKey = PoolAddress.PoolKey({
+            token0: token0,
+            token1: token1,
+            fee: FEE_TIER
+        });
 
+        address pool = factory.createPool(token0, token1, FEE_TIER);
         require(
             pool != address(0),
             "Pool creation failed, check token addresses"
         );
 
+        // Мы задаем цену как 1 tokenA = 1 WETH
         uint160 sqrtX96Price = PriceMath.getSqrtPriceX96(
-            poolConfig_.poolSupply,
-            1
+            token0 == deployedToken ? INITIAL_SUPPLY_X18 : 1e18,
+            token1 == deployedToken ? INITIAL_SUPPLY_X18 : 1e18
         );
 
-        int40 tick = PriceMath.roundTick(
-            int40(TickMath.getTickAtSqrtRatio(sqrtX96Price)),
-            TICK_SPACING
-        );
+        int24 tick = TickMath.getTickAtSqrtRatio(sqrtX96Price);
+        int40 roundedTick = PriceMath.roundTick(tick - 400, TICK_SPACING);
 
-        require(
-            tick % TICK_SPACING == 0,
-            "Tick must be a multiple of TICK_SPACING"
-        );
-
-        int40 lowerTick = PriceMath.roundTick(tick - 2000, TICK_SPACING);
-        int40 upperTick = PriceMath.roundTick(tick, TICK_SPACING);
-
-        require(lowerTick >= MIN_TICK, "Lower tick is too low");
-        require(upperTick <= MAX_TICK, "Upper tick is too high");
-        require(
-            lowerTick < upperTick,
-            "Lower tick must be less than upper tick"
-        );
+        int40 tickLower = PriceMath.roundTick(roundedTick - 200, TICK_SPACING);
+        int40 tickUpper = roundedTick;
 
         emit ILPManager.PoolCreated(pool, sqrtX96Price);
 
-        IUniswapV3Pool(pool).initialize(sqrtX96Price);
+        try IUniswapV3Pool(pool).initialize(sqrtX96Price) {} catch {
+            revert("Pool initialization failed, check price validity");
+        }
 
-        require(
-            IERC20(deployedToken).balanceOf(address(this)) >=
-                poolConfig_.poolSupply,
-            string(
-                abi.encodePacked(
-                    "create position failed, not enough new token: ",
-                    Strings.toHexString(
-                        uint160(token0IsNewToken ? deployedToken : _weth),
-                        20
-                    )
-                )
-            )
+        // Определяем, сколько токенов положить в amount0/amount1
+        uint256 amount0Desired = token0 == deployedToken
+            ? INITIAL_SUPPLY_X18
+            : 0;
+        uint256 amount1Desired = token1 == deployedToken
+            ? INITIAL_SUPPLY_X18
+            : 0;
+
+        uint256 balanceOfController = IERC20(deployedToken).balanceOf(
+            address(this)
         );
 
         require(
-            IERC20(deployedToken).allowance(
-                address(this),
-                address(positionManager)
-            ) >= poolConfig_.poolSupply,
-            "create position failed, insufficient allowance for token1"
+            balanceOfController >= INITIAL_SUPPLY_X18,
+            "Insufficient token balance"
         );
+
+        uint256 allowance = IERC20(deployedToken).allowance(
+            address(this),
+            address(positionManager)
+        );
+
+        require(
+            allowance >= INITIAL_SUPPLY_X18,
+            "Insufficient token allowance for position manager"
+        );
+
+        INonfungiblePositionManager.MintParams
+            memory params = INonfungiblePositionManager.MintParams({
+                token0: token0,
+                token1: token1,
+                fee: FEE_TIER,
+                tickLower: int24(tickLower),
+                tickUpper: int24(tickUpper),
+                amount0Desired: amount0Desired,
+                amount1Desired: amount1Desired,
+                amount0Min: 0,
+                amount1Min: 0,
+                recipient: address(this),
+                deadline: block.timestamp
+            });
 
         uint256 positionId;
-
-        INonfungiblePositionManager.MintParams memory params = INonfungiblePositionManager
-            .MintParams(
-                poolKey.token0,
-                poolKey.token1,
-                FEE_TIER,
-                int24(lowerTick),
-                int24(upperTick),
-                token0IsNewToken ? poolConfig_.poolSupply : 0, // amount0Desired
-                token0IsNewToken ? 0 : poolConfig_.poolSupply, // amount1Desired
-                0,
-                0,
-                address(this),
-                block.timestamp
+        try positionManager.mint(params) returns (
+            uint256 _positionId,
+            uint128,
+            uint256,
+            uint256
+        ) {
+            positionId = _positionId;
+        } catch {
+            revert MintingFailed(
+                "error minting position, check parameters",
+                token0,
+                token1,
+                sqrtX96Price,
+                balanceOfController,
+                allowance,
+                amount0Desired,
+                amount1Desired,
+                tick,
+                int24(tickLower),
+                int24(tickUpper)
             );
-        (positionId, , , ) = positionManager.mint(params);
+        }
+
+        require(
+            positionId > 0,
+            "create position failed, position ID must be greater than zero"
+        );
 
         emit ILPManager.PositionCreated(
             positionId,
             rewardsConfig_.creatorAddress,
-            token0IsNewToken ? deployedToken : _weth,
-            token0IsNewToken ? _weth : deployedToken,
-            poolConfig_.poolSupply
+            token0,
+            token1,
+            INITIAL_SUPPLY_X18
         );
-
-        DeploymentInfo memory deployment = DeploymentInfo({
-            token0: token0IsNewToken ? deployedToken : _weth,
-            token1: token0IsNewToken ? _weth : deployedToken,
-            positionId: positionId,
-            poolId: pool,
-            rewardRecipient: rewardsConfig_.rewardRecipient,
-            creatorAdmin: rewardsConfig_.creatorAddress
-        });
 
         positionManager.safeTransferFrom(
             address(this),
@@ -282,7 +299,15 @@ contract GemoonController is Ownable, IGemoonController {
             positionId
         );
 
-        return deployment;
+        return
+            DeploymentInfo({
+                token0: deployedToken,
+                token1: _weth,
+                positionId: positionId,
+                poolId: pool,
+                rewardRecipient: rewardsConfig_.rewardRecipient,
+                creatorAdmin: rewardsConfig_.creatorAddress
+            });
     }
 
     function deployTokenWithCustomTeamRewardRecipient(

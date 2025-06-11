@@ -23,10 +23,6 @@ struct RewardsConfig {
     address rewardRecipient; // now is only
 }
 
-struct PoolConfig {
-    uint256 poolSupply;
-}
-
 struct DeployConfig {
     TokenConfig tokenConfig;
     RewardsConfig rewardsConfig;

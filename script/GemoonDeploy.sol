@@ -3,6 +3,7 @@ pragma solidity ^0.8.20;
 import "forge-std/Script.sol";
 import {GemoonController} from "../src/contracts/Gemoon.sol";
 import {LPManager} from "../src/contracts/LPManager.sol";
+import "@openzeppelin/contracts/access/AccessControl.sol";
 
 contract GemoonDeploy is Script {
     function setUp() public {}
@@ -24,6 +25,12 @@ contract GemoonDeploy is Script {
             uniswapFactory,
             uniswapPositionManager,
             nativeToken
+        );
+
+        // Grant CONTROLLER_ROLE to the controller address
+        AccessControl(lpManager).grantRole(
+            keccak256("CONTROLLER_ROLE"),
+            address(controller)
         );
 
         vm.stopBroadcast();

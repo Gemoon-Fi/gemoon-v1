@@ -10,7 +10,6 @@ struct TokenConfig {
     string description; //TODO: change to metadata
     string name;
     string symbol;
-    uint256 maxSupplyTokens;
     address[] admins;
 }
 
