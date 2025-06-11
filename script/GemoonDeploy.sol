@@ -2,6 +2,7 @@ pragma solidity ^0.8.20;
 
 import "forge-std/Script.sol";
 import {GemoonController} from "../src/contracts/Gemoon.sol";
+import {LPManager} from "../src/contracts/LPManager.sol";
 
 contract GemoonDeploy is Script {
     function setUp() public {}
@@ -9,7 +10,21 @@ contract GemoonDeploy is Script {
     function run() public {
         vm.startBroadcast();
 
-        GemoonController controller = new GemoonController(40, 60, address(0x0));
+        address uniswapPositionManager = vm.envAddress(
+            "UNISWAP_POSITION_MANAGER"
+        );
+        address nativeToken = vm.envAddress("NATIVE_TOKEN_ADDRESS");
+        address lpManager = vm.envAddress("LP_MANAGER");
+        address uniswapFactory = vm.envAddress("UNISWAP_FACTORY");
+
+        GemoonController controller = new GemoonController(
+            60,
+            40,
+            lpManager,
+            uniswapFactory,
+            uniswapPositionManager,
+            nativeToken
+        );
 
         vm.stopBroadcast();
     }

@@ -33,6 +33,7 @@ contract GemoonToken is
 
         require(config.maxSupplyTokens > 0);
 
+        /// @notice Minting the maximum supply of tokens to the deployer.
         _mint(msg.sender, config.maxSupplyTokens * 10 ** uint256(_decimals));
     }
 

@@ -4,8 +4,17 @@ pragma solidity ^0.8.20;
 import "./IToken.sol";
 
 struct DeploymentInfo {
-    address token;
+    address token0;
+    address token1;
     uint256 positionId;
+    address poolId;
+    address rewardRecipient;
+    address creatorAdmin;
+}
+
+struct DeployedToken {
+    address creatorAdmin;
+    address tokenAddress;
 }
 
 struct RewardsConfig {
@@ -15,14 +24,12 @@ struct RewardsConfig {
 }
 
 struct PoolConfig {
-    address token0;
-    address token1;
+    uint256 poolSupply;
 }
 
 struct DeployConfig {
     TokenConfig tokenConfig;
     RewardsConfig rewardsConfig;
-    PoolConfig poolConfig;
 }
 
 interface IGemoonController {
@@ -49,7 +56,7 @@ interface IGemoonController {
 
     function getTokensDeployedByUser(
         address user
-    ) external view returns (DeploymentInfo[] memory);
+    ) external view returns (DeployedToken[] memory);
 
     function changeAdmin(
         address token,
