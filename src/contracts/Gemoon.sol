@@ -24,8 +24,6 @@ contract GemoonController is Ownable, IGemoonController {
         address token0,
         address token1,
         uint160 sqrtX96Price,
-        uint256 balance,
-        uint256 approvedAmount,
         uint256 amount0Desired,
         uint256 amount1Desired,
         int24 currentTick,
@@ -35,6 +33,8 @@ contract GemoonController is Ownable, IGemoonController {
 
     uint24 public constant FEE_TIER = 10000;
     int24 public constant TICK_SPACING = 200;
+
+    uint256 public constant PRICE_PER_TOKEN = 3_333_333 * 1e18;
 
     uint256 public constant INITIAL_LIQUIDITY = 100_000_000_000;
     uint256 public constant INITIAL_SUPPLY_X18 = INITIAL_LIQUIDITY * 1e18;
@@ -196,17 +196,43 @@ contract GemoonController is Ownable, IGemoonController {
             "Pool creation failed, check token addresses"
         );
 
-        // Мы задаем цену как 1 tokenA = 1 WETH
         uint160 sqrtX96Price = PriceMath.getSqrtPriceX96(
-            token0 == deployedToken ? INITIAL_SUPPLY_X18 : 1e18,
-            token1 == deployedToken ? INITIAL_SUPPLY_X18 : 1e18
+            token0 == deployedToken ? PRICE_PER_TOKEN : 1e18,
+            token1 == deployedToken ? PRICE_PER_TOKEN : 1e18
         );
 
         int24 tick = TickMath.getTickAtSqrtRatio(sqrtX96Price);
-        int40 roundedTick = PriceMath.roundTick(tick - 400, TICK_SPACING);
+        int40 tickLower;
+        int40 tickUpper;
 
-        int40 tickLower = PriceMath.roundTick(roundedTick - 200, TICK_SPACING);
-        int40 tickUpper = roundedTick;
+        if (poolKey.token0 == deployedToken) {
+            // When token0 is the newly deployed token, the price should be set below the current range.
+            // In this case, the tick should be adjusted to a value above the upper bound of the range.
+            int40 roundedTick = PriceMath.roundTick(
+                tick + TICK_SPACING * 2,
+                TICK_SPACING
+            );
+
+            tickLower = PriceMath.roundTick(
+                roundedTick - TICK_SPACING,
+                TICK_SPACING
+            ); // Set tickLower just below the upper bound
+            tickUpper = roundedTick;
+        } else {
+            // When token1 is desired, the price should be set above the current range.
+            // Here, the tick is adjusted to a value below the lower bound of the range.
+            tick = TickMath.getTickAtSqrtRatio(sqrtX96Price);
+            int40 roundedTick = PriceMath.roundTick(
+                tick - TICK_SPACING * 2,
+                TICK_SPACING
+            );
+
+            tickLower = roundedTick;
+            tickUpper = PriceMath.roundTick(
+                roundedTick + TICK_SPACING,
+                TICK_SPACING
+            ); // Set tickUpper just above the lower bound
+        }
 
         emit ILPManager.PoolCreated(pool, sqrtX96Price);
 
@@ -270,8 +296,6 @@ contract GemoonController is Ownable, IGemoonController {
                 token0,
                 token1,
                 sqrtX96Price,
-                balanceOfController,
-                allowance,
                 amount0Desired,
                 amount1Desired,
                 tick,

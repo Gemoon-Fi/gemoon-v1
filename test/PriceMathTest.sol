@@ -35,7 +35,7 @@ contract PriceMathTest is Test {
     }
 
     function testGetSqrtPriceX96() public pure {
-        uint160 sqrtPriceX96 = PriceMath.getSqrtPriceX96(1_000_000, 1);
+        uint160 sqrtPriceX96 = PriceMath.getSqrtPriceX96(3333333 * 1e18 , 1e18);
 
         assertEq(
             sqrtPriceX96,
