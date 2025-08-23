@@ -5,8 +5,16 @@ import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Recei
 import "./IGemoon.sol";
 
 interface ILPManager is IERC721Receiver {
+    event RewardClaimed(
+        address creator,
+        address pool,
+        uint256 amount0,
+        uint256 amount1
+    );
     event Received(address indexed from, uint256 tokenId);
+
     event PoolCreated(address indexed pool, uint256 initialPrice);
+
     event PositionCreated(
         uint256 positionId,
         address indexed creator,
@@ -15,11 +23,15 @@ interface ILPManager is IERC721Receiver {
         uint256 poolSupply
     );
 
-    function claimRewards(address token) external returns (uint256 amount);
+    function positionId(
+        address creator,
+        address pool
+    ) external view returns (uint256);
+
+    function claimRewards(
+        address creator,
+        address pool
+    ) external returns (uint256 amount0, uint256 amount1);
 
     function addNewPosition(DeploymentInfo memory deployment) external;
-
-    function showRewardsForCreator(
-        address creator
-    ) external view returns (uint256 amount);
 }

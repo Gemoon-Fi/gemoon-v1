@@ -15,6 +15,7 @@ import "@uniswap-v3-core/libraries/TickMath.sol";
 import {IUniswapV3Pool} from "@uniswap-v3-core/interfaces/IUniswapV3Pool.sol";
 import "@openzeppelin/contracts/utils/Strings.sol";
 import "./utils/Price.sol";
+import "./utils/Ticks.sol";
 
 contract GemoonController is Ownable, IGemoonController {
     error UserNotFound();
@@ -34,7 +35,7 @@ contract GemoonController is Ownable, IGemoonController {
     uint24 public constant FEE_TIER = 10000;
     int24 public constant TICK_SPACING = 200;
 
-    uint256 public constant PRICE_PER_TOKEN = 3_333_333 * 1e18;
+    uint256 public constant PRICE_PER_TOKEN = 33_333_333 * 1e18;
 
     uint256 public constant INITIAL_LIQUIDITY = 100_000_000_000;
     uint256 public constant INITIAL_SUPPLY_X18 = INITIAL_LIQUIDITY * 1e18;
@@ -201,38 +202,13 @@ contract GemoonController is Ownable, IGemoonController {
             token1 == deployedToken ? PRICE_PER_TOKEN : 1e18
         );
 
-        int24 tick = TickMath.getTickAtSqrtRatio(sqrtX96Price);
-        int40 tickLower;
-        int40 tickUpper;
-
-        if (poolKey.token0 == deployedToken) {
-            // When token0 is the newly deployed token, the price should be set below the current range.
-            // In this case, the tick should be adjusted to a value above the upper bound of the range.
-            int40 roundedTick = PriceMath.roundTick(
-                tick + TICK_SPACING * 2,
-                TICK_SPACING
-            );
-
-            tickLower = PriceMath.roundTick(
-                roundedTick - TICK_SPACING,
-                TICK_SPACING
-            ); // Set tickLower just below the upper bound
-            tickUpper = roundedTick;
-        } else {
-            // When token1 is desired, the price should be set above the current range.
-            // Here, the tick is adjusted to a value below the lower bound of the range.
-            tick = TickMath.getTickAtSqrtRatio(sqrtX96Price);
-            int40 roundedTick = PriceMath.roundTick(
-                tick - TICK_SPACING * 2,
-                TICK_SPACING
-            );
-
-            tickLower = roundedTick;
-            tickUpper = PriceMath.roundTick(
-                roundedTick + TICK_SPACING,
-                TICK_SPACING
-            ); // Set tickUpper just above the lower bound
-        }
+        (int24 tickLower, int24 tickUpper, int24 tick) = Ticks.getTicks(
+            poolKey,
+            sqrtX96Price,
+            deployedToken,
+            TICK_SPACING,
+            true
+        );
 
         emit ILPManager.PoolCreated(pool, sqrtX96Price);
 
@@ -278,7 +254,7 @@ contract GemoonController is Ownable, IGemoonController {
                 amount1Desired: amount1Desired,
                 amount0Min: 0,
                 amount1Min: 0,
-                recipient: address(this),
+                recipient: address(_lpManager),
                 deadline: block.timestamp
             });
 
@@ -317,16 +293,12 @@ contract GemoonController is Ownable, IGemoonController {
             INITIAL_SUPPLY_X18
         );
 
-        positionManager.safeTransferFrom(
-            address(this),
-            address(_lpManager),
-            positionId
-        );
-
         return
             DeploymentInfo({
-                token0: deployedToken,
-                token1: _weth,
+                token0: address(deployedToken),
+                token1: address(_weth),
+                upperTick: int24(tickUpper),
+                lowerTick: int24(tickLower),
                 positionId: positionId,
                 poolId: pool,
                 rewardRecipient: rewardsConfig_.rewardRecipient,
@@ -364,11 +336,11 @@ contract GemoonController is Ownable, IGemoonController {
 
     function claimRewards(address token) external override {}
 
-    function MAX_CREATOR_REWARD() external view override returns (uint256) {
+    function maxCreatorReward() external view override returns (uint256) {
         return _maxCreatorRewardPercent;
     }
 
-    function MAX_DEPLOYER_REWARD() external view override returns (uint256) {
+    function maxDeployerReward() external view override returns (uint256) {
         return _maxDeployerRewardPercent;
     }
 

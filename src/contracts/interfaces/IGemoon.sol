@@ -6,6 +6,8 @@ import "./IToken.sol";
 struct DeploymentInfo {
     address token0;
     address token1;
+    int24 lowerTick;
+    int24 upperTick;
     uint256 positionId;
     address poolId;
     address rewardRecipient;
@@ -28,8 +30,8 @@ struct DeployConfig {
     RewardsConfig rewardsConfig;
 }
 
+
 interface IGemoonController {
-    event RewardClaimed();
     event TokenCreated(
         address indexed tokenAddress,
         address indexed creatorAdmin,
@@ -62,7 +64,7 @@ interface IGemoonController {
 
     function claimRewards(address token) external;
 
-    function MAX_CREATOR_REWARD() external view returns (uint256);
+    function maxCreatorReward() external view returns (uint256);
 
-    function MAX_DEPLOYER_REWARD() external view returns (uint256);
+    function maxDeployerReward() external view returns (uint256);
 }
