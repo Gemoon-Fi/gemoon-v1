@@ -13,7 +13,6 @@ interface ILPManager is IERC721Receiver {
     );
     event Received(address indexed from, uint256 tokenId);
 
-    event PoolCreated(address indexed pool, uint256 initialPrice);
 
     event PositionCreated(
         uint256 positionId,

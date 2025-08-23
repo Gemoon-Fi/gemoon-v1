@@ -43,8 +43,6 @@ contract GemoonController is Ownable, IGemoonController {
     int24 public constant MIN_TICK = TickMath.MIN_TICK;
     int24 public constant MAX_TICK = TickMath.MAX_TICK;
 
-    uint256 public _maxCreatorRewardPercent;
-    uint256 public _maxDeployerRewardPercent;
     mapping(address => DeployedToken[]) private _deployers;
     ILPManager private _lpManager;
     /// @dev Address of wrapped native token.
@@ -53,22 +51,11 @@ contract GemoonController is Ownable, IGemoonController {
     IUniswapV3Factory public factory;
 
     constructor(
-        uint256 maxCreatorReward_,
-        uint256 maxDeployerReward_,
         address lpManager_,
         address factory_,
         address positionManager_,
         address weth_
     ) {
-        require(
-            maxCreatorReward_ <= 100,
-            "Max creator reward percent must be <= 100"
-        );
-        require(
-            maxDeployerReward_ <= 100,
-            "Max deployer reward percent must be <= 100"
-        );
-
         require(weth_ != address(0), "WETH address cannot be zero");
 
         require(lpManager_ != address(0), "LP Manager address cannot be zero");
@@ -81,8 +68,6 @@ contract GemoonController is Ownable, IGemoonController {
             "Uniswap V3 Position Manager address cannot be zero"
         );
 
-        _maxCreatorRewardPercent = maxCreatorReward_;
-        _maxDeployerRewardPercent = maxDeployerReward_;
         factory = IUniswapV3Factory(factory_);
         _lpManager = ILPManager(lpManager_);
         positionManager = INonfungiblePositionManager(positionManager_);
@@ -210,7 +195,7 @@ contract GemoonController is Ownable, IGemoonController {
             true
         );
 
-        emit ILPManager.PoolCreated(pool, sqrtX96Price);
+        emit PoolCreated(pool, sqrtX96Price);
 
         try IUniswapV3Pool(pool).initialize(sqrtX96Price) {} catch {
             revert("Pool initialization failed, check price validity");
@@ -332,16 +317,6 @@ contract GemoonController is Ownable, IGemoonController {
         address newAdmin
     ) external override {
         Admin(token).replaceAdmin(newAdmin, oldAdmin);
-    }
-
-    function claimRewards(address token) external override {}
-
-    function maxCreatorReward() external view override returns (uint256) {
-        return _maxCreatorRewardPercent;
-    }
-
-    function maxDeployerReward() external view override returns (uint256) {
-        return _maxDeployerRewardPercent;
     }
 
     receive() external payable {}

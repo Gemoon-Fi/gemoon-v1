@@ -15,16 +15,17 @@ contract LPManager is ILPManager, AccessControl {
 
     INonfungiblePositionManager public positionManager;
 
-    uint256 public constant CREATOR_PERCENT = 50;
+    uint256 public creatorPercent;
 
     mapping(address => DeploymentInfo[]) public deployments;
 
-    constructor(address positionManager_) {
+    constructor(address positionManager_, uint256 creatorPercent_) {
         require(
             positionManager_ != address(0),
             "Position manager address cannot be zero"
         );
 
+        creatorPercent = creatorPercent_;
         positionManager = INonfungiblePositionManager(positionManager_);
         _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
     }

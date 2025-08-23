@@ -30,7 +30,6 @@ struct DeployConfig {
     RewardsConfig rewardsConfig;
 }
 
-
 interface IGemoonController {
     event TokenCreated(
         address indexed tokenAddress,
@@ -41,6 +40,8 @@ interface IGemoonController {
         string symbol,
         int24 startingTickIfToken0IsNewToken
     );
+
+    event PoolCreated(address indexed pool, uint256 initialPrice);
 
     // admins will be (address(this) + address(msg.sender))
     function deployToken(
@@ -61,10 +62,4 @@ interface IGemoonController {
         address oldAdmin,
         address newAdmin
     ) external;
-
-    function claimRewards(address token) external;
-
-    function maxCreatorReward() external view returns (uint256);
-
-    function maxDeployerReward() external view returns (uint256);
 }
