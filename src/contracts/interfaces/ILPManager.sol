@@ -13,7 +13,6 @@ interface ILPManager is IERC721Receiver {
     );
     event Received(address indexed from, uint256 tokenId);
 
-
     event PositionCreated(
         uint256 positionId,
         address indexed creator,
@@ -22,11 +21,15 @@ interface ILPManager is IERC721Receiver {
         uint256 poolSupply
     );
 
+	/// @notice get uniswap position id
     function positionId(
         address creator,
         address pool
     ) external view returns (uint256);
 
+    /// @param creator is token creator address
+    /// @param pool is token pool address
+    /// @return amount0 and amount1 actually claimed fee of token0 and token1 from uniswap pool
     function claimRewards(
         address creator,
         address pool

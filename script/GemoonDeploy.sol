@@ -19,8 +19,6 @@ contract GemoonDeploy is Script {
         address uniswapFactory = vm.envAddress("UNISWAP_FACTORY");
 
         GemoonController controller = new GemoonController(
-            60,
-            40,
             lpManager,
             uniswapFactory,
             uniswapPositionManager,

@@ -11,7 +11,9 @@ contract LPManagerDeploy is Script {
 
         address manager = vm.envAddress("UNISWAP_POSITION_MANAGER");
 
-        LPManager controller = new LPManager(manager);
+        uint256 creatorPercent = 50;
+
+        LPManager controller = new LPManager(manager, creatorPercent);
 
         vm.stopBroadcast();
     }

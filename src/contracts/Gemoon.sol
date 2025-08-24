@@ -117,16 +117,6 @@ contract GemoonController is Ownable, IGemoonController {
             DeployedToken(msg.sender, deployedToken)
         );
 
-        emit TokenCreated(
-            deployedToken,
-            config.rewardsConfig.creatorAddress,
-            config.rewardsConfig.rewardRecipient,
-            0,
-            config.tokenConfig.name,
-            config.tokenConfig.symbol,
-            0
-        );
-
         require(
             IERC20(deployedToken).approve(
                 address(positionManager),
@@ -138,6 +128,15 @@ contract GemoonController is Ownable, IGemoonController {
         DeploymentInfo memory depInfo = _configurePool(
             config.rewardsConfig,
             deployedToken
+        );
+
+        emit TokenCreated(
+            deployedToken,
+            config.rewardsConfig.creatorAddress,
+            depInfo.positionId,
+            config.rewardsConfig.rewardRecipient,
+            config.tokenConfig.name,
+            config.tokenConfig.symbol
         );
 
         _lpManager.addNewPosition(depInfo);
@@ -209,7 +208,7 @@ contract GemoonController is Ownable, IGemoonController {
             ? INITIAL_SUPPLY_X18
             : 0;
 
-        uint256 balanceOfController = IERC20(deployedToken).balanceOf(
+        uint256 balanceOfController = IGemoonToken(deployedToken).balanceOf(
             address(this)
         );
 
@@ -341,7 +340,7 @@ contract GemoonController is Ownable, IGemoonController {
         address to,
         uint256 amount
     ) external onlyOwner {
-        IERC20 erc20 = IERC20(token);
+        IGemoonToken erc20 = IGemoonToken(token);
 
         uint256 _balance = erc20.balanceOf(address(this));
         require(

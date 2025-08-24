@@ -34,11 +34,10 @@ interface IGemoonController {
     event TokenCreated(
         address indexed tokenAddress,
         address indexed creatorAdmin,
+        uint256 indexed positionId,
         address creatorRewardRecipient,
-        uint256 positionId,
         string name,
-        string symbol,
-        int24 startingTickIfToken0IsNewToken
+        string symbol
     );
 
     event PoolCreated(address indexed pool, uint256 initialPrice);
