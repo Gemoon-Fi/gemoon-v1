@@ -19,6 +19,7 @@ contract GemoonToken is
     string private _imgUrl;
     string private _description;
     uint8 private _decimals;
+    SocialMedia private _socialMedia;
 
     constructor(
         TokenConfig memory config
@@ -29,16 +30,15 @@ contract GemoonToken is
     {
         _imgUrl = config.imgUrl;
         _description = config.description;
-        _decimals = 18;
-
-        require(100_000_000_000 * 10 ** 18 > 0);
+        _decimals = DECIMALS;
+        _socialMedia = config.socialMedia;
 
         /// @notice Minting the maximum supply of tokens to the deployer.
         _mint(msg.sender, 100_000_000_000 * 10 ** uint256(_decimals));
     }
 
     function decimals() public view override returns (uint8) {
-        return 18;
+        return _decimals;
     }
 
     function imageAddress() external view override returns (string memory) {
@@ -57,13 +57,17 @@ contract GemoonToken is
 
     function changeDescription(
         string memory desc_
-    ) external override onlyOwner onlyAdmin {
+    ) external override onlyAdmin {
         _description = desc_;
         emit UpdateDescription(desc_);
     }
 
     function description() external view override returns (string memory) {
         return _description;
+    }
+
+    function getSocialMedia() external view returns (SocialMedia memory) {
+        return _socialMedia;
     }
 
     function showAdmins() public view override returns (address[] memory) {

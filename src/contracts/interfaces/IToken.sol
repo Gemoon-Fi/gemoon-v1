@@ -5,9 +5,17 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 uint8 constant DECIMALS = 18;
 
+struct SocialMedia {
+    string farcaster;
+    string twitterX;
+    string telegram;
+    string website;
+}
+
 struct TokenConfig {
     string imgUrl;
-    string description; //TODO: change to metadata
+    string description;
+    SocialMedia socialMedia;
     string name;
     string symbol;
     address[] admins;
@@ -19,6 +27,8 @@ interface IGemoonToken is IERC20 {
     function updateImage(string memory addr) external;
 
     function description() external view returns (string memory);
+
+    function getSocialMedia() external view returns (SocialMedia memory);
 
     function changeDescription(string memory desc_) external;
 
