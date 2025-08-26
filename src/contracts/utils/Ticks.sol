@@ -22,7 +22,6 @@ library Ticks {
 
         if (useFullRange) {
             if (poolKey.token0 == deployedToken) {
-                // Хотим продать token0, т.е. разместиться выше текущей цены
                 int40 roundedTick = PriceMath.roundTick(
                     tick + tickSpacing * 2,
                     tickSpacing
@@ -32,10 +31,8 @@ library Ticks {
                     roundedTick - tickSpacing,
                     tickSpacing
                 );
-                // Вторая граница — максимум
                 tickUpper = (TickMath.MAX_TICK / tickSpacing) * tickSpacing;
             } else {
-                // Хотим продать token1, т.е. разместиться ниже текущей цены
                 int40 roundedTick = PriceMath.roundTick(
                     tick - tickSpacing * 2,
                     tickSpacing

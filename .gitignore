@@ -24,3 +24,7 @@ TestDeploy.sol
 !test/**/*
 
 broadcast/*
+
+.vscode
+.idea
+.vimrc

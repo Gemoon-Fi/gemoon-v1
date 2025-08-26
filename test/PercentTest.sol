@@ -14,6 +14,6 @@ contract PercentTest is Test {
     function testAddPercent() public {
         assertEq(Percent.addPercent(100, 20), 120);
         assertEq(Percent.addPercent(100, 0), 100);
-        assertEq(Percent.addPercent(0, 20), 20);
+        assertEq(Percent.addPercent(0, 20), 0);
     }
 }

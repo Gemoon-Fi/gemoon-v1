@@ -40,21 +40,20 @@ interface IGemoonController {
         string symbol
     );
 
+    event PositionCreated(
+        uint256 positionId,
+        address indexed creator,
+        address indexed token0,
+        address indexed token1,
+        uint256 poolSupply
+    );
+
     event PoolCreated(address indexed pool, uint256 initialPrice);
 
     // admins will be (address(this) + address(msg.sender))
     function deployToken(
         DeployConfig memory config
     ) external payable returns (address);
-
-    function deployTokenWithCustomTeamRewardRecipient(
-        DeployConfig memory config,
-        address teamRewardRecipient
-    ) external payable returns (address tokenAddress, uint256 positionId);
-
-    function getTokensDeployedByUser(
-        address user
-    ) external view returns (DeployedToken[] memory);
 
     function changeAdmin(
         address token,

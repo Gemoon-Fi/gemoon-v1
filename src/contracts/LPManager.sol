@@ -7,12 +7,12 @@ import {IUniswapV3Pool} from "@uniswap-v3-core/interfaces/IUniswapV3Pool.sol";
 import "./interfaces/IGemoon.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./interfaces/IGemoon.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "./utils/Percent.sol";
 import "./interfaces/IToken.sol";
+import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
-contract LPManager is ILPManager, AccessControl, Ownable {
+contract LPManager is Initializable, AccessControlUpgradeable, ILPManager {
     bytes32 public constant CONTROLLER_ROLE = keccak256("CONTROLLER_ROLE");
 
     INonfungiblePositionManager public positionManager;
@@ -23,7 +23,11 @@ contract LPManager is ILPManager, AccessControl, Ownable {
 
     mapping(address => uint256) private collectedRewards;
 
-    constructor(address positionManager_, uint256 creatorPercent_) {
+    function reinitialize(
+        address positionManager_,
+        uint256 creatorPercent_,
+        address protocolAdmin_
+    ) external reinitializer(2) {
         require(
             positionManager_ != address(0),
             "Position manager address cannot be zero"
@@ -34,9 +38,34 @@ contract LPManager is ILPManager, AccessControl, Ownable {
             "Creator percent must be less than or equal to 100"
         );
 
+        __AccessControl_init();
+
         creatorPercent = creatorPercent_;
         positionManager = INonfungiblePositionManager(positionManager_);
-        _setupRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _revokeRole(DEFAULT_ADMIN_ROLE, protocolAdmin_);
+        _grantRole(DEFAULT_ADMIN_ROLE, protocolAdmin_);
+    }
+
+    function initialize(
+        address positionManager_,
+        uint256 creatorPercent_,
+        address protocolAdmin_
+    ) public initializer {
+        require(
+            positionManager_ != address(0),
+            "Position manager address cannot be zero"
+        );
+
+        require(
+            creatorPercent_ <= 100,
+            "Creator percent must be less than or equal to 100"
+        );
+
+        __AccessControl_init();
+
+        creatorPercent = creatorPercent_;
+        positionManager = INonfungiblePositionManager(positionManager_);
+        _grantRole(DEFAULT_ADMIN_ROLE, protocolAdmin_);
     }
 
     function onERC721Received(
@@ -81,7 +110,7 @@ contract LPManager is ILPManager, AccessControl, Ownable {
 
     modifier ownerOrCreator(address creator) {
         require(
-            msg.sender == creator || owner() == msg.sender,
+            msg.sender == creator || hasRole(DEFAULT_ADMIN_ROLE, msg.sender),
             "Not authorized"
         );
         _;
@@ -137,12 +166,14 @@ contract LPManager is ILPManager, AccessControl, Ownable {
 
     function showRewards(
         address token
-    ) external view onlyOwner returns (uint256) {
+    ) external view onlyRole(DEFAULT_ADMIN_ROLE) returns (uint256) {
         return collectedRewards[token];
     }
 
     /// @notice withdrawal of rewards in favor of the protocol creators
-    function withdrawRewards(address token) external onlyOwner {
+    function withdrawRewards(
+        address token
+    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(token != address(0), "Token address cannot be zero");
 
         uint256 amount = collectedRewards[token];

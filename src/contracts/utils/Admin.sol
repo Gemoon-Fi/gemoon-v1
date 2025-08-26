@@ -17,8 +17,14 @@ contract Admin {
     }
 
     function replaceAdmin(address newAdmin, address oldAdmin) public {
-        require(newAdmin != address(0) && oldAdmin != address(0), "newAdmin and oldAdmin must be valid address!");
-        require(_isAdmin(msg.sender), "Only admin can replace admin");
+        require(
+            newAdmin != address(0) && oldAdmin != address(0),
+            "newAdmin and oldAdmin must be valid address!"
+        );
+
+        if (!_isAdmin(msg.sender)) {
+            revert NotAdmin("Only admin can replace admin");
+        }
 
         for (uint256 i = 0; i < _admins.length; i++) {
             if (_admins[i].admin == oldAdmin) {
@@ -30,7 +36,6 @@ contract Admin {
         }
 
         require(_admins.length == 2);
-        require(false, "Old admin not found!");
     }
 
     function getAdmins() public view returns (AdminConfig[] memory) {
@@ -49,20 +54,4 @@ contract Admin {
 
         return false;
     }
-}
-
-function _toAdminConfigArray(
-    address[] memory admins_
-) pure returns (AdminConfig[] memory) {
-    require(admins_.length > 0, "Empty admins list");
-
-    AdminConfig[] memory _conf = new AdminConfig[](admins_.length);
-    for (uint256 i = 0; i < admins_.length; i++) {
-        if (i == 0) {
-            _conf[i] = AdminConfig({admin: admins_[i], removable: false});
-        } else {
-            _conf[i] = AdminConfig({admin: admins_[i], removable: true});
-        }
-    }
-    return _conf;
 }

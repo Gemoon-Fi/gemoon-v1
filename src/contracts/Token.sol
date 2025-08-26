@@ -6,16 +6,8 @@ import "./utils/Admin.sol";
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
 import "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
 
-contract GemoonToken is
-    IGemoonToken,
-    ERC20,
-    Ownable,
-    ERC20Permit,
-    ERC20Burnable,
-    Admin
-{
+contract GemoonToken is IGemoonToken, ERC20, ERC20Permit, ERC20Burnable, Admin {
     string private _imgUrl;
     string private _description;
     uint8 private _decimals;
@@ -26,7 +18,7 @@ contract GemoonToken is
     )
         ERC20(config.name, config.symbol)
         ERC20Permit(config.name)
-        Admin(_toAdminConfigArray(config.admins))
+        Admin(config.admins)
     {
         _imgUrl = config.imgUrl;
         _description = config.description;

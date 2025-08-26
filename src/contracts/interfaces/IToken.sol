@@ -2,6 +2,7 @@
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import "../utils/Admin.sol";
 
 uint8 constant DECIMALS = 18;
 
@@ -18,7 +19,7 @@ struct TokenConfig {
     SocialMedia socialMedia;
     string name;
     string symbol;
-    address[] admins;
+    AdminConfig[] admins;
 }
 
 interface IGemoonToken is IERC20 {

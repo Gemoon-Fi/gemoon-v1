@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.21;
 
 import "forge-std/Test.sol";
 import "../src/contracts/utils/Price.sol";
@@ -15,7 +15,6 @@ contract PriceMathTest is Test {
 
         assertEq(roundedTickPositive, 138180, "Rounded tick value mismatch");
 
-        int40 roundedTickLargeTickSpacing = PriceMath.roundTick(-138162, 200);
         assertEq(roundedTick, -138180, "Rounded tick value mismatch");
     }
 
@@ -35,11 +34,11 @@ contract PriceMathTest is Test {
     }
 
     function testGetSqrtPriceX96() public pure {
-        uint160 sqrtPriceX96 = PriceMath.getSqrtPriceX96(3333333 * 1e18 , 1e18);
+        uint160 sqrtPriceX96 = PriceMath.getSqrtPriceX96(3333333 * 1e18, 1e18);
 
         assertEq(
             sqrtPriceX96,
-            79228162514264337593543950336,
+            43395007628637891515411079,
             "Sqrt price mismatch"
         );
     }
