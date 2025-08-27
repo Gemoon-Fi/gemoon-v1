@@ -57,13 +57,20 @@ contract GemoonController is
     /// @dev Initial approves called during first token deployment for better testability.
     bool private _wethApproved = false;
 
-    function initialize(
+    /// @dev Version of the Gemoon contract.
+    uint64 public constant GEMOON_VERSION = 1;
+
+    function getVersion() public pure returns (uint64) {
+        return GEMOON_VERSION;
+    }
+
+    function _init(
         address lpManager_,
         address factory_,
         address positionManager_,
         address weth_,
         address protocolAdmin_
-    ) public initializer {
+    ) internal {
         require(weth_ != address(0), "WETH address cannot be zero");
 
         __Ownable_init(protocolAdmin_);
@@ -83,6 +90,26 @@ contract GemoonController is
         positionManager = INonfungiblePositionManager(positionManager_);
 
         _weth = weth_;
+    }
+
+    function reinitialize(
+        address lpManager_,
+        address factory_,
+        address positionManager_,
+        address weth_,
+        address protocolAdmin_
+    ) external reinitializer(getVersion()) {
+        _init(lpManager_, factory_, positionManager_, weth_, protocolAdmin_);
+    }
+
+    function initialize(
+        address lpManager_,
+        address factory_,
+        address positionManager_,
+        address weth_,
+        address protocolAdmin_
+    ) public initializer {
+        _init(lpManager_, factory_, positionManager_, weth_, protocolAdmin_);
     }
 
     function _initialApproveBaseToken() internal {

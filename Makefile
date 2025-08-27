@@ -14,5 +14,9 @@ deploy-controller-proxy:
 	@echo PRIVKEY: $(PRIVATE_KEY)
 	forge script --via-ir ./script/ProxyGemoonControllerDeploy.sol:ProxyGemoonControllerDeploy --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
 
+upgrade-controller-proxy:
+	@echo PRIVKEY: $(PRIVATE_KEY)
+	forge script --via-ir ./script/ProxyGemoonControllerDeploy.sol:ProxyGemoonControllerUpgrade --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
+
 unit-tests:
 	forge test --show-progress -vv

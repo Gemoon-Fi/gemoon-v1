@@ -23,11 +23,14 @@ contract LPManager is Initializable, AccessControlUpgradeable, ILPManager {
 
     mapping(address => uint256) private collectedRewards;
 
-    function reinitialize(
-        address positionManager_,
-        uint256 creatorPercent_,
-        address protocolAdmin_
-    ) external reinitializer(2) {
+    /// @dev Version of the Gemoon contract.
+    uint64 public constant GEMOON_VERSION = 1;
+
+    function getVersion() public pure returns (uint64) {
+        return GEMOON_VERSION;
+    }
+
+    function _init(address positionManager_, uint256 creatorPercent_) internal {
         require(
             positionManager_ != address(0),
             "Position manager address cannot be zero"
@@ -42,6 +45,15 @@ contract LPManager is Initializable, AccessControlUpgradeable, ILPManager {
 
         creatorPercent = creatorPercent_;
         positionManager = INonfungiblePositionManager(positionManager_);
+    }
+
+    function reinitialize(
+        address positionManager_,
+        uint256 creatorPercent_,
+        address protocolAdmin_
+    ) external reinitializer(getVersion()) {
+        _init(positionManager_, creatorPercent_);
+
         _revokeRole(DEFAULT_ADMIN_ROLE, protocolAdmin_);
         _grantRole(DEFAULT_ADMIN_ROLE, protocolAdmin_);
     }
@@ -51,20 +63,7 @@ contract LPManager is Initializable, AccessControlUpgradeable, ILPManager {
         uint256 creatorPercent_,
         address protocolAdmin_
     ) public initializer {
-        require(
-            positionManager_ != address(0),
-            "Position manager address cannot be zero"
-        );
-
-        require(
-            creatorPercent_ <= 100,
-            "Creator percent must be less than or equal to 100"
-        );
-
-        __AccessControl_init();
-
-        creatorPercent = creatorPercent_;
-        positionManager = INonfungiblePositionManager(positionManager_);
+        _init(positionManager_, creatorPercent_);
         _grantRole(DEFAULT_ADMIN_ROLE, protocolAdmin_);
     }
 
