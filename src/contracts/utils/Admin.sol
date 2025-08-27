@@ -34,8 +34,10 @@ contract Admin {
                 return;
             }
         }
+    }
 
-        require(_admins.length == 2);
+    function isAdmin(address possibleAdmin) public view returns (bool) {
+        return _isAdmin(possibleAdmin);
     }
 
     function getAdmins() public view returns (AdminConfig[] memory) {
