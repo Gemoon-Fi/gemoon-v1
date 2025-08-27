@@ -243,6 +243,21 @@ contract TokenTest is Test {
             "https://t.me/test",
             "Invalid telegram social media URL"
         );
+        assertEq(
+            token.getSocialMedia().farcaster,
+            "https://farcaster.xyz",
+            "Invalid farcaster social media URL"
+        );
+        assertEq(
+            token.getSocialMedia().twitterX,
+            "https://twitter.com/test",
+            "Invalid twitterX social media URL"
+        );
+        assertEq(
+            token.getSocialMedia().website,
+            "https://test.com",
+            "Invalid website social media URL"
+        );
     }
 }
 
