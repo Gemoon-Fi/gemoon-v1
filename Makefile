@@ -2,6 +2,10 @@ include .env
 export
 RPC=https://testnet-rpc.monad.xyz
 
+deploy-spin:
+	@echo PRIVKEY: $(PRIVATE_KEY)
+	forge script --via-ir --ffi ./script/FortuneWheelDeploy.sol:FortuneWheelDeploy --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
+
 deploy-lpmanager-proxy:
 	@echo PRIVKEY: $(PRIVATE_KEY)
 	forge script --via-ir --ffi ./script/ProxyLPManagerDeploy.sol:ProxyLPManagerDeploy --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
