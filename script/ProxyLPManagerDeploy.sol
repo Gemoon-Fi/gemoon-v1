@@ -10,8 +10,6 @@ contract ProxyLPManagerDeploy is Script {
     function run() external {
         vm.startBroadcast();
 
-        address manager = vm.envAddress("UNISWAP_POSITION_MANAGER");
-
         uint256 creatorPercent = vm.envUint("CREATOR_FEE_PERCENT");
 
         address lpManagerImpl = address(new LPManager());
@@ -21,7 +19,7 @@ contract ProxyLPManagerDeploy is Script {
                 msg.sender,
                 abi.encodeCall(
                     LPManager.initialize,
-                    (manager, creatorPercent, msg.sender)
+                    (creatorPercent, msg.sender)
                 )
             )
         );
@@ -44,14 +42,13 @@ contract ProxyLPManagerUpgrade is Script {
         address lpManagerImpl = address(new LPManager());
 
         uint256 creatorPercent = vm.envUint("CREATOR_FEE_PERCENT");
-        address manager = vm.envAddress("UNISWAP_POSITION_MANAGER");
 
         ProxyAdmin(proxyAdmin).upgradeAndCall(
             ITransparentUpgradeableProxy(proxy),
             lpManagerImpl,
             abi.encodeCall(
                 LPManager.reinitialize,
-                (manager, uint256(creatorPercent), msg.sender)
+                (uint256(creatorPercent), msg.sender)
             )
         );
 

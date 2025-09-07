@@ -6,6 +6,8 @@ import {LPManager} from "../src/contracts/LPManager.sol";
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
 import "@oz-upgrades/Upgrades.sol";
+import "../src/contracts/deploy_collectors/UniswapDeployCollector.sol";
+import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 
 contract ProxyGemoonControllerDeploy is Script {
     function setUp() public {}
@@ -20,6 +22,11 @@ contract ProxyGemoonControllerDeploy is Script {
         address lpManager = vm.envAddress("LP_MANAGER_PROXY_ADDRESS");
         address uniswapFactory = vm.envAddress("UNISWAP_FACTORY");
 
+        UniswapDeployCollector strategy = new UniswapDeployCollector(
+            uniswapPositionManager,
+            lpManager
+        );
+
         GemoonController controller = new GemoonController();
 
         address proxy = address(
@@ -28,26 +35,39 @@ contract ProxyGemoonControllerDeploy is Script {
                 msg.sender,
                 abi.encodeCall(
                     GemoonController.initialize,
-                    (
-                        lpManager,
-                        uniswapFactory,
-                        uniswapPositionManager,
-                        nativeToken,
-                        msg.sender
-                    )
+                    (lpManager, uniswapFactory, nativeToken, msg.sender)
                 )
             )
+        );
+
+        console.log(
+            "Controller owner: ",
+            address(OwnableUpgradeable(proxy).owner())
+        );
+
+        GemoonController(payable(proxy)).addDeployStrategyInstance(
+            strategy.creatorName(),
+            address(strategy)
         );
 
         // Grant CONTROLLER_ROLE to the controller address
         AccessControlUpgradeable(lpManager).grantRole(
             keccak256("CONTROLLER_ROLE"),
-            address(controller)
+            address(proxy)
         );
 
         address adminAddress = Upgrades.getAdminAddress(proxy);
         console.log("Proxy address: ", proxy);
+        console.log("Uniswap strategy address:", address(strategy));
         console.log("Proxy admin address: ", adminAddress);
+        console.log("Admin of ProxyAdmin",OwnableUpgradeable(adminAddress).owner());
+        console.log("proxy has role on lpManager?: ");
+        console.logBool(
+            AccessControlUpgradeable(lpManager).hasRole(
+                keccak256("CONTROLLER_ROLE"),
+                address(proxy)
+            )
+        );
 
         vm.stopBroadcast();
     }
@@ -73,13 +93,7 @@ contract ProxyGemoonControllerUpgrade is Script {
             lpManagerImpl,
             abi.encodeCall(
                 GemoonController.reinitialize,
-                (
-                    lpManager,
-                    uniswapFactory,
-                    uniswapPositionManager,
-                    nativeToken,
-                    msg.sender
-                )
+                (lpManager, uniswapFactory, nativeToken, msg.sender)
             )
         );
 

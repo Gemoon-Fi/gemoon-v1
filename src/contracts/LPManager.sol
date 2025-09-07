@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: SEE LICENSE IN LICENSE
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.21;
 
 import {ILPManager} from "./interfaces/ILPManager.sol";
-import {INonfungiblePositionManager} from "@uniswap-v3-periphery/interfaces/INonfungiblePositionManager.sol";
 import {IUniswapV3Pool} from "@uniswap-v3-core/interfaces/IUniswapV3Pool.sol";
 import "./interfaces/IGemoon.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -11,15 +10,14 @@ import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol"
 import "./utils/Percent.sol";
 import "./interfaces/IToken.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {DeploymentInfo, IFeeCollector, PositionID, positionID} from "./interfaces/IPosition.sol";
 
 contract LPManager is Initializable, AccessControlUpgradeable, ILPManager {
     bytes32 public constant CONTROLLER_ROLE = keccak256("CONTROLLER_ROLE");
 
-    INonfungiblePositionManager public positionManager;
+    uint256 public creatorFeePercent;
 
-    uint256 public creatorPercent;
-
-    mapping(address => DeploymentInfo[]) public deployments;
+    mapping(PositionID => DeploymentInfo) public deployments;
 
     mapping(address => uint256) private collectedRewards;
 
@@ -30,62 +28,34 @@ contract LPManager is Initializable, AccessControlUpgradeable, ILPManager {
         return GEMOON_VERSION;
     }
 
-    function _init(address positionManager_, uint256 creatorPercent_) internal {
-        require(
-            positionManager_ != address(0),
-            "Position manager address cannot be zero"
-        );
-
+    function _init(uint256 creatorPercent_) internal {
         require(
             creatorPercent_ <= 100,
             "Creator percent must be less than or equal to 100"
         );
 
+        // TODO: who will be owner????
         __AccessControl_init();
 
-        creatorPercent = creatorPercent_;
-        positionManager = INonfungiblePositionManager(positionManager_);
+        creatorFeePercent = creatorPercent_;
     }
 
     function reinitialize(
-        address positionManager_,
         uint256 creatorPercent_,
         address protocolAdmin_
     ) external reinitializer(getVersion()) {
-        _init(positionManager_, creatorPercent_);
+        _init(creatorPercent_);
 
         _revokeRole(DEFAULT_ADMIN_ROLE, protocolAdmin_);
         _grantRole(DEFAULT_ADMIN_ROLE, protocolAdmin_);
     }
 
     function initialize(
-        address positionManager_,
         uint256 creatorPercent_,
         address protocolAdmin_
     ) public initializer {
-        _init(positionManager_, creatorPercent_);
+        _init(creatorPercent_);
         _grantRole(DEFAULT_ADMIN_ROLE, protocolAdmin_);
-    }
-
-    function onERC721Received(
-        address operator,
-        address from,
-        uint256 tokenId,
-        bytes calldata data
-    ) external override returns (bytes4) {
-        // unused parameters
-        operator;
-        data;
-
-        emit Received(from, tokenId);
-
-        return this.onERC721Received.selector;
-    }
-
-    function showDeploymentsForCreator(
-        address creator
-    ) external view returns (DeploymentInfo[] memory) {
-        return deployments[creator];
     }
 
     /// @inheritdoc ILPManager
@@ -93,18 +63,13 @@ contract LPManager is Initializable, AccessControlUpgradeable, ILPManager {
         address creator,
         address pool
     ) public view override returns (uint256) {
-        DeploymentInfo[] storage creatorDeployments = deployments[creator];
-        uint256 poolPositionId;
-        for (uint256 i = 0; i < creatorDeployments.length; i++) {
-            if (creatorDeployments[i].poolId == pool) {
-                poolPositionId = creatorDeployments[i].positionId;
-                break;
-            }
-        }
+        DeploymentInfo storage creatorDeployments = deployments[
+            positionID(pool, creator)
+        ];
 
-        require(poolPositionId != 0, "Position not found");
+        require(creatorDeployments.positionId != 0, "Position not found");
 
-        return poolPositionId;
+        return creatorDeployments.positionId;
     }
 
     modifier ownerOrCreator(address creator) {
@@ -119,32 +84,27 @@ contract LPManager is Initializable, AccessControlUpgradeable, ILPManager {
     function claimRewards(
         address creator,
         address pool
-    )
-        external
-        override
-        ownerOrCreator(creator)
-        returns (uint256 amount0, uint256 amount1)
-    {
+    ) external override ownerOrCreator(creator) returns (uint256, uint256) {
         require(creator != address(0), "Creator address cannot be zero");
         require(pool != address(0), "Pool address cannot be zero");
 
-        uint256 poolPositionId = positionId(creator, pool);
+        PositionID posID = positionID(pool, creator);
 
-        (amount0, amount1) = positionManager.collect(
-            INonfungiblePositionManager.CollectParams({
-                tokenId: poolPositionId,
-                recipient: address(this),
-                amount0Max: type(uint128).max,
-                amount1Max: type(uint128).max
-            })
+        DeploymentInfo memory depInfo = deployments[posID];
+
+        IFeeCollector feeCollector = IFeeCollector(depInfo.feeCollector);
+
+        (uint256 amount0, uint256 amount1) = feeCollector.collectRewards(
+            creator,
+            pool
         );
 
         if (amount0 <= 0 && amount1 <= 0) {
             return (0, 0);
         }
 
-        uint256 rcptAmount1 = Percent.subPercent(amount1, creatorPercent);
-        uint256 rcptAmount0 = Percent.subPercent(amount0, creatorPercent);
+        uint256 rcptAmount1 = Percent.subPercent(amount1, creatorFeePercent);
+        uint256 rcptAmount0 = Percent.subPercent(amount0, creatorFeePercent);
         IGemoonToken token0 = IGemoonToken(IUniswapV3Pool(pool).token0());
         IGemoonToken token1 = IGemoonToken(IUniswapV3Pool(pool).token1());
 
@@ -193,6 +153,8 @@ contract LPManager is Initializable, AccessControlUpgradeable, ILPManager {
     function addNewPosition(
         DeploymentInfo memory deployment
     ) external override onlyRole(CONTROLLER_ROLE) {
-        deployments[deployment.creatorAdmin].push(deployment);
+        deployments[
+            positionID(deployment.poolId, deployment.creatorAdmin)
+        ] = deployment;
     }
 }

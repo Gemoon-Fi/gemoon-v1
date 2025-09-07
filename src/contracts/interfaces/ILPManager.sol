@@ -3,15 +3,15 @@ pragma solidity ^0.8.21;
 
 import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import "./IGemoon.sol";
+import {DeploymentInfo} from "./IPosition.sol";
 
-interface ILPManager is IERC721Receiver {
+interface ILPManager {
     event RewardClaimed(
         address creator,
         address pool,
         uint256 amount0,
         uint256 amount1
     );
-    event Received(address indexed from, uint256 tokenId);
 
     /// @notice get uniswap position id
     function positionId(

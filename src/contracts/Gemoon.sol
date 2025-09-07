@@ -11,10 +11,10 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {INonfungiblePositionManager} from "@uniswap-v3-periphery/interfaces/INonfungiblePositionManager.sol";
 import {PoolAddress} from "@uniswap-v3-periphery/libraries/PoolAddress.sol";
 import {IUniswapV3Factory} from "@uniswap-v3-core/interfaces/IUniswapV3Factory.sol";
-import "@uniswap-v3-core/libraries/TickMath.sol";
+import "./utils/Price.sol";
 import {IUniswapV3Pool} from "@uniswap-v3-core/interfaces/IUniswapV3Pool.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "./utils/Price.sol";
+import {IPositionCreator, IPositionDeployer, IFeeCollector, DeploymentInfo} from "./interfaces/IPosition.sol";
 import "./utils/Ticks.sol";
 
 contract GemoonController is
@@ -22,40 +22,19 @@ contract GemoonController is
     OwnableUpgradeable,
     IGemoonController
 {
+
+
     error UserNotFound();
 
-    error MintingFailed(
-        string message,
-        address token0,
-        address token1,
-        uint160 sqrtX96Price,
-        uint256 amount0Desired,
-        uint256 amount1Desired,
-        int24 currentTick,
-        int24 tickLower,
-        int24 tickUpper
-    );
-
-    uint24 public constant FEE_TIER = 10000;
-    int24 public constant TICK_SPACING = 200;
-
-    uint256 public constant PRICE_PER_TOKEN = 33_333_333 * 1e18;
-
-    uint256 public constant INITIAL_LIQUIDITY = 100_000_000_000;
-    uint256 public constant INITIAL_SUPPLY_X18 = INITIAL_LIQUIDITY * 1e18;
-
-    int24 public constant MIN_TICK = TickMath.MIN_TICK;
-    int24 public constant MAX_TICK = TickMath.MAX_TICK;
     bool private _wethInitialApproved = false;
+
+    mapping(string => address) private _deployStrategies;
 
     ILPManager private _lpManager;
     /// @dev Address of wrapped native token.
     address private _weth;
-    INonfungiblePositionManager public positionManager;
-    IUniswapV3Factory public factory;
 
-    /// @dev Initial approves called during first token deployment for better testability.
-    bool private _wethApproved = false;
+    IUniswapV3Factory public factory;
 
     /// @dev Version of the Gemoon contract.
     uint64 public constant GEMOON_VERSION = 1;
@@ -67,7 +46,6 @@ contract GemoonController is
     function _init(
         address lpManager_,
         address factory_,
-        address positionManager_,
         address weth_,
         address protocolAdmin_
     ) internal {
@@ -80,14 +58,9 @@ contract GemoonController is
             factory_ != address(0),
             "Uniswap V3 Factory address cannot be zero"
         );
-        require(
-            positionManager_ != address(0),
-            "Uniswap V3 Position Manager address cannot be zero"
-        );
 
         factory = IUniswapV3Factory(factory_);
         _lpManager = ILPManager(lpManager_);
-        positionManager = INonfungiblePositionManager(positionManager_);
 
         _weth = weth_;
     }
@@ -95,44 +68,51 @@ contract GemoonController is
     function reinitialize(
         address lpManager_,
         address factory_,
-        address positionManager_,
         address weth_,
         address protocolAdmin_
     ) external reinitializer(getVersion()) {
-        _init(lpManager_, factory_, positionManager_, weth_, protocolAdmin_);
+        _init(lpManager_, factory_, weth_, protocolAdmin_);
     }
 
     function initialize(
         address lpManager_,
         address factory_,
-        address positionManager_,
         address weth_,
         address protocolAdmin_
     ) public initializer {
-        _init(lpManager_, factory_, positionManager_, weth_, protocolAdmin_);
+        _init(lpManager_, factory_, weth_, protocolAdmin_);
     }
 
-    function _initialApproveBaseToken() internal {
+    function addDeployStrategyInstance(
+        string calldata instanceName,
+        address deployer
+    ) external onlyOwner {
+        require(deployer != address(0), "deployer address cannot be zero");
         require(
-            IERC20(_weth).approve(address(positionManager), type(uint256).max),
-            "WETH approval failed"
+            bytes(instanceName).length != 0,
+            "invalid name for deployer instance"
         );
 
-        _wethApproved = true;
+        _deployStrategies[instanceName] = deployer;
     }
 
     /// @dev Configuration for deploying a token.
     /// @notice Entry point for deploying a token.
     /// @notice If `creatorAddress` is not set in `rewardsConfig`, they will be set to the address of this contract.
     function deployToken(
+        string memory deployStrategy,
         DeployConfig memory config
     ) external payable override returns (address) {
+        IPositionDeployer deployer = IPositionDeployer(
+            _deployStrategies[deployStrategy]
+        );
+        require(
+            address(deployer) != address(0),
+            "given position deployer not found"
+        );
+
         TokenConfig memory tokenConfig = config.tokenConfig;
         _validateTokenConfig(config.tokenConfig);
-
-        if (!_wethApproved) {
-            _initialApproveBaseToken();
-        }
 
         AdminConfig[] memory newAdmins = new AdminConfig[](
             tokenConfig.admins.length + 2
@@ -158,19 +138,27 @@ contract GemoonController is
         });
 
         tokenConfig.admins = newAdmins;
+
         address deployedToken = Deployer.deployToken(tokenConfig);
 
+        // Transfer all liquidity to deploy strategy
         require(
-            IERC20(deployedToken).approve(
-                address(positionManager),
+            IERC20(deployedToken).transfer(
+                address(deployer),
                 INITIAL_SUPPLY_X18
             ),
-            "Deployed token approval failed"
+            "fail transfer liquidity to deployer"
         );
+
         DeploymentInfo memory depInfo = _configurePool(
+            deployer,
             config.rewardsConfig,
             deployedToken
         );
+
+        depInfo.rewardRecipient = config.rewardsConfig.rewardRecipient;
+        depInfo.creatorAdmin = config.rewardsConfig.creatorAddress;
+
         emit TokenCreated(
             deployedToken,
             config.rewardsConfig.creatorAddress,
@@ -179,11 +167,14 @@ contract GemoonController is
             config.tokenConfig.name,
             config.tokenConfig.symbol
         );
+
         _lpManager.addNewPosition(depInfo);
+
         return deployedToken;
     }
 
     function _configurePool(
+        IPositionDeployer deployer,
         RewardsConfig memory rewardsConfig_,
         address deployedToken
     ) private returns (DeploymentInfo memory) {
@@ -199,9 +190,9 @@ contract GemoonController is
             rewardsConfig_.rewardRecipient != address(0),
             "Reward recipient address cannot be zero"
         );
+
         address tokenA = deployedToken;
         address tokenB = _weth;
-        // Сортируем токены вручную (Uniswap требует token0 < token1)
         (address token0, address token1) = tokenA < tokenB
             ? (tokenA, tokenB)
             : (tokenB, tokenA);
@@ -219,96 +210,29 @@ contract GemoonController is
             token0 == deployedToken ? PRICE_PER_TOKEN : 1e18,
             token1 == deployedToken ? PRICE_PER_TOKEN : 1e18
         );
-        (int24 tickLower, int24 tickUpper, int24 tick) = Ticks.getTicks(
+
+        (, , int24 tick) = Ticks.getTicks(
             poolKey,
             sqrtX96Price,
             deployedToken,
             TICK_SPACING,
             true
         );
-        emit PoolCreated(pool, sqrtX96Price);
+        emit PoolCreated(pool, token0, token1, sqrtX96Price, tick);
         try IUniswapV3Pool(pool).initialize(sqrtX96Price) {} catch {
             revert("Pool initialization failed, check price validity");
         }
-        // Определяем, сколько токенов положить в amount0/amount1
-        uint256 amount0Desired = token0 == deployedToken
-            ? INITIAL_SUPPLY_X18
-            : 0;
-        uint256 amount1Desired = token1 == deployedToken
-            ? INITIAL_SUPPLY_X18
-            : 0;
-        uint256 balanceOfController = IGemoonToken(deployedToken).balanceOf(
-            address(this)
-        );
-        require(
-            balanceOfController >= INITIAL_SUPPLY_X18,
-            "Insufficient token balance"
-        );
-        uint256 allowance = IERC20(deployedToken).allowance(
-            address(this),
-            address(positionManager)
-        );
-        require(
-            allowance >= INITIAL_SUPPLY_X18,
-            "Insufficient token allowance for position manager"
-        );
-        INonfungiblePositionManager.MintParams
-            memory params = INonfungiblePositionManager.MintParams({
-                token0: token0,
-                token1: token1,
-                fee: FEE_TIER,
-                tickLower: int24(tickLower),
-                tickUpper: int24(tickUpper),
-                amount0Desired: amount0Desired,
-                amount1Desired: amount1Desired,
-                amount0Min: 0,
-                amount1Min: 0,
-                recipient: address(_lpManager),
-                deadline: block.timestamp
-            });
-        uint256 positionId;
-        try positionManager.mint(params) returns (
-            uint256 _positionId,
-            uint128,
-            uint256,
-            uint256
-        ) {
-            positionId = _positionId;
-        } catch {
-            revert MintingFailed(
-                "error minting position, check parameters",
-                token0,
-                token1,
-                sqrtX96Price,
-                amount0Desired,
-                amount1Desired,
-                tick,
-                int24(tickLower),
-                int24(tickUpper)
-            );
-        }
-        require(
-            positionId > 0,
-            "create position failed, position ID must be greater than zero"
-        );
-        emit PositionCreated(
-            positionId,
+
+        DeploymentInfo memory depInfo = deployer.deployPosition(
+            address(_lpManager),
             rewardsConfig_.creatorAddress,
-            token0,
-            token1,
-            INITIAL_SUPPLY_X18
+            deployedToken,
+            _weth,
+            pool,
+            sqrtX96Price
         );
-        return
-            DeploymentInfo({
-                token0: address(deployedToken),
-                token1: address(_weth),
-                upperTick: int24(tickUpper),
-                lowerTick: int24(tickLower),
-                positionId: positionId,
-                poolId: pool,
-                rewardRecipient: rewardsConfig_.rewardRecipient,
-                creatorAdmin: rewardsConfig_.creatorAddress
-            });
+
+        return depInfo;
     }
 
     function changeAdmin(
@@ -320,8 +244,6 @@ contract GemoonController is
     }
 
     receive() external payable {}
-
-    fallback() external payable {}
 
     function balance() external view onlyOwner returns (uint256) {
         return address(this).balance;

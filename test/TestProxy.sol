@@ -18,10 +18,7 @@ contract TestProxy is Test {
             new TransparentUpgradeableProxy(
                 address(lpManagerImpl),
                 address(msg.sender),
-                abi.encodeCall(
-                    LPManager.initialize,
-                    (address(1), 50, msg.sender)
-                )
+                abi.encodeCall(LPManager.initialize, (50, msg.sender))
             )
         );
 
@@ -46,23 +43,14 @@ contract TestProxy is Test {
             new TransparentUpgradeableProxy(
                 address(lpManagerImpl),
                 address(msg.sender),
-                abi.encodeCall(
-                    LPManager.initialize,
-                    (address(1), 50, msg.sender)
-                )
+                abi.encodeCall(LPManager.initialize, (50, msg.sender))
             )
         );
 
         assertEq(
-            uint256(LPManager(proxy).creatorPercent()),
+            uint256(LPManager(proxy).creatorFeePercent()),
             50,
             "Creator percent mismatch"
-        );
-
-        assertEq(
-            address(LPManager(proxy).positionManager()),
-            address(1),
-            "Position manager mismatch"
         );
     }
 
@@ -75,7 +63,7 @@ contract TestProxy is Test {
                 msg.sender,
                 abi.encodeCall(
                     GemoonController.initialize,
-                    (address(1), address(2), address(3), address(4), msg.sender)
+                    (address(1), address(2), address(4), msg.sender)
                 )
             )
         );
