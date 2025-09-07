@@ -42,12 +42,14 @@ contract ProxyGemoonControllerDeploy is Script {
         // Grant CONTROLLER_ROLE to the controller address
         AccessControlUpgradeable(lpManager).grantRole(
             keccak256("CONTROLLER_ROLE"),
-            address(controller)
+            address(proxy)
         );
 
         address adminAddress = Upgrades.getAdminAddress(proxy);
         console.log("Proxy address: ", proxy);
         console.log("Proxy admin address: ", adminAddress);
+        console.log("proxy has role on lpManager?: ");
+        console.logBool(AccessControlUpgradeable(lpManager).hasRole(keccak256("CONTROLLER_ROLE"), address(proxy)));
 
         vm.stopBroadcast();
     }

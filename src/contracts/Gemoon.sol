@@ -226,7 +226,7 @@ contract GemoonController is
             TICK_SPACING,
             true
         );
-        emit PoolCreated(pool, sqrtX96Price);
+        emit PoolCreated(pool, token0, token1, sqrtX96Price, tick);
         try IUniswapV3Pool(pool).initialize(sqrtX96Price) {} catch {
             revert("Pool initialization failed, check price validity");
         }

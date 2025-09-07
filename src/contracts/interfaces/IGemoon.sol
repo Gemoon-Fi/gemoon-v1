@@ -48,7 +48,13 @@ interface IGemoonController {
         uint256 poolSupply
     );
 
-    event PoolCreated(address indexed pool, uint256 initialPrice);
+    event PoolCreated(
+        address indexed pool,
+        address indexed token0,
+        address indexed token1,
+        uint256 initialPrice,
+        int24 tick
+    );
 
     // admins will be (address(this) + address(msg.sender))
     function deployToken(
