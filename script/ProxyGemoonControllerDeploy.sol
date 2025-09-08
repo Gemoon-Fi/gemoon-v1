@@ -54,6 +54,7 @@ contract ProxyGemoonControllerDeploy is Script {
         AccessControlUpgradeable(lpManager).grantRole(
             keccak256("CONTROLLER_ROLE"),
             address(proxy)
+            address(proxy)
         );
 
         address adminAddress = Upgrades.getAdminAddress(proxy);
