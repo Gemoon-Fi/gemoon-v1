@@ -34,7 +34,6 @@ contract LPManager is Initializable, AccessControlUpgradeable, ILPManager {
             "Creator percent must be less than or equal to 100"
         );
 
-        // TODO: who will be owner????
         __AccessControl_init();
 
         creatorFeePercent = creatorPercent_;
