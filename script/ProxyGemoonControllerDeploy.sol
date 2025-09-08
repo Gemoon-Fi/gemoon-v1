@@ -54,14 +54,16 @@ contract ProxyGemoonControllerDeploy is Script {
         AccessControlUpgradeable(lpManager).grantRole(
             keccak256("CONTROLLER_ROLE"),
             address(proxy)
-            address(proxy)
         );
 
         address adminAddress = Upgrades.getAdminAddress(proxy);
         console.log("Proxy address: ", proxy);
         console.log("Uniswap strategy address:", address(strategy));
         console.log("Proxy admin address: ", adminAddress);
-        console.log("Admin of ProxyAdmin",OwnableUpgradeable(adminAddress).owner());
+        console.log(
+            "Admin of ProxyAdmin",
+            OwnableUpgradeable(adminAddress).owner()
+        );
         console.log("proxy has role on lpManager?: ");
         console.logBool(
             AccessControlUpgradeable(lpManager).hasRole(
