@@ -4,6 +4,7 @@ import "forge-std/Script.sol";
 import "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
 import "@openzeppelin/contracts/proxy/transparent/ProxyAdmin.sol";
 import {LPManager} from "../src/contracts/LPManager.sol";
+import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@oz-upgrades/Upgrades.sol";
 
 contract ProxyLPManagerDeploy is Script {

@@ -22,7 +22,8 @@ contract TestProxy is Test {
             )
         );
 
-        bytes32 adminRole = 0x00;
+        // Default value of admin role is bytes32(0x00)
+        bytes32 adminRole;
 
         console.logBytes32(adminRole);
         console.logAddress(msg.sender);

@@ -7,12 +7,13 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {INonfungiblePositionManager} from "@uniswap-v3-periphery/interfaces/INonfungiblePositionManager.sol";
 import {IUniswapV3Pool} from "@uniswap-v3-core/interfaces/IUniswapV3Pool.sol";
 import "@uniswap-v3-core/libraries/TickMath.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {PoolAddress} from "@uniswap-v3-periphery/libraries/PoolAddress.sol";
 import "../utils/Ticks.sol";
 import "../interfaces/IGemoon.sol";
 
 /// @title Gemoon UniswapV3 position deployer.
-contract UniswapDeployCollector is IPositionCreator, IERC721Receiver {
+contract UniswapDeployCollector is IPositionCreator, IERC721Receiver, Ownable {
     event PositionCreated(
         uint256 positionId,
         address indexed creator,
@@ -43,7 +44,10 @@ contract UniswapDeployCollector is IPositionCreator, IERC721Receiver {
     int24 public constant MIN_TICK = TickMath.MIN_TICK;
     int24 public constant MAX_TICK = TickMath.MAX_TICK;
 
-    constructor(address uniswapPositionManager, address lpManager_) {
+    constructor(
+        address uniswapPositionManager,
+        address lpManager_
+    ) Ownable(lpManager_) {
         require(
             uniswapPositionManager != address(0),
             "Position manager address cannot be zero"
@@ -66,6 +70,7 @@ contract UniswapDeployCollector is IPositionCreator, IERC721Receiver {
         _nftPositions[positionID(pool, creator)] = positionId;
     }
 
+    /// @inheritdoc IERC721Receiver
     function onERC721Received(
         address operator,
         address from,
@@ -81,11 +86,12 @@ contract UniswapDeployCollector is IPositionCreator, IERC721Receiver {
         return this.onERC721Received.selector;
     }
 
-    // TODO: protect call. Only position creator or protocol admin can call this method!
+    /// @notice claim rewards from uniswap position.
+    /// @dev only LPManager can call this method.
     function collectRewards(
         address creator,
         address pool
-    ) external override returns (uint256 amount0, uint256 amount1) {
+    ) external override onlyOwner returns (uint256 amount0, uint256 amount1) {
         uint256 nftPosition = _nftPositions[positionID(pool, creator)];
 
         if (nftPosition <= 0) {
