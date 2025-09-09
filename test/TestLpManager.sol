@@ -10,10 +10,7 @@ import "../src/contracts/interfaces/IPosition.sol";
 contract PositionFeeCollectorStub is IFeeCollector {
     constructor() {}
 
-    function collectRewards(
-        address creator,
-        address pool
-    ) external pure returns (uint256 amount0, uint256 amount1) {
+    function collectRewards(address creator, address pool) external pure returns (uint256 amount0, uint256 amount1) {
         return (100, 100);
     }
 }
@@ -42,10 +39,7 @@ contract LpManagerTest is Test {
         lpm.initialize(50, msg.sender);
 
         assertTrue(
-            AccessControl(address(lpm)).hasRole(
-                lpm.DEFAULT_ADMIN_ROLE(),
-                msg.sender
-            ),
+            AccessControl(address(lpm)).hasRole(lpm.DEFAULT_ADMIN_ROLE(), msg.sender),
             "msg sender is not contract admin"
         );
     }
@@ -63,24 +57,15 @@ contract LpManagerTest is Test {
 
         lpm.initialize(50, address(this));
 
-        AccessControlUpgradeable(address(lpm)).grantRole(
-            lpm.CONTROLLER_ROLE(),
-            address(this)
-        );
+        AccessControlUpgradeable(address(lpm)).grantRole(lpm.CONTROLLER_ROLE(), address(this));
 
         assertTrue(
-            AccessControl(address(lpm)).hasRole(
-                lpm.DEFAULT_ADMIN_ROLE(),
-                address(this)
-            ),
+            AccessControl(address(lpm)).hasRole(lpm.DEFAULT_ADMIN_ROLE(), address(this)),
             "test contract is not contract admin"
         );
 
         assertTrue(
-            AccessControlUpgradeable(address(lpm)).hasRole(
-                lpm.CONTROLLER_ROLE(),
-                address(this)
-            ),
+            AccessControlUpgradeable(address(lpm)).hasRole(lpm.CONTROLLER_ROLE(), address(this)),
             "no CONTROLLER_ROLE for msg.sender"
         );
 
@@ -99,24 +84,17 @@ contract LpManagerTest is Test {
         );
 
         PositionID posHash = positionID(address(0x4), address(0x5));
-        (, , , , , address poolId, , , ) = lpm.deployments(posHash);
+        (,,,,, address poolId,,,) = lpm.deployments(posHash);
 
-        assertEq(
-            poolId,
-            address(0x4),
-            "pool address must be stored in LPManager deployments"
-        );
+        assertEq(poolId, address(0x4), "pool address must be stored in LPManager deployments");
     }
 
-    function testCreatorCanClaimRewards_Success() external {
+    function testCreatorCanClaimRewards_SuccessBecauseInitiatorIsProtocolAdmin() external {
         LPManager lpm = new LPManager();
 
         lpm.initialize(50, address(this));
 
-        AccessControlUpgradeable(address(lpm)).grantRole(
-            lpm.CONTROLLER_ROLE(),
-            address(this)
-        );
+        AccessControlUpgradeable(address(lpm)).grantRole(lpm.CONTROLLER_ROLE(), address(this));
 
         address adminOfPosition = address(0x5);
 
@@ -139,27 +117,43 @@ contract LpManagerTest is Test {
             })
         );
 
-        PositionID posHash = positionID(
-            address(uniPool),
-            address(adminOfPosition)
-        );
-        (, , , , , address poolId, , , ) = lpm.deployments(posHash);
+        PositionID posHash = positionID(address(uniPool), address(adminOfPosition));
+        (,,,,, address poolId,,,) = lpm.deployments(posHash);
 
-        assertEq(
-            poolId,
-            address(uniPool),
-            "pool address must be stored in LPManager deployments"
-        );
+        assertEq(poolId, address(uniPool), "pool address must be stored in LPManager deployments");
 
-        (uint256 amount0, uint256 amount1) = lpm.claimRewards(
-            adminOfPosition,
-            address(uniPool)
-        );
+        (uint256 amount0, uint256 amount1) = lpm.claimRewards(adminOfPosition, address(uniPool));
 
         assertEq(amount0, 50, "amount0 must be half of full claimed fee");
         assertEq(amount1, 50, "amount1 must be half of full claimed fee");
     }
 
-    // TODO: claim because initiate as owner
-    // TODO: claim because initiate as protocol admin
+    function testCreatorCanClaimRewards_FailAccessToClaimRewards() external {
+        address protocolAdmin = address(0x123);
+        LPManager lpm = new LPManager();
+        lpm.initialize(50, protocolAdmin);
+
+        address adminOfPosition = address(0x5);
+
+        address token0 = address(new StubERC20OnlyTransferToken());
+        address token1 = address(new StubERC20OnlyTransferToken());
+
+        UniPoolStub uniPool = new UniPoolStub(token0, token1);
+
+        vm.expectRevert();
+        lpm.claimRewards(adminOfPosition, address(uniPool));
+    }
+
+    function testCreatorCanClaimRewards_FailBecauseCreatorAndPoolAddressesIsInvalid() external {
+        LPManager lpm = new LPManager();
+        lpm.initialize(50, address(this));
+
+        // creator address is invalid
+        vm.expectRevert();
+        lpm.claimRewards(address(0x0), address(0x0));
+
+        // pool address is invalid
+        vm.expectRevert();
+        lpm.claimRewards(address(0x1), address(0x0));
+    }
 }
