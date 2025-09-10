@@ -40,7 +40,7 @@ contract StubERC20OnlyTransferToken {
     }
 
     function transfer(address to, uint256 value) external returns (bool) {
-        balances[to] = value;
+        balances[to] += value;
         return true;
     }
 }

@@ -29,42 +29,28 @@ contract LPManager is Initializable, AccessControlUpgradeable, ILPManager {
     }
 
     function _init(uint256 creatorPercent_) internal {
-        require(
-            creatorPercent_ <= 100,
-            "Creator percent must be less than or equal to 100"
-        );
+        require(creatorPercent_ <= 100, "Creator percent must be less than or equal to 100");
 
         __AccessControl_init();
 
         creatorFeePercent = creatorPercent_;
     }
 
-    function reinitialize(
-        uint256 creatorPercent_,
-        address protocolAdmin_
-    ) external reinitializer(getVersion()) {
+    function reinitialize(uint256 creatorPercent_, address protocolAdmin_) external reinitializer(getVersion()) {
         _init(creatorPercent_);
 
         _revokeRole(DEFAULT_ADMIN_ROLE, protocolAdmin_);
         _grantRole(DEFAULT_ADMIN_ROLE, protocolAdmin_);
     }
 
-    function initialize(
-        uint256 creatorPercent_,
-        address protocolAdmin_
-    ) public initializer {
+    function initialize(uint256 creatorPercent_, address protocolAdmin_) public initializer {
         _init(creatorPercent_);
         _grantRole(DEFAULT_ADMIN_ROLE, protocolAdmin_);
     }
 
     /// @inheritdoc ILPManager
-    function positionId(
-        address creator,
-        address pool
-    ) public view override returns (uint256) {
-        DeploymentInfo storage creatorDeployments = deployments[
-            positionID(pool, creator)
-        ];
+    function positionId(address creator, address pool) public view override returns (uint256) {
+        DeploymentInfo storage creatorDeployments = deployments[positionID(pool, creator)];
 
         require(creatorDeployments.positionId != 0, "Position not found");
 
@@ -72,18 +58,17 @@ contract LPManager is Initializable, AccessControlUpgradeable, ILPManager {
     }
 
     modifier ownerOrCreator(address creator) {
-        require(
-            msg.sender == creator || hasRole(DEFAULT_ADMIN_ROLE, msg.sender),
-            "Not authorized"
-        );
+        require(msg.sender == creator || hasRole(DEFAULT_ADMIN_ROLE, msg.sender), "Not authorized");
         _;
     }
 
     /// @inheritdoc ILPManager
-    function claimRewards(
-        address creator,
-        address pool
-    ) external override ownerOrCreator(creator) returns (uint256, uint256) {
+    function claimRewards(address creator, address pool)
+        external
+        override
+        ownerOrCreator(creator)
+        returns (uint256, uint256)
+    {
         require(creator != address(0), "Creator address cannot be zero");
         require(pool != address(0), "Pool address cannot be zero");
 
@@ -93,10 +78,7 @@ contract LPManager is Initializable, AccessControlUpgradeable, ILPManager {
 
         IFeeCollector feeCollector = IFeeCollector(depInfo.feeCollector);
 
-        (uint256 amount0, uint256 amount1) = feeCollector.collectRewards(
-            creator,
-            pool
-        );
+        (uint256 amount0, uint256 amount1) = feeCollector.collectRewards(creator, pool);
 
         if (amount0 <= 0 && amount1 <= 0) {
             return (0, 0);
@@ -122,16 +104,12 @@ contract LPManager is Initializable, AccessControlUpgradeable, ILPManager {
         return (rcptAmount0, rcptAmount1);
     }
 
-    function showRewards(
-        address token
-    ) external view onlyRole(DEFAULT_ADMIN_ROLE) returns (uint256) {
+    function showRewards(address token) external view onlyRole(DEFAULT_ADMIN_ROLE) returns (uint256) {
         return collectedRewards[token];
     }
 
     /// @notice withdrawal of rewards in favor of the protocol creators
-    function withdrawRewards(
-        address token
-    ) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function withdrawRewards(address token) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(token != address(0), "Token address cannot be zero");
 
         uint256 amount = collectedRewards[token];
@@ -140,20 +118,13 @@ contract LPManager is Initializable, AccessControlUpgradeable, ILPManager {
             return;
         }
 
-        require(
-            amount <= collectedRewards[token],
-            "Amount exceeds collected rewards"
-        );
+        require(amount <= collectedRewards[token], "Amount exceeds collected rewards");
 
         collectedRewards[token] -= amount;
         IGemoonToken(token).transfer(msg.sender, amount);
     }
 
-    function addNewPosition(
-        DeploymentInfo memory deployment
-    ) external override onlyRole(CONTROLLER_ROLE) {
-        deployments[
-            positionID(deployment.poolId, deployment.creatorAdmin)
-        ] = deployment;
+    function addNewPosition(DeploymentInfo memory deployment) external override onlyRole(CONTROLLER_ROLE) {
+        deployments[positionID(deployment.poolId, deployment.creatorAdmin)] = deployment;
     }
 }
