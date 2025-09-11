@@ -22,7 +22,7 @@ struct DeployConfig {
 uint24 constant FEE_TIER = 10000;
 int24 constant TICK_SPACING = 200;
 
-uint256 constant PRICE_PER_TOKEN = 33_333_333 * 1e18;
+uint256 constant PRICE_PER_TOKEN = 333_333_333 * 1e18;
 
 // TODO: move to GemoonController interface
 uint256 constant INITIAL_LIQUIDITY = 100_000_000_000;
@@ -39,22 +39,11 @@ interface IGemoonController {
     );
 
     event PoolCreated(
-        address indexed pool,
-        address indexed token0,
-        address indexed token1,
-        uint256 initialPrice,
-        int24 tick
+        address indexed pool, address indexed token0, address indexed token1, uint256 initialPrice, int24 tick
     );
 
     // admins will be (address(this) + address(msg.sender))
-    function deployToken(
-        string memory deployStrategy,
-        DeployConfig memory config
-    ) external payable returns (address);
+    function deployToken(string memory deployStrategy, DeployConfig memory config) external payable returns (address);
 
-    function changeAdmin(
-        address token,
-        address oldAdmin,
-        address newAdmin
-    ) external;
+    function changeAdmin(address token, address oldAdmin, address newAdmin) external;
 }
