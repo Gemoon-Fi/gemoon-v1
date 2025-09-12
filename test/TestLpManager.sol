@@ -212,11 +212,61 @@ contract LpManagerTest is Test {
         assertEq(rewardForToken0, 50, "invalid reward");
         assertEq(rewardForToken1, 50, "invalid reward");
 
-        lpm.withdrawRewards(token0);
-        lpm.withdrawRewards(token1);
+        lpm.withdrawRewards(token0, address(0x0));
+        lpm.withdrawRewards(token1, address(0x0));
 
         assertEq(IERC20(token0).balanceOf(address(this)), 50, "invalid token0 balance");
         assertEq(IERC20(token1).balanceOf(address(this)), 50, "invalid token1 balance");
+    }
+
+    function testClaimRewards_WithdrawToSpecifiedAddress() external {
+        LPManager lpm = new LPManager();
+
+        lpm.initialize(50, address(this));
+
+        AccessControlUpgradeable(address(lpm)).grantRole(lpm.CONTROLLER_ROLE(), address(this));
+
+        address adminOfPosition = address(0x5);
+
+        address token0 = address(new StubERC20OnlyTransferToken());
+        address token1 = address(new StubERC20OnlyTransferToken());
+
+        UniPoolStub uniPool = new UniPoolStub(token0, token1);
+
+        lpm.addNewPosition(
+            DeploymentInfo({
+                token0: token0,
+                token1: token1,
+                lowerTick: 1,
+                upperTick: 2,
+                positionId: 3,
+                poolId: address(uniPool),
+                rewardRecipient: adminOfPosition,
+                creatorAdmin: adminOfPosition,
+                feeCollector: IFeeCollector(new PositionFeeCollectorStub())
+            })
+        );
+
+        PositionID posHash = positionID(address(uniPool), address(adminOfPosition));
+        (,,,,, address poolId,,,) = lpm.deployments(posHash);
+
+        assertEq(poolId, address(uniPool), "pool address must be stored in LPManager deployments");
+
+        lpm.claimRewards(adminOfPosition, address(uniPool));
+
+        uint256 rewardForToken0 = lpm.showRewards(token0);
+        uint256 rewardForToken1 = lpm.showRewards(token0);
+
+        assertEq(rewardForToken0, 50, "invalid reward");
+        assertEq(rewardForToken1, 50, "invalid reward");
+
+        address rewardsRecipient = address(0x1337);
+
+        lpm.withdrawRewards(token0, rewardsRecipient);
+        lpm.withdrawRewards(token1, rewardsRecipient);
+
+        assertEq(IERC20(token0).balanceOf(rewardsRecipient), 50, "invalid token0 balance");
+        assertEq(IERC20(token1).balanceOf(rewardsRecipient), 50, "invalid token1 balance");
     }
 
     function testShowRewards_FailBecauseNotProtocolAdminInitiateRewardsWithdrawal() external {
@@ -263,6 +313,6 @@ contract LpManagerTest is Test {
         // replace the protocol admin
         vm.prank(address(0x123));
         vm.expectRevert();
-        lpm.withdrawRewards(token0);
+        lpm.withdrawRewards(token0, address(0x0));
     }
 }

@@ -109,8 +109,11 @@ contract LPManager is Initializable, AccessControlUpgradeable, ILPManager {
     }
 
     /// @notice withdrawal of rewards in favor of the protocol creators
-    function withdrawRewards(address token) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function withdrawRewards(address token, address to) external onlyRole(DEFAULT_ADMIN_ROLE) {
         require(token != address(0), "Token address cannot be zero");
+        if (to == address(0)) {
+            to = msg.sender;
+        }
 
         uint256 amount = collectedRewards[token];
 
@@ -121,7 +124,7 @@ contract LPManager is Initializable, AccessControlUpgradeable, ILPManager {
         require(amount <= collectedRewards[token], "Amount exceeds collected rewards");
 
         collectedRewards[token] -= amount;
-        IGemoonToken(token).transfer(msg.sender, amount);
+        IGemoonToken(token).transfer(to, amount);
     }
 
     function addNewPosition(DeploymentInfo memory deployment) external override onlyRole(CONTROLLER_ROLE) {
