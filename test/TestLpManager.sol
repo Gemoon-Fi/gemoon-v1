@@ -11,7 +11,11 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 contract PositionFeeCollectorStub is IFeeCollector {
     constructor() {}
 
-    function collectRewards(address creator, address pool) external pure returns (uint256 amount0, uint256 amount1) {
+    function collectRewards(address, /*creator*/ address /*pool*/ )
+        external
+        pure
+        returns (uint256 amount0, uint256 amount1)
+    {
         return (100, 100);
     }
 }
@@ -257,8 +261,8 @@ contract LpManagerTest is Test {
         uint256 rewardForToken0 = lpm.showRewards(token0);
         uint256 rewardForToken1 = lpm.showRewards(token0);
 
-        assertEq(rewardForToken0, 50, "invalid reward");
-        assertEq(rewardForToken1, 50, "invalid reward");
+        assertEq(rewardForToken0, 50, "invalid rewards amount");
+        assertEq(rewardForToken1, 50, "invalid rewards amount");
 
         address rewardsRecipient = address(0x1337);
 
