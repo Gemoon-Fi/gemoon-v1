@@ -1,5 +1,5 @@
 include .env
-export RPC=https://ethereum-sepolia-rpc.publicnode.com
+export RPC=https://rpc.monad.xyz
 
 deploy-spin:
 	@echo PRIVKEY: $(PRIVATE_KEY)
@@ -7,7 +7,11 @@ deploy-spin:
 
 deploy-gemoon:
 	@echo PRIVKEY: $(PRIVATE_KEY)
-	forge script --via-ir --ffi ./script/GemoonDeploy.sol:DeployGemoon --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
+	forge script --via-ir --ffi ./script/GemoonDeploy.sol:DeployGemoon --slow --legacy -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
+
+change-ownership:
+	@echo PRIVKEY: $(PRIVATE_KEY)
+	forge script --via-ir --ffi ./script/GemoonDeploy.sol:ChangePermissions --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
 
 upgrade-lpmanager-proxy:
 	@echo PRIVKEY: $(PRIVATE_KEY)
