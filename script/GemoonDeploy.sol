@@ -8,6 +8,7 @@ import "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.so
 import "@oz-upgrades/Upgrades.sol";
 import "../src/contracts/deploy_collectors/UniswapDeployCollector.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "../src/contracts/interfaces/IPosition.sol";
 
 contract DeployGemoon is Script {
     function setUp() public {}
@@ -19,12 +20,13 @@ contract DeployGemoon is Script {
         address nativeToken = vm.envAddress("NATIVE_TOKEN_ADDRESS");
         address uniswapFactory = vm.envAddress("UNISWAP_FACTORY");
         uint256 creatorPercent = vm.envUint("CREATOR_FEE_PERCENT");
+        address operatorAddress = vm.envAddress("OPERATOR_ADDRESS");
 
         // ----- DEPLOY LP MANAGER -----
         address lpManagerImpl = address(new LPManager());
         address lpManagerProxy = address(
             new TransparentUpgradeableProxy(
-                lpManagerImpl, msg.sender, abi.encodeCall(LPManager.initialize, (creatorPercent, msg.sender))
+                lpManagerImpl, msg.sender, abi.encodeCall(LPManager.initialize, (creatorPercent, operatorAddress))
             )
         );
 
@@ -40,17 +42,16 @@ contract DeployGemoon is Script {
                 address(controller),
                 msg.sender,
                 abi.encodeCall(
-                    GemoonController.initialize, (address(lpManagerProxy), uniswapFactory, nativeToken, msg.sender)
+                    GemoonController.initialize, (address(lpManagerProxy), uniswapFactory, nativeToken, operatorAddress)
                 )
             )
         );
 
         address controllerAdminAddress = Upgrades.getAdminAddress(controllerProxy);
 
-        GemoonController(payable(controllerProxy)).addDeployStrategyInstance(strategy.creatorName(), address(strategy));
-
         // ----- LOGS -----
         console.log("MSG SENDER: ", msg.sender);
+        console.log("OPERATOR ADDRESS: ", operatorAddress);
 
         // ---- LP MANAGER ----
         console.log("LP Manager Proxy address: ", address(lpManagerProxy));
@@ -62,67 +63,10 @@ contract DeployGemoon is Script {
         console.log("Controller Proxy address: ", address(controllerProxy));
         console.log("Controller implementation address: ", address(controller));
         console.log("Controller Proxy admin address: ", address(controllerAdminAddress));
-        console.log(
-            "LP Manager proxy has role on lpManager?",
-            AccessControlUpgradeable(lpManagerProxy).hasRole(keccak256("CONTROLLER_ROLE"), address(controllerProxy))
-        );
         console.log("CREATOR PERCENT: ", creatorPercent);
         console.log("UNISWAP POSITION MANAGER: ", uniswapPositionManager);
         console.log("NATIVE TOKEN: ", nativeToken);
         console.log("UNISWAP FACTORY: ", uniswapFactory);
-
-        vm.stopBroadcast();
-    }
-}
-
-contract ChangePermissions is Script {
-    function run() public {
-        vm.startBroadcast();
-
-        address controllerProxy = vm.envAddress("CONTROLLER_PROXY_ADDRESS");
-        address lpManagerProxy = vm.envAddress("LP_MANAGER_PROXY_ADDRESS");
-        address multisigOwner = vm.envAddress("MULTISIG_OWNER_ADDRESS");
-        address controllerAdmin = vm.envAddress("CONTROLLER_PROXY_ADMIN_ADDRESS");
-        address lpManagerAdmin = vm.envAddress("LP_MANAGER_PROXY_ADMIN_ADDRESS");
-        bytes32 CONTROLLER_ROLE = keccak256("CONTROLLER_ROLE");
-        bytes32 DEFAULT_ADMIN_ROLE = 0x00;
-
-        // --- SETUP ROLES AND OWNERSHIPS ----
-        // ---- LP MANAGER ----
-
-        // AccessControlUpgradeable(lpManagerProxy).grantRole(CONTROLLER_ROLE, address(controllerProxy));
-        // OwnableUpgradeable(lpManagerAdmin).transferOwnership(multisigOwner);
-        // AccessControlUpgradeable(lpManagerProxy).grantRole(DEFAULT_ADMIN_ROLE, multisigOwner);
-        // AccessControlUpgradeable(lpManagerProxy).revokeRole(DEFAULT_ADMIN_ROLE, msg.sender);
-        // ---- CONTROLLER ----
-        // OwnableUpgradeable(controllerProxy).transferOwnership(multisigOwner);
-        // OwnableUpgradeable(controllerAdmin).transferOwnership(multisigOwner);
-
-        console.log("MSG SENDER: ", msg.sender);
-        console.log("LP Manager Proxy admin owner: ", address(OwnableUpgradeable(lpManagerAdmin).owner()));
-        console.log(
-            "Msg.sender has admin role on lpManager?: ",
-            AccessControlUpgradeable(lpManagerProxy).hasRole(DEFAULT_ADMIN_ROLE, msg.sender)
-        );
-        console.log(
-            "Multisig has admin role on lpManager?: ",
-            AccessControlUpgradeable(lpManagerProxy).hasRole(DEFAULT_ADMIN_ROLE, multisigOwner)
-        );
-        console.log("Controller Proxy admin owner: ", address(OwnableUpgradeable(controllerAdmin).owner()));
-        console.log("Controller owner: ", address(OwnableUpgradeable(controllerProxy).owner()));
-
-        vm.stopBroadcast();
-    }
-}
-
-contract VerifyOwners is Script {
-    function run() external {
-        vm.startBroadcast();
-
-        address controllerProxy = vm.envAddress("CONTROLLER_PROXY_ADDRESS");
-        address controllerProxyAdmin = vm.envAddress("CONTROLLER_PROXY_ADMIN_ADDRESS");
-        console.log("Controller proxy owner: ", OwnableUpgradeable(controllerProxy).owner());
-        console.log("Controller proxy admin owner: ", OwnableUpgradeable(controllerProxyAdmin).owner());
 
         vm.stopBroadcast();
     }

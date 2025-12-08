@@ -22,7 +22,8 @@ struct DeployConfig {
 uint24 constant FEE_TIER = 10000;
 int24 constant TICK_SPACING = 200;
 
-uint256 constant PRICE_PER_TOKEN = 333_333_333 * 1e18;
+// If fact amount of MON in pool will be 300_000 MON
+uint256 constant PRICE_PER_TOKEN = 300_000 * 1e18;
 
 // TODO: move to GemoonController interface
 uint256 constant INITIAL_LIQUIDITY = 100_000_000_000;

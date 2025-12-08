@@ -69,6 +69,9 @@ contract GemoonController is Initializable, OwnableUpgradeable, IGemoonControlle
         require(deployer != address(0), "deployer address cannot be zero");
         require(bytes(instanceName).length != 0, "invalid name for deployer instance");
 
+        address currentInstance = _deployStrategies[instanceName];
+        require(currentInstance == address(0), "deployer instance with given name already exists");
+
         _deployStrategies[instanceName] = deployer;
     }
 

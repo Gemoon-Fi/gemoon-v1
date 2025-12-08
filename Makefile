@@ -1,5 +1,5 @@
 include .env
-export RPC=https://rpc.monad.xyz
+export RPC=https://magical-proud-owl.monad-mainnet.quiknode.pro/bd6875c9855ba376e6194795d2dfe8c439c7d222/
 
 deploy-spin:
 	@echo PRIVKEY: $(PRIVATE_KEY)
@@ -9,9 +9,9 @@ deploy-gemoon:
 	@echo PRIVKEY: $(PRIVATE_KEY)
 	forge script --via-ir --ffi ./script/GemoonDeploy.sol:DeployGemoon --slow --legacy -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
 
-change-ownership:
+configure-contracts:
 	@echo PRIVKEY: $(PRIVATE_KEY)
-	forge script --via-ir --ffi ./script/GemoonDeploy.sol:ChangePermissions --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
+	cd ./script && node configure.js
 
 upgrade-lpmanager-proxy:
 	@echo PRIVKEY: $(PRIVATE_KEY)
