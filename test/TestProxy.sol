@@ -73,6 +73,7 @@ contract TestProxy is Test {
         console.log("Current owner: ", OwnableUpgradeable(proxy).owner());
         console.log("MSG SENDER: ", msg.sender);
 
+        vm.prank(msg.sender);
         OwnableUpgradeable(proxy).transferOwnership(newOwner);
 
 
