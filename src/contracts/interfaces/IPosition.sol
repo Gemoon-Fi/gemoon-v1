@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.21;
 
+import {PoolId} from "@uniswap-v4-core/types/PoolId.sol";
+
 type PositionID is bytes32;
 
 struct DeploymentInfo {
@@ -9,15 +11,15 @@ struct DeploymentInfo {
     int24 lowerTick;
     int24 upperTick;
     uint256 positionId;
-    address poolId;
+    PoolId poolId;
     address rewardRecipient;
     address creatorAdmin;
     IFeeCollector feeCollector;
 }
 
 /// @return bytes32 keccak256 hash of position that will be its ID.
-function positionID(address pool, address admin) pure returns (PositionID) {
-    return PositionID.wrap((keccak256(abi.encodePacked(pool, admin))));
+function positionID(PoolId pool, address admin) pure returns (PositionID) {
+    return PositionID.wrap((keccak256(abi.encodePacked(PoolId.unwrap(pool), admin))));
 }
 
 interface IPositionDeployer {
@@ -26,7 +28,7 @@ interface IPositionDeployer {
         address creator,
         address deployedToken,
         address pairToken,
-        address pool,
+        PoolId pool,
         uint160 sqrtX96Price
     ) external returns (DeploymentInfo memory);
 }
@@ -34,7 +36,7 @@ interface IPositionDeployer {
 interface IFeeCollector {
     function collectRewards(
         address creator,
-        address pool
+        PoolId pool
     ) external returns (uint256 amount0, uint256 amount1);
 }
 

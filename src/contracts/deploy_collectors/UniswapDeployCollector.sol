@@ -4,15 +4,20 @@ pragma solidity ^0.8.21;
 import {IPositionCreator, IFeeCollector, DeploymentInfo, PositionID, positionID} from "../interfaces/IPosition.sol";
 import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {INonfungiblePositionManager} from "@uniswap-v3-periphery/interfaces/INonfungiblePositionManager.sol";
-import {IUniswapV3Pool} from "@uniswap-v3-core/interfaces/IUniswapV3Pool.sol";
-import "@uniswap-v3-core/libraries/TickMath.sol";
+import {IPositionManager} from "@uniswap-v4-periphery/interfaces/IPositionManager.sol";
+import {Actions} from "@uniswap-v4-periphery/libraries/Actions.sol";
+import {LiquidityAmounts} from "@uniswap-v4-periphery/libraries/LiquidityAmounts.sol";
+import {IAllowanceTransfer} from "permit2/src/interfaces/IAllowanceTransfer.sol";
+import {TickMath} from "@uniswap-v4-core/libraries/TickMath.sol";
+import {PoolKey} from "@uniswap-v4-core/types/PoolKey.sol";
+import {Currency} from "@uniswap-v4-core/types/Currency.sol";
+import {IHooks} from "@uniswap-v4-core/interfaces/IHooks.sol";
+import {PoolId} from "@uniswap-v4-core/types/PoolId.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {PoolAddress} from "@uniswap-v3-periphery/libraries/PoolAddress.sol";
 import "../utils/Ticks.sol";
 import "../interfaces/IGemoon.sol";
 
-/// @title Gemoon UniswapV3 position deployer.
+/// @title Gemoon UniswapV4 position deployer.
 contract UniswapDeployCollector is IPositionCreator, IERC721Receiver, Ownable {
     event PositionCreated(
         uint256 positionId,
@@ -23,8 +28,10 @@ contract UniswapDeployCollector is IPositionCreator, IERC721Receiver, Ownable {
     );
 
     mapping(PositionID => uint256) private _nftPositions;
+    mapping(PositionID => PoolKey) private _poolKeys;
 
-    INonfungiblePositionManager public positionManager;
+    IPositionManager public positionManager;
+    IAllowanceTransfer public permit2;
     address public lpManager;
 
     error NftPositionNotFound(string);
@@ -46,15 +53,18 @@ contract UniswapDeployCollector is IPositionCreator, IERC721Receiver, Ownable {
 
     constructor(
         address uniswapPositionManager,
+        address permit2_,
         address lpManager_
     ) Ownable(lpManager_) {
         require(
             uniswapPositionManager != address(0),
             "Position manager address cannot be zero"
         );
+        require(permit2_ != address(0), "Permit2 address cannot be zero");
         require(lpManager_ != address(0), "LPmanager address cannot be zero");
 
-        positionManager = INonfungiblePositionManager(uniswapPositionManager);
+        positionManager = IPositionManager(uniswapPositionManager);
+        permit2 = IAllowanceTransfer(permit2_);
         lpManager = lpManager_;
     }
 
@@ -64,10 +74,13 @@ contract UniswapDeployCollector is IPositionCreator, IERC721Receiver, Ownable {
 
     function _registerPosition(
         address creator,
-        address pool,
-        uint256 positionId
+        PoolId pool,
+        uint256 positionId,
+        PoolKey memory poolKey
     ) internal {
-        _nftPositions[positionID(pool, creator)] = positionId;
+        PositionID posId = positionID(pool, creator);
+        _nftPositions[posId] = positionId;
+        _poolKeys[posId] = poolKey;
     }
 
     /// @inheritdoc IERC721Receiver
@@ -86,64 +99,77 @@ contract UniswapDeployCollector is IPositionCreator, IERC721Receiver, Ownable {
         return this.onERC721Received.selector;
     }
 
+    event Received(address indexed from, uint256 tokenId);
+
+    /// @dev grants the position manager a Permit2 allowance for `token`, routed through the
+    /// standard two-step Permit2 approval (ERC20 -> Permit2, Permit2 -> spender).
+    function _approveViaPermit2(address token, uint256 amount) internal {
+        if (amount == 0) {
+            return;
+        }
+
+        IERC20(token).approve(address(permit2), amount);
+        permit2.approve(token, address(positionManager), uint160(amount), uint48(block.timestamp + 1 hours));
+    }
+
     /// @notice claim rewards from uniswap position.
     /// @dev only LPManager can call this method.
     function collectRewards(
         address creator,
-        address pool
+        PoolId pool
     ) external override onlyOwner returns (uint256 amount0, uint256 amount1) {
-        uint256 nftPosition = _nftPositions[positionID(pool, creator)];
+        PositionID posId = positionID(pool, creator);
+        uint256 nftPosition = _nftPositions[posId];
 
         if (nftPosition <= 0) {
             revert NftPositionNotFound("nft position not found");
         }
 
-        (amount0, amount1) = positionManager.collect(
-            INonfungiblePositionManager.CollectParams({
-                tokenId: nftPosition,
-                recipient: lpManager,
-                amount0Max: type(uint128).max,
-                amount1Max: type(uint128).max
-            })
-        );
+        PoolKey memory poolKey = _poolKeys[posId];
+        Currency currency0 = poolKey.currency0;
+        Currency currency1 = poolKey.currency1;
+
+        IERC20 token0 = IERC20(Currency.unwrap(currency0));
+        IERC20 token1 = IERC20(Currency.unwrap(currency1));
+
+        uint256 balance0Before = token0.balanceOf(lpManager);
+        uint256 balance1Before = token1.balanceOf(lpManager);
+
+        bytes memory actions = abi.encodePacked(uint8(Actions.DECREASE_LIQUIDITY), uint8(Actions.TAKE_PAIR));
+
+        bytes[] memory params = new bytes[](2);
+        // liquidity=0 decrease only settles the fees accrued by the position.
+        params[0] = abi.encode(nftPosition, uint256(0), uint128(0), uint128(0), bytes(""));
+        params[1] = abi.encode(currency0, currency1, lpManager);
+
+        positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp);
+
+        amount0 = token0.balanceOf(lpManager) - balance0Before;
+        amount1 = token1.balanceOf(lpManager) - balance1Before;
 
         return (amount0, amount1);
     }
-
-    event Received(address indexed from, uint256 tokenId);
 
     function deployPosition(
         address /* positionHolder */,
         address creator,
         address deployedToken,
         address pairToken,
-        address pool,
+        PoolId pool,
         uint160 sqrtX96Price
     ) external override returns (DeploymentInfo memory) {
-        require(
-            IERC20(deployedToken).approve(
-                address(positionManager),
-                INITIAL_SUPPLY_X18
-            ),
-            "Deployed token0 approval failed"
-        );
-        require(
-            IERC20(pairToken).approve(
-                address(positionManager),
-                INITIAL_SUPPLY_X18
-            ),
-            "Deployed token1 approval failed"
-        );
-
         address tokenA = deployedToken;
         address tokenB = pairToken;
         (address token0, address token1) = tokenA < tokenB
             ? (tokenA, tokenB)
             : (tokenB, tokenA);
-        PoolAddress.PoolKey memory poolKey = PoolAddress.PoolKey({
-            token0: token0,
-            token1: token1,
-            fee: FEE_TIER
+
+        PoolKey memory poolKey = PoolKey({
+            currency0: Currency.wrap(token0),
+            currency1: Currency.wrap(token1),
+            fee: FEE_TIER,
+            tickSpacing: TICK_SPACING,
+            hooks: IHooks(address(0))
         });
 
         (int24 tickLower, int24 tickUpper, int24 tick) = Ticks.getTicks(
@@ -169,29 +195,37 @@ contract UniswapDeployCollector is IPositionCreator, IERC721Receiver, Ownable {
             "Insufficient token balance"
         );
 
-        INonfungiblePositionManager.MintParams
-            memory params = INonfungiblePositionManager.MintParams({
-                token0: token0,
-                token1: token1,
-                fee: FEE_TIER,
-                tickLower: int24(tickLower),
-                tickUpper: int24(tickUpper),
-                amount0Desired: amount0Desired,
-                amount1Desired: amount1Desired,
-                amount0Min: 0,
-                amount1Min: 0,
-                recipient: address(this),
-                deadline: block.timestamp
-            });
-        uint256 positionId;
-        try positionManager.mint(params) returns (
-            uint256 _positionId,
-            uint128,
-            uint256,
-            uint256
-        ) {
-            positionId = _positionId;
-        } catch {
+        _approveViaPermit2(token0, amount0Desired);
+        _approveViaPermit2(token1, amount1Desired);
+
+        uint256 liquidity = LiquidityAmounts.getLiquidityForAmounts(
+            sqrtX96Price,
+            TickMath.getSqrtPriceAtTick(tickLower),
+            TickMath.getSqrtPriceAtTick(tickUpper),
+            amount0Desired,
+            amount1Desired
+        );
+
+        require(liquidity > 0, "Computed liquidity is zero");
+
+        uint256 positionId = positionManager.nextTokenId();
+
+        bytes memory actions = abi.encodePacked(uint8(Actions.MINT_POSITION), uint8(Actions.SETTLE_PAIR));
+        bytes[] memory params = new bytes[](2);
+        params[0] = abi.encode(
+            poolKey,
+            tickLower,
+            tickUpper,
+            liquidity,
+            uint128(amount0Desired),
+            uint128(amount1Desired),
+            address(this),
+            bytes("")
+        );
+        params[1] = abi.encode(poolKey.currency0, poolKey.currency1);
+
+        try positionManager.modifyLiquidities(abi.encode(actions, params), block.timestamp) {}
+        catch {
             revert MintingFailed(
                 "error minting position, check parameters",
                 token0,
@@ -204,6 +238,7 @@ contract UniswapDeployCollector is IPositionCreator, IERC721Receiver, Ownable {
                 int24(tickUpper)
             );
         }
+
         require(
             positionId > 0,
             "create position failed, position ID must be greater than zero"
@@ -217,7 +252,7 @@ contract UniswapDeployCollector is IPositionCreator, IERC721Receiver, Ownable {
             INITIAL_SUPPLY_X18
         );
 
-        _registerPosition(creator, pool, positionId);
+        _registerPosition(creator, pool, positionId, poolKey);
 
         return
             DeploymentInfo({

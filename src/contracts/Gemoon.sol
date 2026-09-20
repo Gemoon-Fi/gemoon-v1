@@ -8,11 +8,12 @@ import "./interfaces/IToken.sol";
 import "./interfaces/ILPManager.sol";
 import "./utils/Admin.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {INonfungiblePositionManager} from "@uniswap-v3-periphery/interfaces/INonfungiblePositionManager.sol";
-import {PoolAddress} from "@uniswap-v3-periphery/libraries/PoolAddress.sol";
-import {IUniswapV3Factory} from "@uniswap-v3-core/interfaces/IUniswapV3Factory.sol";
 import "./utils/Price.sol";
-import {IUniswapV3Pool} from "@uniswap-v3-core/interfaces/IUniswapV3Pool.sol";
+import {IPoolManager} from "@uniswap-v4-core/interfaces/IPoolManager.sol";
+import {PoolKey} from "@uniswap-v4-core/types/PoolKey.sol";
+import {Currency} from "@uniswap-v4-core/types/Currency.sol";
+import {IHooks} from "@uniswap-v4-core/interfaces/IHooks.sol";
+import {PoolId, PoolIdLibrary} from "@uniswap-v4-core/types/PoolId.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {IPositionCreator, IPositionDeployer, IFeeCollector, DeploymentInfo} from "./interfaces/IPosition.sol";
 import "./utils/Ticks.sol";
@@ -28,7 +29,7 @@ contract GemoonController is Initializable, OwnableUpgradeable, IGemoonControlle
     /// @dev Address of wrapped native token.
     address private _weth;
 
-    IUniswapV3Factory public factory;
+    IPoolManager public poolManager;
 
     /// @dev Version of the Gemoon contract.
     uint64 public constant GEMOON_VERSION = 1;
@@ -37,32 +38,32 @@ contract GemoonController is Initializable, OwnableUpgradeable, IGemoonControlle
         return GEMOON_VERSION;
     }
 
-    function _init(address lpManager_, address factory_, address weth_, address protocolAdmin_) internal {
+    function _init(address lpManager_, address poolManager_, address weth_, address protocolAdmin_) internal {
         require(weth_ != address(0), "WETH address cannot be zero");
 
         __Ownable_init(protocolAdmin_);
 
         require(lpManager_ != address(0), "LP Manager address cannot be zero");
-        require(factory_ != address(0), "Uniswap V3 Factory address cannot be zero");
+        require(poolManager_ != address(0), "Uniswap V4 PoolManager address cannot be zero");
 
-        factory = IUniswapV3Factory(factory_);
+        poolManager = IPoolManager(poolManager_);
         _lpManager = ILPManager(lpManager_);
 
         _weth = weth_;
     }
 
-    function reinitialize(address lpManager_, address factory_, address weth_, address protocolAdmin_)
+    function reinitialize(address lpManager_, address poolManager_, address weth_, address protocolAdmin_)
         external
         reinitializer(getVersion())
     {
-        _init(lpManager_, factory_, weth_, protocolAdmin_);
+        _init(lpManager_, poolManager_, weth_, protocolAdmin_);
     }
 
-    function initialize(address lpManager_, address factory_, address weth_, address protocolAdmin_)
+    function initialize(address lpManager_, address poolManager_, address weth_, address protocolAdmin_)
         public
         initializer
     {
-        _init(lpManager_, factory_, weth_, protocolAdmin_);
+        _init(lpManager_, poolManager_, weth_, protocolAdmin_);
     }
 
     function addDeployStrategyInstance(string calldata instanceName, address deployer) external onlyOwner {
@@ -142,24 +143,30 @@ contract GemoonController is Initializable, OwnableUpgradeable, IGemoonControlle
         address tokenA = deployedToken;
         address tokenB = _weth;
         (address token0, address token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
-        PoolAddress.PoolKey memory poolKey = PoolAddress.PoolKey({token0: token0, token1: token1, fee: FEE_TIER});
-        address pool = factory.createPool(token0, token1, FEE_TIER);
-        require(pool != address(0), "Pool creation failed, check token addresses");
+        PoolKey memory poolKey = PoolKey({
+            currency0: Currency.wrap(token0),
+            currency1: Currency.wrap(token1),
+            fee: FEE_TIER,
+            tickSpacing: TICK_SPACING,
+            hooks: IHooks(address(0))
+        });
         uint160 sqrtX96Price = PriceMath.getSqrtPriceX96(
             token0 == deployedToken ? PRICE_PER_TOKEN : 1e18, token1 == deployedToken ? PRICE_PER_TOKEN : 1e18
         );
 
         (,, int24 tick) = Ticks.getTicks(poolKey, sqrtX96Price, deployedToken, TICK_SPACING, true);
 
-        emit PoolCreated(pool, token0, token1, sqrtX96Price, tick);
+        PoolId poolId = PoolIdLibrary.toId(poolKey);
 
-        try IUniswapV3Pool(pool).initialize(sqrtX96Price) {}
+        emit PoolCreated(poolId, token0, token1, sqrtX96Price, tick);
+
+        try poolManager.initialize(poolKey, sqrtX96Price) returns (int24) {}
         catch {
             revert("Pool initialization failed, check price validity");
         }
 
         DeploymentInfo memory depInfo = deployer.deployPosition(
-            address(_lpManager), rewardsConfig_.creatorAddress, deployedToken, _weth, pool, sqrtX96Price
+            address(_lpManager), rewardsConfig_.creatorAddress, deployedToken, _weth, poolId, sqrtX96Price
         );
 
         return depInfo;

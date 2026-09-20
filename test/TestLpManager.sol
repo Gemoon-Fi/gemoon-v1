@@ -7,11 +7,12 @@ import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "../src/contracts/interfaces/IPosition.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {PoolId} from "@uniswap-v4-core/types/PoolId.sol";
 
 contract PositionFeeCollectorStub is IFeeCollector {
     constructor() {}
 
-    function collectRewards(address, /*creator*/ address /*pool*/ )
+    function collectRewards(address, /*creator*/ PoolId /*pool*/ )
         external
         pure
         returns (uint256 amount0, uint256 amount1)
@@ -20,6 +21,7 @@ contract PositionFeeCollectorStub is IFeeCollector {
     }
 }
 
+/// @dev only used to hand out unique addresses to derive stub PoolIds from in tests.
 contract UniPoolStub {
     address public token0;
     address public token1;
@@ -28,6 +30,10 @@ contract UniPoolStub {
         token0 = token0_;
         token1 = token1_;
     }
+}
+
+function stubPoolId(address a) pure returns (PoolId) {
+    return PoolId.wrap(bytes32(uint256(uint160(a))));
 }
 
 contract StubERC20OnlyTransferToken {
@@ -92,17 +98,17 @@ contract LpManagerTest is Test {
                 lowerTick: 1,
                 upperTick: 2,
                 positionId: 3,
-                poolId: address(0x4),
+                poolId: stubPoolId(address(0x4)),
                 rewardRecipient: address(0x5),
                 creatorAdmin: address(0x5),
                 feeCollector: IFeeCollector(address(0x6))
             })
         );
 
-        PositionID posHash = positionID(address(0x4), address(0x5));
-        (,,,,, address poolId,,,) = lpm.deployments(posHash);
+        PositionID posHash = positionID(stubPoolId(address(0x4)), address(0x5));
+        (,,,,, PoolId poolId,,,) = lpm.deployments(posHash);
 
-        assertEq(poolId, address(0x4), "pool address must be stored in LPManager deployments");
+        assertEq(PoolId.unwrap(poolId), PoolId.unwrap(stubPoolId(address(0x4))), "pool id must be stored in LPManager deployments");
     }
 
     function testCreatorCanClaimRewards_SuccessBecauseInitiatorIsProtocolAdmin() external {
@@ -126,19 +132,19 @@ contract LpManagerTest is Test {
                 lowerTick: 1,
                 upperTick: 2,
                 positionId: 3,
-                poolId: address(uniPool),
+                poolId: stubPoolId(address(uniPool)),
                 rewardRecipient: adminOfPosition,
                 creatorAdmin: adminOfPosition,
                 feeCollector: IFeeCollector(new PositionFeeCollectorStub())
             })
         );
 
-        PositionID posHash = positionID(address(uniPool), address(adminOfPosition));
-        (,,,,, address poolId,,,) = lpm.deployments(posHash);
+        PositionID posHash = positionID(stubPoolId(address(uniPool)), address(adminOfPosition));
+        (,,,,, PoolId poolId,,,) = lpm.deployments(posHash);
 
-        assertEq(poolId, address(uniPool), "pool address must be stored in LPManager deployments");
+        assertEq(PoolId.unwrap(poolId), PoolId.unwrap(stubPoolId(address(uniPool))), "pool id must be stored in LPManager deployments");
 
-        (uint256 amount0, uint256 amount1) = lpm.claimRewards(adminOfPosition, address(uniPool));
+        (uint256 amount0, uint256 amount1) = lpm.claimRewards(adminOfPosition, stubPoolId(address(uniPool)));
 
         assertEq(IERC20(token0).balanceOf(adminOfPosition), 50, "invalid balance");
 
@@ -159,7 +165,7 @@ contract LpManagerTest is Test {
         UniPoolStub uniPool = new UniPoolStub(token0, token1);
 
         vm.expectRevert();
-        lpm.claimRewards(adminOfPosition, address(uniPool));
+        lpm.claimRewards(adminOfPosition, stubPoolId(address(uniPool)));
     }
 
     function testCreatorCanClaimRewards_FailBecauseCreatorAndPoolAddressesIsInvalid() external {
@@ -168,11 +174,11 @@ contract LpManagerTest is Test {
 
         // creator address is invalid
         vm.expectRevert();
-        lpm.claimRewards(address(0x0), address(0x0));
+        lpm.claimRewards(address(0x0), PoolId.wrap(bytes32(0)));
 
         // pool address is invalid
         vm.expectRevert();
-        lpm.claimRewards(address(0x1), address(0x0));
+        lpm.claimRewards(address(0x1), PoolId.wrap(bytes32(0)));
     }
 
     function testShowRewards_Success() external {
@@ -196,19 +202,19 @@ contract LpManagerTest is Test {
                 lowerTick: 1,
                 upperTick: 2,
                 positionId: 3,
-                poolId: address(uniPool),
+                poolId: stubPoolId(address(uniPool)),
                 rewardRecipient: adminOfPosition,
                 creatorAdmin: adminOfPosition,
                 feeCollector: IFeeCollector(new PositionFeeCollectorStub())
             })
         );
 
-        PositionID posHash = positionID(address(uniPool), address(adminOfPosition));
-        (,,,,, address poolId,,,) = lpm.deployments(posHash);
+        PositionID posHash = positionID(stubPoolId(address(uniPool)), address(adminOfPosition));
+        (,,,,, PoolId poolId,,,) = lpm.deployments(posHash);
 
-        assertEq(poolId, address(uniPool), "pool address must be stored in LPManager deployments");
+        assertEq(PoolId.unwrap(poolId), PoolId.unwrap(stubPoolId(address(uniPool))), "pool id must be stored in LPManager deployments");
 
-        lpm.claimRewards(adminOfPosition, address(uniPool));
+        lpm.claimRewards(adminOfPosition, stubPoolId(address(uniPool)));
 
         uint256 rewardForToken0 = lpm.showRewards(token0);
         uint256 rewardForToken1 = lpm.showRewards(token0);
@@ -244,19 +250,19 @@ contract LpManagerTest is Test {
                 lowerTick: 1,
                 upperTick: 2,
                 positionId: 3,
-                poolId: address(uniPool),
+                poolId: stubPoolId(address(uniPool)),
                 rewardRecipient: adminOfPosition,
                 creatorAdmin: adminOfPosition,
                 feeCollector: IFeeCollector(new PositionFeeCollectorStub())
             })
         );
 
-        PositionID posHash = positionID(address(uniPool), address(adminOfPosition));
-        (,,,,, address poolId,,,) = lpm.deployments(posHash);
+        PositionID posHash = positionID(stubPoolId(address(uniPool)), address(adminOfPosition));
+        (,,,,, PoolId poolId,,,) = lpm.deployments(posHash);
 
-        assertEq(poolId, address(uniPool), "pool address must be stored in LPManager deployments");
+        assertEq(PoolId.unwrap(poolId), PoolId.unwrap(stubPoolId(address(uniPool))), "pool id must be stored in LPManager deployments");
 
-        lpm.claimRewards(adminOfPosition, address(uniPool));
+        lpm.claimRewards(adminOfPosition, stubPoolId(address(uniPool)));
 
         uint256 rewardForToken0 = lpm.showRewards(token0);
         uint256 rewardForToken1 = lpm.showRewards(token0);
@@ -294,19 +300,19 @@ contract LpManagerTest is Test {
                 lowerTick: 1,
                 upperTick: 2,
                 positionId: 3,
-                poolId: address(uniPool),
+                poolId: stubPoolId(address(uniPool)),
                 rewardRecipient: adminOfPosition,
                 creatorAdmin: adminOfPosition,
                 feeCollector: IFeeCollector(new PositionFeeCollectorStub())
             })
         );
 
-        PositionID posHash = positionID(address(uniPool), address(adminOfPosition));
-        (,,,,, address poolId,,,) = lpm.deployments(posHash);
+        PositionID posHash = positionID(stubPoolId(address(uniPool)), address(adminOfPosition));
+        (,,,,, PoolId poolId,,,) = lpm.deployments(posHash);
 
-        assertEq(poolId, address(uniPool), "pool address must be stored in LPManager deployments");
+        assertEq(PoolId.unwrap(poolId), PoolId.unwrap(stubPoolId(address(uniPool))), "pool id must be stored in LPManager deployments");
 
-        lpm.claimRewards(adminOfPosition, address(uniPool));
+        lpm.claimRewards(adminOfPosition, stubPoolId(address(uniPool)));
 
         uint256 rewardForToken0 = lpm.showRewards(token0);
         uint256 rewardForToken1 = lpm.showRewards(token0);

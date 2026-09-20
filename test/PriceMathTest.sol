@@ -4,8 +4,7 @@ pragma solidity ^0.8.21;
 import "forge-std/Test.sol";
 import "../src/contracts/utils/Price.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
-import "../src/contracts/utils/Price.sol";
-import "@uniswap-v3-core/libraries/TickMath.sol";
+import {TickMath} from "@uniswap-v4-core/libraries/TickMath.sol";
 
 contract PriceMathTest is Test {
     function testRoundPriceMath() public pure {
@@ -24,7 +23,7 @@ contract PriceMathTest is Test {
             1 * 10 ** 18
         );
 
-        int24 tick = TickMath.getTickAtSqrtRatio(sqrtPriceX96);
+        int24 tick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
 
         assertEq(tick, -138163, "Tick value mismatch");
 

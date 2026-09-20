@@ -17,9 +17,10 @@ contract DeployGemoon is Script {
     function run() public {
         vm.startBroadcast();
 
-        address uniswapPositionManager = vm.envAddress("UNISWAP_POSITION_MANAGER");
+        address uniswapPositionManager = vm.envAddress("POSITION_MANAGER");
+        address permit2 = vm.envAddress("PERMIT2");
         address nativeToken = vm.envAddress("NATIVE_TOKEN_ADDRESS");
-        address uniswapFactory = vm.envAddress("UNISWAP_FACTORY");
+        address uniswapPoolManager = vm.envAddress("POOL_MANAGER");
         uint256 creatorPercent = vm.envUint("CREATOR_FEE_PERCENT");
         address operatorAddress = vm.envAddress("OPERATOR_ADDRESS");
 
@@ -34,7 +35,8 @@ contract DeployGemoon is Script {
         address lpManagerAdminAddress = Upgrades.getAdminAddress(lpManagerProxy);
 
         // ---- DEPLOY GEMOON CONTROLLER ----
-        UniswapDeployCollector strategy = new UniswapDeployCollector(uniswapPositionManager, address(lpManagerProxy));
+        UniswapDeployCollector strategy =
+            new UniswapDeployCollector(uniswapPositionManager, permit2, address(lpManagerProxy));
 
         GemoonController controller = new GemoonController();
 
@@ -43,7 +45,8 @@ contract DeployGemoon is Script {
                 address(controller),
                 msg.sender,
                 abi.encodeCall(
-                    GemoonController.initialize, (address(lpManagerProxy), uniswapFactory, nativeToken, operatorAddress)
+                    GemoonController.initialize,
+                    (address(lpManagerProxy), uniswapPoolManager, nativeToken, operatorAddress)
                 )
             )
         );
@@ -66,8 +69,9 @@ contract DeployGemoon is Script {
         console.log("Controller Proxy admin address: ", address(controllerAdminAddress));
         console.log("CREATOR PERCENT: ", creatorPercent);
         console.log("UNISWAP POSITION MANAGER: ", uniswapPositionManager);
+        console.log("PERMIT2: ", permit2);
         console.log("NATIVE TOKEN: ", nativeToken);
-        console.log("UNISWAP FACTORY: ", uniswapFactory);
+        console.log("UNISWAP POOL MANAGER: ", uniswapPoolManager);
 
         vm.stopBroadcast();
     }
@@ -100,10 +104,9 @@ contract ProxyGemoonControllerUpgrade is Script {
         vm.startBroadcast();
 
         address multisigOwner = vm.envAddress("MULTISIG_OWNER_ADDRESS");
-        address uniswapPositionManager = vm.envAddress("UNISWAP_POSITION_MANAGER");
         address nativeToken = vm.envAddress("NATIVE_TOKEN_ADDRESS");
         address lpManager = vm.envAddress("LP_MANAGER_PROXY_ADDRESS");
-        address uniswapFactory = vm.envAddress("UNISWAP_FACTORY");
+        address uniswapPoolManager = vm.envAddress("POOL_MANAGER");
         address proxyAddress = vm.envAddress("CONTROLLER_PROXY_ADDRESS");
         address proxyAdmin = vm.envAddress("CONTROLLER_PROXY_ADMIN_ADDRESS");
 
@@ -112,7 +115,7 @@ contract ProxyGemoonControllerUpgrade is Script {
         ProxyAdmin(proxyAdmin).upgradeAndCall(
             ITransparentUpgradeableProxy(proxyAddress),
             controllerImpl,
-            abi.encodeCall(GemoonController.reinitialize, (lpManager, uniswapFactory, nativeToken, multisigOwner))
+            abi.encodeCall(GemoonController.reinitialize, (lpManager, uniswapPoolManager, nativeToken, multisigOwner))
         );
 
         vm.stopBroadcast();

@@ -1,12 +1,13 @@
 pragma solidity ^0.8.20;
 
-import "@uniswap-v3-core/libraries/TickMath.sol";
-import {PoolAddress} from "@uniswap-v3-periphery/libraries/PoolAddress.sol";
+import {TickMath} from "@uniswap-v4-core/libraries/TickMath.sol";
+import {PoolKey} from "@uniswap-v4-core/types/PoolKey.sol";
+import {Currency} from "@uniswap-v4-core/types/Currency.sol";
 import "./Price.sol";
 
 library Ticks {
     function getTicks(
-        PoolAddress.PoolKey memory poolKey,
+        PoolKey memory poolKey,
         uint160 sqrtPriceX96,
         address deployedToken,
         int24 tickSpacing,
@@ -16,12 +17,12 @@ library Ticks {
         pure
         returns (int24 lowerTick, int24 upperTick, int24 currentTick)
     {
-        int24 tick = TickMath.getTickAtSqrtRatio(sqrtPriceX96);
+        int24 tick = TickMath.getTickAtSqrtPrice(sqrtPriceX96);
         int40 tickLower;
         int40 tickUpper;
 
         if (useFullRange) {
-            if (poolKey.token0 == deployedToken) {
+            if (Currency.unwrap(poolKey.currency0) == deployedToken) {
                 int40 roundedTick = PriceMath.roundTick(
                     tick + tickSpacing * 2,
                     tickSpacing
@@ -45,7 +46,7 @@ library Ticks {
                 );
             }
         } else {
-            if (poolKey.token0 == deployedToken) {
+            if (Currency.unwrap(poolKey.currency0) == deployedToken) {
                 int40 roundedTick = PriceMath.roundTick(
                     tick + tickSpacing * 2,
                     tickSpacing

@@ -27,3 +27,11 @@ verify-owners:
 
 unit-tests:
 	forge test --show-progress -vv
+
+clean:
+	forge clean
+	rm -rf out
+	rm -rf cache
+
+compile:
+	forge build --force

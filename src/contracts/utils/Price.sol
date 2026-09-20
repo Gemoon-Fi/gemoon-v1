@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@uniswap-v3-core/libraries/TickMath.sol";
-import "@uniswap-v3-core/libraries/FullMath.sol";
+import "@uniswap-v4-core/libraries/FullMath.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 
 library PriceMath {

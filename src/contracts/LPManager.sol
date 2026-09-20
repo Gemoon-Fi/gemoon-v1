@@ -2,7 +2,7 @@
 pragma solidity ^0.8.21;
 
 import {ILPManager} from "./interfaces/ILPManager.sol";
-import {IUniswapV3Pool} from "@uniswap-v3-core/interfaces/IUniswapV3Pool.sol";
+import {PoolId} from "@uniswap-v4-core/types/PoolId.sol";
 import "./interfaces/IGemoon.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./interfaces/IGemoon.sol";
@@ -49,7 +49,7 @@ contract LPManager is Initializable, AccessControlUpgradeable, ILPManager {
     }
 
     /// @inheritdoc ILPManager
-    function positionId(address creator, address pool) public view override returns (uint256) {
+    function positionId(address creator, PoolId pool) public view override returns (uint256) {
         DeploymentInfo storage creatorDeployments = deployments[positionID(pool, creator)];
 
         require(creatorDeployments.positionId != 0, "Position not found");
@@ -63,14 +63,13 @@ contract LPManager is Initializable, AccessControlUpgradeable, ILPManager {
     }
 
     /// @inheritdoc ILPManager
-    function claimRewards(address creator, address pool)
+    function claimRewards(address creator, PoolId pool)
         external
         override
         ownerOrCreator(creator)
         returns (uint256, uint256)
     {
         require(creator != address(0), "Creator address cannot be zero");
-        require(pool != address(0), "Pool address cannot be zero");
 
         PositionID posID = positionID(pool, creator);
 
@@ -86,8 +85,8 @@ contract LPManager is Initializable, AccessControlUpgradeable, ILPManager {
 
         uint256 rcptAmount1 = Percent.subPercent(amount1, creatorFeePercent);
         uint256 rcptAmount0 = Percent.subPercent(amount0, creatorFeePercent);
-        IGemoonToken token0 = IGemoonToken(IUniswapV3Pool(pool).token0());
-        IGemoonToken token1 = IGemoonToken(IUniswapV3Pool(pool).token1());
+        IGemoonToken token0 = IGemoonToken(depInfo.token0);
+        IGemoonToken token1 = IGemoonToken(depInfo.token1);
 
         if (amount0 > 0) {
             token0.transfer(creator, rcptAmount0);

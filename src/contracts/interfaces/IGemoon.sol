@@ -2,6 +2,7 @@
 pragma solidity ^0.8.21;
 
 import "./IToken.sol";
+import {PoolId} from "@uniswap-v4-core/types/PoolId.sol";
 
 struct DeployedToken {
     address creatorAdmin;
@@ -40,7 +41,7 @@ interface IGemoonController {
     );
 
     event PoolCreated(
-        address indexed pool, address indexed token0, address indexed token1, uint256 initialPrice, int24 tick
+        PoolId indexed pool, address indexed token0, address indexed token1, uint256 initialPrice, int24 tick
     );
 
     // admins will be (address(this) + address(msg.sender))
