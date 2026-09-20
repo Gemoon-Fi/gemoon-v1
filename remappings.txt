@@ -8,3 +8,6 @@ permit2/=lib/v4-periphery/lib/permit2/
 @openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/
 @opezeppelin-nu/=lib/openzeppelin-contracts/contracts/
 @oz-upgrades/=lib/openzeppelin-foundry-upgrades/src/
+uniswap-hooks/=lib/uniswap-hooks/src/
+@uniswap/v4-core/=lib/v4-periphery/lib/v4-core/
+@uniswap/v4-periphery/=lib/v4-periphery/
