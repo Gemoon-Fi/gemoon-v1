@@ -1,9 +1,5 @@
 include .env
-export RPC=https://magical-proud-owl.monad-mainnet.quiknode.pro/bd6875c9855ba376e6194795d2dfe8c439c7d222/
-
-deploy-spin:
-	@echo PRIVKEY: $(PRIVATE_KEY)
-	forge script --via-ir --ffi ./script/FortuneWheelDeploy.sol:FortuneWheelDeploy --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
+export RPC=https://ethereum-sepolia-rpc.publicnode.com
 
 deploy-gemoon:
 	@echo PRIVKEY: $(PRIVATE_KEY)
