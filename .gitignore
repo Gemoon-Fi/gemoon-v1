@@ -28,3 +28,4 @@ broadcast/*
 .vscode
 .idea
 .vimrc
+internal_docs/
