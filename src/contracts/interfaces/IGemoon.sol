@@ -20,7 +20,6 @@ struct DeployConfig {
     RewardsConfig rewardsConfig;
 }
 
-uint24 constant FEE_TIER = 10000;
 int24 constant TICK_SPACING = 200;
 
 // If fact amount of MON in pool will be 300_000 MON
