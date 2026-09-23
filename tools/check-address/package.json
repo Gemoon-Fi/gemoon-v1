@@ -1,0 +1,14 @@
+{
+  "name": "check-address",
+  "version": "1.0.0",
+  "description": "Checks whether an address is a contract or an EOA",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "check": "node index.js"
+  },
+  "dependencies": {
+    "dotenv": "17.2.3",
+    "viem": "2.30.6"
+  }
+}
