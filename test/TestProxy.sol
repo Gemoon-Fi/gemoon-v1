@@ -50,7 +50,7 @@ contract TestProxy is Test {
             new TransparentUpgradeableProxy(
                 address(controllerImpl),
                 msg.sender,
-                abi.encodeCall(GemoonController.initialize, (address(1), address(2), address(4), msg.sender))
+                abi.encodeCall(GemoonController.initialize, (address(2), address(4), msg.sender))
             )
         );
 
@@ -64,7 +64,7 @@ contract TestProxy is Test {
             new TransparentUpgradeableProxy(
                 address(controllerImpl),
                 msg.sender,
-                abi.encodeCall(GemoonController.initialize, (address(1), address(2), address(4), msg.sender))
+                abi.encodeCall(GemoonController.initialize, (address(2), address(4), msg.sender))
             )
         );
 

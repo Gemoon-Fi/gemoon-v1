@@ -3,6 +3,7 @@ pragma solidity ^0.8.21;
 
 import "./IToken.sol";
 import {PoolId} from "@uniswap-v4-core/types/PoolId.sol";
+import {AssetConfig} from "./IVault.sol";
 
 struct DeployedToken {
     address creatorAdmin;
@@ -18,6 +19,8 @@ struct RewardsConfig {
 struct DeployConfig {
     TokenConfig tokenConfig;
     RewardsConfig rewardsConfig;
+    /// @dev Reward assets of the Meme vault, chosen by the creator from the vault allowlist.
+    AssetConfig[] vaultAssets;
 }
 
 int24 constant TICK_SPACING = 200;

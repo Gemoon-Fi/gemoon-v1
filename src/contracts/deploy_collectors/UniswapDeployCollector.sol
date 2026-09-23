@@ -156,7 +156,8 @@ contract UniswapDeployCollector is IPositionCreator, IERC721Receiver, Ownable {
         address deployedToken,
         address pairToken,
         PoolId pool,
-        uint160 sqrtX96Price
+        uint160 sqrtX96Price,
+        address hook
     ) external override returns (DeploymentInfo memory) {
         address tokenA = deployedToken;
         address tokenB = pairToken;
@@ -167,9 +168,10 @@ contract UniswapDeployCollector is IPositionCreator, IERC721Receiver, Ownable {
         PoolKey memory poolKey = PoolKey({
             currency0: Currency.wrap(token0),
             currency1: Currency.wrap(token1),
-            fee: FEE_TIER,
+            // Must match the key initialized by GemoonController._configurePool.
+            fee: 0,
             tickSpacing: TICK_SPACING,
-            hooks: IHooks(address(0))
+            hooks: IHooks(hook)
         });
 
         (int24 tickLower, int24 tickUpper, int24 tick) = Ticks.getTicks(

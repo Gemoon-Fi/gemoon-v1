@@ -73,7 +73,7 @@ contract UniswapV4ForkTest is Test {
         PoolKey memory poolKey = PoolKey({
             currency0: Currency.wrap(token0),
             currency1: Currency.wrap(token1),
-            fee: FEE_TIER,
+            fee: 0,
             tickSpacing: TICK_SPACING,
             hooks: IHooks(address(0))
         });
@@ -83,7 +83,7 @@ contract UniswapV4ForkTest is Test {
         PoolId poolId = PoolId.wrap(keccak256("fork-test-pool"));
 
         DeploymentInfo memory depInfo =
-            collector.deployPosition(lpManager, address(this), deployedToken, pairToken, poolId, sqrtX96Price);
+            collector.deployPosition(lpManager, address(this), deployedToken, pairToken, poolId, sqrtX96Price, address(0));
 
         assertGt(depInfo.positionId, 0, "position id must be assigned");
         assertEq(depInfo.token0, token0, "token0 mismatch");
@@ -95,8 +95,9 @@ contract UniswapV4ForkTest is Test {
         assertEq(amount0Before, 0, "no fees should have accrued yet");
         assertEq(amount1Before, 0, "no fees should have accrued yet");
 
-        // trade against the position's one-sided liquidity to accrue real fees, then verify
-        // collectRewards (DECREASE_LIQUIDITY + TAKE_PAIR) actually moves a non-zero amount.
+        // trade against the position's one-sided liquidity, then verify collectRewards
+        // (DECREASE_LIQUIDITY + TAKE_PAIR) still settles. LP fee is 0 by design (the swap fee is
+        // charged by HookManager), so the position accrues nothing.
         PoolSwapTest swapRouter = new PoolSwapTest(IPoolManager(POOL_MANAGER));
         bool pairIsToken0 = pairToken == token0;
         uint256 swapAmount = 1_000 * 1e18;
@@ -116,7 +117,8 @@ contract UniswapV4ForkTest is Test {
         vm.prank(lpManager);
         (uint256 amount0, uint256 amount1) = collector.collectRewards(address(this), poolId);
 
-        assertTrue(amount0 > 0 || amount1 > 0, "fees should have accrued after the swap");
+        assertEq(amount0, 0, "LP fee is 0, no fees should accrue");
+        assertEq(amount1, 0, "LP fee is 0, no fees should accrue");
         assertEq(IERC20(token0).balanceOf(lpManager), amount0, "lpManager token0 balance must match collected amount");
         assertEq(IERC20(token1).balanceOf(lpManager), amount1, "lpManager token1 balance must match collected amount");
     }
