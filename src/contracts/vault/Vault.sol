@@ -4,9 +4,12 @@ pragma solidity 0.8.26;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
-import {Ownable, Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {ReentrancyGuardUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import {Ownable2StepUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {IVault, AssetConfig, VaultInfo} from "../interfaces/IVault.sol";
@@ -31,7 +34,16 @@ import {ISwapAdapter} from "../interfaces/ISwapAdapter.sol";
 ///  - later epoch: credit of the checkpoint epoch is converted at that epoch's rate, epochs in
 ///    between are paid via K, and the credit of the open epoch starts from S_(E-1).
 /// All divisions round down, so claimable rewards never exceed what conversions bought.
-contract Vault is IVault, Ownable2Step, Pausable, ReentrancyGuard {
+///
+/// Deployed behind a TransparentUpgradeableProxy. OZ parents keep their state in ERC-7201
+/// namespaces, the vault's own storage starts at slot 0 and is append-only across upgrades.
+contract Vault is
+    IVault,
+    Initializable,
+    Ownable2StepUpgradeable,
+    PausableUpgradeable,
+    ReentrancyGuardUpgradeable
+{
     using SafeERC20 for IERC20;
 
     // ---------------------------------------------------------------------------------------------
@@ -51,20 +63,23 @@ contract Vault is IVault, Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Constants / immutables
+    // Constants
     // ---------------------------------------------------------------------------------------------
+
+    /// @notice Version of the implementation, bump it together with `reinitialize` migrations.
+    uint64 public constant VAULT_VERSION = 1;
 
     uint256 public constant BPS = 10_000;
     uint256 public constant CREATOR_SHARE_BPS = 1_000; // 10%
     uint256 public constant MAX_ASSETS = 5;
     uint256 public constant PRECISION = 1e36;
 
-    IERC20 private immutable i_usdg;
-
     // ---------------------------------------------------------------------------------------------
-    // Storage
+    // Storage (proxy). Append-only across upgrades: never reorder, retype or remove fields.
     // ---------------------------------------------------------------------------------------------
 
+    /// @dev Set once in `initialize`, `s_accounted` of this token depends on it.
+    IERC20 private s_usdg;
     address private s_controller;
     address private s_hook;
     address private s_keeper;
@@ -113,14 +128,37 @@ contract Vault is IVault, Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Construction
+    // Construction / initialization
     // ---------------------------------------------------------------------------------------------
 
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    /// @notice Initializes the proxy storage. Called once, atomically with the proxy deployment.
     /// @param owner_ Admin of the vault (Ownable2Step).
     /// @param usdg_  Token fees arrive in.
-    constructor(address owner_, address usdg_) Ownable(owner_) {
-        if (usdg_ == address(0)) revert ZeroAddress();
-        i_usdg = IERC20(usdg_);
+    function initialize(address owner_, address usdg_) external initializer {
+        if (owner_ == address(0) || usdg_ == address(0)) revert ZeroAddress();
+
+        __Ownable_init(owner_);
+        __Ownable2Step_init();
+        __Pausable_init();
+        __ReentrancyGuard_init();
+
+        s_usdg = IERC20(usdg_);
+    }
+
+    /// @notice Migration hook of an upgrade, runs once per `VAULT_VERSION`.
+    /// @dev Must be called atomically via `ProxyAdmin.upgradeAndCall`. Owner, USDG and all
+    /// accounting are kept as is; put storage migrations of a new version here.
+    function reinitialize() external reinitializer(getVersion()) {}
+
+    /// @notice Version of this implementation.
+    /// @return Current `VAULT_VERSION`.
+    function getVersion() public pure virtual returns (uint64) {
+        return VAULT_VERSION;
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -133,7 +171,7 @@ contract Vault is IVault, Ownable2Step, Pausable, ReentrancyGuard {
         onlyController
     {
         if (meme == address(0) || creator == address(0)) revert ZeroAddress();
-        if (meme == address(i_usdg)) revert AssetNotAllowed(meme);
+        if (meme == address(s_usdg)) revert AssetNotAllowed(meme);
         VaultInfo storage v = s_vaults[meme];
         if (v.registeredAt != 0) revert VaultAlreadyRegistered(meme);
 
@@ -171,8 +209,8 @@ contract Vault is IVault, Ownable2Step, Pausable, ReentrancyGuard {
         onlyRegistered(meme)
     {
         if (usdgAmount == 0) revert ZeroAmount();
-        address usdg_ = address(i_usdg);
-        uint256 balance = i_usdg.balanceOf(address(this));
+        address usdg_ = address(s_usdg);
+        uint256 balance = IERC20(usdg_).balanceOf(address(this));
         uint256 accounted_ = s_accounted[usdg_];
         uint256 unaccounted = balance > accounted_ ? balance - accounted_ : 0;
         if (unaccounted < usdgAmount) revert UnaccountedBalanceTooLow(unaccounted, usdgAmount);
@@ -227,7 +265,7 @@ contract Vault is IVault, Ownable2Step, Pausable, ReentrancyGuard {
         v.pendingStakerUSDG = 0;
         v.pendingCreatorUSDG = 0;
         v.epoch = e + 1;
-        s_accounted[address(i_usdg)] -= total;
+        s_accounted[address(s_usdg)] -= total;
 
         // Interactions: swaps through the owner-set adapter, guarded by nonReentrant.
         amountsOut = new uint256[](n);
@@ -451,7 +489,7 @@ contract Vault is IVault, Ownable2Step, Pausable, ReentrancyGuard {
 
     /// @inheritdoc IVault
     function usdg() external view returns (address) {
-        return address(i_usdg);
+        return address(s_usdg);
     }
 
     /// @inheritdoc IVault
@@ -662,14 +700,15 @@ contract Vault is IVault, Ownable2Step, Pausable, ReentrancyGuard {
         internal
         returns (uint256 amountOut)
     {
-        if (amountIn == 0 || asset == address(i_usdg)) {
+        IERC20 usdg_ = s_usdg;
+        if (amountIn == 0 || asset == address(usdg_)) {
             amountOut = amountIn;
         } else {
             address adapter = s_swapAdapter;
             if (adapter == address(0)) revert SwapAdapterNotSet();
             uint256 before = IERC20(asset).balanceOf(address(this));
-            i_usdg.safeTransfer(adapter, amountIn);
-            ISwapAdapter(adapter).swap(address(i_usdg), asset, amountIn, minAmountOut, address(this));
+            usdg_.safeTransfer(adapter, amountIn);
+            ISwapAdapter(adapter).swap(address(usdg_), asset, amountIn, minAmountOut, address(this));
             amountOut = IERC20(asset).balanceOf(address(this)) - before;
         }
         if (amountOut < minAmountOut) revert SlippageExceeded(asset, amountOut, minAmountOut);

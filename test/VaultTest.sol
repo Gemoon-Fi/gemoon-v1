@@ -5,6 +5,8 @@ import "forge-std/Test.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {TransparentUpgradeableProxy} from
+    "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
 import {Vault} from "../src/contracts/vault/Vault.sol";
 import {IVault, AssetConfig, VaultInfo} from "../src/contracts/interfaces/IVault.sol";
 import {ISwapAdapter} from "../src/contracts/interfaces/ISwapAdapter.sol";
@@ -52,6 +54,7 @@ abstract contract VaultFixture is Test {
     MockSwapAdapter adapter;
 
     address owner = makeAddr("owner");
+    address proxyAdminOwner = makeAddr("proxyAdminOwner");
     address controller = makeAddr("controller");
     address hook = makeAddr("hook");
     address keeper = makeAddr("keeper");
@@ -68,7 +71,15 @@ abstract contract VaultFixture is Test {
         adapter.setRate(address(aapl), 2e30); // 1 USDG (1e6) -> 2 AAPL (2e18)
         adapter.setRate(address(wbtc), 1e20); // 1 USDG (1e6) -> 1e8 units
 
-        vault = new Vault(owner, address(usdg));
+        vault = Vault(
+            address(
+                new TransparentUpgradeableProxy(
+                    address(new Vault()),
+                    proxyAdminOwner,
+                    abi.encodeCall(Vault.initialize, (owner, address(usdg)))
+                )
+            )
+        );
         vm.startPrank(owner);
         vault.setController(controller);
         vault.setHook(hook);
