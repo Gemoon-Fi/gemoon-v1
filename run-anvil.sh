@@ -1,7 +1,7 @@
 #!/bin/bash
 
 RPC_URL="https://ethereum-sepolia-rpc.publicnode.com"
-BLOCK=${1:-7259602}
+BLOCK=${1:-11766637}
 
 if [ $(which anvil) -eq 1 ]; then
   echo "Anvil is not installed."
