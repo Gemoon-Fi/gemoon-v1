@@ -29,7 +29,8 @@ interface IPositionDeployer {
         address deployedToken,
         address pairToken,
         PoolId pool,
-        uint160 sqrtX96Price
+        uint160 sqrtX96Price,
+        address hook
     ) external returns (DeploymentInfo memory);
 }
 

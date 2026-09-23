@@ -25,6 +25,7 @@ import {
 import {
     Ownable2StepUpgradeable
 } from "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
+import {IVault} from "../interfaces/IVault.sol";
 
 /// @title Gemoon UniswapV4 hook manager.
 /// @notice Charges a fixed 1.25% swap fee, always denominated in `i_pairToken`:
@@ -33,13 +34,15 @@ import {
 /// must be CREATE2-mined to carry the bit pattern of `getHookPermissions`.
 ///
 /// Fee flow:
+///  - pools: only Meme/pairToken pools with LP fee 0 whose Meme has a registered vault.
 ///  - every swap: the fee is taken from the swapper via a hook delta and recorded inside the
-///    PoolManager as ERC6909 claims owned by this hook (`poolManager.mint`).
-///  - end of every swap (`_afterSwap`): all accrued claims are paid out as real tokens, 1/5 to the
-///    protocol recipient and 4/5 to the vault. The swapper pays the gas. The payout runs inside
-///    try/catch: if it fails, the swap still succeeds and the fee stays accrued until the next
-///    successful payout.
-///  - `distribute()`: manual fallback that pays out whatever is accrued.
+///    PoolManager as ERC6909 claims owned by this hook (`poolManager.mint`), and per Meme in
+///    `accrued`.
+///  - end of every swap (`_afterSwap`): the claims accrued for the Meme of the pool are paid out as
+///    real tokens, 1/5 to the protocol recipient and 4/5 to the vault, and the vault is notified
+///    (`IVault.notifyFees`). The swapper pays the gas. The payout runs inside try/catch: if it
+///    fails, the swap still succeeds and the fee stays accrued until the next successful payout.
+///  - `distribute(meme)`: manual fallback that pays out whatever is accrued for `meme`.
 contract HookManager is
     BaseHook,
     IUnlockCallback,
@@ -55,6 +58,9 @@ contract HookManager is
 
     error ZeroAddress();
     error InvalidPoolPair();
+    error InvalidPoolFee();
+    error InvalidFeeBips();
+    error VaultNotRegistered(address meme);
     error NotSelf();
 
     event FeeCharged(
@@ -63,6 +69,7 @@ contract HookManager is
         uint256 amount
     );
     event FeesDistributed(
+        address indexed meme,
         address indexed protocolRecipient,
         address indexed vault,
         uint256 toProtocol,
@@ -91,6 +98,9 @@ contract HookManager is
 
     address public protocolRecipient;
     address public vault;
+    /// @notice Fees charged and not yet paid out, per Meme, in `i_pairToken`.
+    /// @dev Sum over all memes equals the ERC6909 claims of this hook.
+    mapping(address meme => uint256) public accrued;
 
     // ---------------------------------------------------------------------------------------------
     // Construction / initialization
@@ -112,17 +122,21 @@ contract HookManager is
     function initialize(
         address owner_,
         address protocolRecipient_,
-        address vault_
+        address vault_,
+        uint256 feeBips,
+        uint256 protocolFeeBips
     ) public initializer {
-        _init(owner_, protocolRecipient_, vault_);
+        _init(owner_, protocolRecipient_, vault_, feeBips, protocolFeeBips);
     }
 
     function reinitialize(
         address owner_,
         address protocolRecipient_,
-        address vault_
+        address vault_,
+        uint256 feeBips,
+        uint256 protocolFeeBips
     ) external reinitializer(getVersion()) {
-        _init(owner_, protocolRecipient_, vault_);
+        _init(owner_, protocolRecipient_, vault_, feeBips, protocolFeeBips);
     }
 
     function _init(
@@ -133,6 +147,7 @@ contract HookManager is
         uint256 protocolFeeBips
     ) internal {
         if (owner_ == address(0)) revert ZeroAddress();
+        if (feeBips >= BIPS || protocolFeeBips > feeBips) revert InvalidFeeBips();
 
         TOTAL_FEE_BIPS = feeBips;
         PROTOCOL_FEE_BIPS = protocolFeeBips;
@@ -201,6 +216,8 @@ contract HookManager is
     // Hook lifecycle
     // ---------------------------------------------------------------------------------------------
 
+    /// @dev LP fee must be 0: the whole swap fee is charged by the hook in `i_pairToken`.
+    /// The vault must be registered first, otherwise `notifyFees` would revert on every payout.
     function _beforeInitialize(
         address,
         PoolKey calldata poolKey,
@@ -210,6 +227,9 @@ contract HookManager is
             !(poolKey.currency0 == i_pairToken) &&
             !(poolKey.currency1 == i_pairToken)
         ) revert InvalidPoolPair();
+        if (poolKey.fee != 0) revert InvalidPoolFee();
+        address meme = _meme(poolKey);
+        if (!IVault(vault).isRegistered(meme)) revert VaultNotRegistered(meme);
         return IHooks.beforeInitialize.selector;
     }
 
@@ -258,7 +278,7 @@ contract HookManager is
             fee = _chargeFee(key, sender, _abs(amount));
         }
 
-        try this.payout() {} catch (bytes memory reason) {
+        try this.payout(_meme(key)) {} catch (bytes memory reason) {
             emit PayoutFailed(reason);
         }
         return (IHooks.afterSwap.selector, fee);
@@ -289,10 +309,19 @@ contract HookManager is
         uint256 fee = (amount * TOTAL_FEE_BIPS) / BIPS;
         if (fee == 0) return 0;
 
+        accrued[_meme(key)] += fee;
         poolManager.mint(address(this), i_pairToken.toId(), fee);
         emit FeeCharged(key.toId(), sender, fee);
 
         return fee.toInt128();
+    }
+
+    /// @dev The non-pair currency of a pool, i.e. the Meme token.
+    function _meme(PoolKey calldata key) internal view returns (address) {
+        return
+            Currency.unwrap(
+                key.currency0 == i_pairToken ? key.currency1 : key.currency0
+            );
     }
 
     function _abs(int256 x) private pure returns (uint256) {
@@ -303,9 +332,9 @@ contract HookManager is
     // Payout
     // ---------------------------------------------------------------------------------------------
 
-    /// @notice Fees accrued and not yet paid out, in `i_pairToken`.
-    function pendingFees() external view returns (uint256) {
-        return poolManager.balanceOf(address(this), i_pairToken.toId());
+    /// @notice Fees accrued for `meme` and not yet paid out, in `i_pairToken`.
+    function pendingFees(address meme) external view returns (uint256) {
+        return accrued[meme];
     }
 
     function pairToken() external view returns (Currency) {
@@ -315,30 +344,34 @@ contract HookManager is
     /// @notice Automatic payout, called by the hook itself at the end of every swap.
     /// @dev External only so `_afterSwap` can wrap it in try/catch. The PoolManager is already
     /// unlocked during a swap, so burn/take are called directly, without `unlock`.
-    function payout() external {
+    /// @param meme Meme of the pool that was just swapped.
+    function payout(address meme) external {
         if (msg.sender != address(this)) revert NotSelf();
-        _payout();
+        _payout(meme);
     }
 
-    /// @notice Manual fallback: pays out whatever is accrued (e.g. after payouts were failing).
+    /// @notice Manual fallback: pays out whatever is accrued for `meme`
+    ///         (e.g. after payouts were failing).
     /// @dev Must be called outside a swap: opens the PoolManager via `unlock`.
-    function distribute() external {
-        poolManager.unlock("");
+    /// @param meme Meme whose accrued fees are paid out.
+    function distribute(address meme) external {
+        poolManager.unlock(abi.encode(meme));
     }
 
     /// @dev Reached only through `distribute()`.
     function unlockCallback(
-        bytes calldata
+        bytes calldata data
     ) external onlyPoolManager returns (bytes memory) {
-        _payout();
+        _payout(abi.decode(data, (address)));
         return "";
     }
 
-    /// @dev claims -> positive delta for the hook -> real tokens out -> delta back to zero.
+    /// @dev claims -> positive delta for the hook -> real tokens out -> delta back to zero,
+    /// then the vault is told which Meme the fees belong to. A revert anywhere (including in
+    /// `notifyFees`) rolls the whole payout back, `accrued` included.
     /// Requires the PoolManager to be unlocked.
-    function _payout() internal {
-        uint256 id = i_pairToken.toId();
-        uint256 total = poolManager.balanceOf(address(this), id);
+    function _payout(address meme) internal {
+        uint256 total = accrued[meme];
         if (total == 0) return;
 
         uint256 toProtocol = (total * PROTOCOL_FEE_BIPS) / TOTAL_FEE_BIPS; // 1/5
@@ -347,10 +380,13 @@ contract HookManager is
         address protocol_ = protocolRecipient;
         address vault_ = vault;
 
-        poolManager.burn(address(this), id, total);
+        accrued[meme] = 0;
+
+        poolManager.burn(address(this), i_pairToken.toId(), total);
         poolManager.take(i_pairToken, protocol_, toProtocol);
         poolManager.take(i_pairToken, vault_, toVault);
+        if (toVault != 0) IVault(vault_).notifyFees(meme, toVault);
 
-        emit FeesDistributed(protocol_, vault_, toProtocol, toVault);
+        emit FeesDistributed(meme, protocol_, vault_, toProtocol, toVault);
     }
 }
