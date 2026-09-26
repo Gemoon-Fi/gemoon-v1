@@ -38,7 +38,7 @@ contract GemoonToken is IGemoonToken, ERC20, ERC20Permit, ERC20Burnable, Admin {
     }
 
     modifier onlyAdmin() {
-        require(_isAdmin(msg.sender), "Caller is not admin");
+        require(_isAdmin(msg.sender), "Caller is not an admin");
         _;
     }
 

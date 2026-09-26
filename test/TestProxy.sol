@@ -5,44 +5,10 @@ import "forge-std/Test.sol";
 import "forge-std/Script.sol";
 import "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
 import {console} from "forge-std/console.sol";
-import "../src/contracts/LPManager.sol";
 import "../src/contracts/Gemoon.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 
 contract TestProxy is Test {
-    function testProxyLPManagerAdminRole() external {
-        LPManager lpManagerImpl = new LPManager();
-
-        address proxy = address(
-            new TransparentUpgradeableProxy(
-                address(lpManagerImpl), address(msg.sender), abi.encodeCall(LPManager.initialize, (50, msg.sender))
-            )
-        );
-
-        // Default value of admin role is bytes32(0x00)
-        bytes32 adminRole;
-
-        console.logBytes32(adminRole);
-        console.logAddress(msg.sender);
-        console.logAddress(address(this));
-
-        AccessControl proxyLPManager = AccessControl(proxy);
-        assertEq(proxyLPManager.hasRole(adminRole, address(msg.sender)), true, "Caller should be admin of LP manager");
-    }
-
-    function testProxyLPManagerCorrectInitializeData() external {
-        LPManager lpManagerImpl = new LPManager();
-
-        address proxy = address(
-            new TransparentUpgradeableProxy(
-                address(lpManagerImpl), address(msg.sender), abi.encodeCall(LPManager.initialize, (50, msg.sender))
-            )
-        );
-
-        assertEq(uint256(LPManager(proxy).creatorFeePercent()), 50, "Creator percent mismatch");
-    }
-
     function testControllerOwner() external {
         GemoonController controllerImpl = new GemoonController();
 

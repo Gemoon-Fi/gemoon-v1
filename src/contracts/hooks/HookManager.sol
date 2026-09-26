@@ -87,9 +87,8 @@ contract HookManager is
 
     uint256 public constant BIPS = 10_000;
     uint256 public TOTAL_FEE_BIPS = 125; // 1.25%
-    uint256 public PROTOCOL_FEE_BIPS = 25; // 0.25%, vault gets the remaining 1%
+    uint256 public PROTOCOL_FEE_BIPS = 50; // 0.5%, vault gets the remaining 1%
 
-    /// @dev Immutable so it resolves from implementation bytecode under the proxy's delegatecall.
     Currency private immutable i_pairToken;
 
     // ---------------------------------------------------------------------------------------------
@@ -387,7 +386,7 @@ contract HookManager is
         poolManager.take(i_pairToken, protocol_, toProtocol);
         poolManager.take(i_pairToken, vault_, toVault);
         if (toVault != 0) IVault(vault_).notifyFees(meme, toVault);
-        if (toVault != 0) IVault(vault_).convertFees(meme, toVault);
+        // if (toVault != 0) IVault(vault_).convertFees(meme, toVault);
 
         emit FeesDistributed(meme, protocol_, vault_, toProtocol, toVault);
     }

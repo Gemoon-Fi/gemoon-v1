@@ -2,14 +2,11 @@ pragma solidity ^0.8.21;
 
 import "forge-std/Script.sol";
 import {GemoonController} from "../src/contracts/Gemoon.sol";
-import {LPManager} from "../src/contracts/LPManager.sol";
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
 import "@openzeppelin/contracts/proxy/transparent/ProxyAdmin.sol";
 import "@oz-upgrades/Upgrades.sol";
-import "../src/contracts/deploy_collectors/UniswapDeployCollector.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
-import "../src/contracts/interfaces/IPosition.sol";
 import {Vault} from "../src/contracts/vault/Vault.sol";
 
 contract DeployGemoon is Script {

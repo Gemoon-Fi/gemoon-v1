@@ -16,10 +16,6 @@ deploy-vault:
 upgrade-vault-proxy:
 	forge script --via-ir ./script/GemoonDeploy.sol:ProxyVaultUpgrade --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
 
-upgrade-lpmanager-proxy:
-	@echo PRIVKEY: $(PRIVATE_KEY)
-	forge script --via-ir ./script/ProxyLPManagerDeploy.sol:ProxyLPManagerUpgrade --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
-
 upgrade-controller-proxy:
 	@echo PRIVKEY: $(PRIVATE_KEY)
 	forge script --via-ir ./script/ProxyGemoonControllerDeploy.sol:ProxyGemoonControllerUpgrade --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast

@@ -5,7 +5,6 @@ import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "./interfaces/IGemoon.sol";
 import "./Deployer.sol";
 import "./interfaces/IToken.sol";
-import "./interfaces/ILPManager.sol";
 import "./utils/Admin.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "./utils/Price.sol";
@@ -45,8 +44,6 @@ contract GemoonController is
 
     event HookUpdated(address indexed hook);
     event VaultUpdated(address indexed vault);
-
-    bool private _wethInitialApproved = false;
 
     mapping(string => address) private _deployStrategies;
 
@@ -103,32 +100,14 @@ contract GemoonController is
         _init(poolManager_, weth_, protocolAdmin_);
     }
 
-    function addDeployStrategyInstance(
-        string calldata instanceName,
-        address deployer
-    ) external onlyOwner {
-        require(deployer != address(0), "deployer address cannot be zero");
-        require(
-            bytes(instanceName).length != 0,
-            "invalid name for deployer instance"
-        );
-
-        address currentInstance = _deployStrategies[instanceName];
-        require(
-            currentInstance == address(0),
-            "deployer instance with given name already exists"
-        );
-
-        _deployStrategies[instanceName] = deployer;
-    }
-
     /// @notice Sets the hook attached to new pools.
     /// @dev Only owner. The hook must charge fees in the pair token of this controller.
     /// @param hook_ HookManager proxy.
     function setHook(address hook_) external onlyOwner {
         if (hook_ == address(0)) revert InvalidAddress();
         address hookPairToken = IGemoonHook(hook_).pairToken();
-        if (hookPairToken != _weth) revert HookPairTokenMismatch(hookPairToken, _weth);
+        if (hookPairToken != _weth)
+            revert HookPairTokenMismatch(hookPairToken, _weth);
         hook = hook_;
         emit HookUpdated(hook_);
     }
@@ -161,7 +140,8 @@ contract GemoonController is
         if (hook_ == address(0)) revert HookNotSet();
         if (address(vault_) == address(0)) revert VaultNotSet();
         address hookVault = IGemoonHook(hook_).vault();
-        if (hookVault != address(vault_)) revert HookVaultMismatch(hookVault, address(vault_));
+        if (hookVault != address(vault_))
+            revert HookVaultMismatch(hookVault, address(vault_));
 
         TokenConfig memory tokenConfig = config.tokenConfig;
         _validateTokenConfig(config.tokenConfig);
