@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity ^0.8.21;
 
 /// @notice One reward asset of a Meme vault and its share of every conversion.
 /// @param token     Reward asset (e.g. tokenized AAPL, NVDA, wBTC). Must be allowlisted.

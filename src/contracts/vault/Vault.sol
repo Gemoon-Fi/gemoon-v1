@@ -1,19 +1,30 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity ^0.8.21;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import {ReentrancyGuardUpgradeable} from
-    "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
-import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
-import {Ownable2StepUpgradeable} from
-    "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
+import {
+    IERC20Permit
+} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Permit.sol";
+import {
+    SafeERC20
+} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {
+    Initializable
+} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {
+    ReentrancyGuardUpgradeable
+} from "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import {
+    PausableUpgradeable
+} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import {
+    Ownable2StepUpgradeable
+} from "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {IVault, AssetConfig, VaultInfo} from "../interfaces/IVault.sol";
 import {ISwapAdapter} from "../interfaces/ISwapAdapter.sol";
+import {InterfaceChecker} from "../utils/InterfaceChecker.sol";
 
 /// @title Gemoon fee vault.
 /// @notice See {IVault}.
@@ -90,10 +101,12 @@ contract Vault is
 
     mapping(address meme => VaultInfo) private s_vaults;
     mapping(address meme => AssetConfig[]) private s_assets;
-    mapping(address meme => mapping(address account => Staker)) private s_stakers;
+    mapping(address meme => mapping(address account => Staker))
+        private s_stakers;
     mapping(address meme => mapping(address account => mapping(uint256 assetIndex => uint256)))
         private s_owed;
-    mapping(address meme => mapping(uint256 assetIndex => uint256)) private s_creatorOwed;
+    mapping(address meme => mapping(uint256 assetIndex => uint256))
+        private s_creatorOwed;
 
     mapping(address meme => mapping(uint256 epoch => Epoch)) private s_epochs;
     /// @dev A_e,i: stakers' part of the output of epoch e in asset i.
@@ -165,13 +178,34 @@ contract Vault is
     // Registration
     // ---------------------------------------------------------------------------------------------
 
+    function validateAssets(
+        AssetConfig[] calldata assets
+    ) internal returns (bool) {
+        for (uint256 i; i < assets.length; ++i) {
+            if (
+                !InterfaceChecker.supportsInterface(
+                    assets[i].token,
+                    type(IERC20).interfaceId
+                )
+            ) {
+                revert NotERC20(assets[i].token);
+            }
+        }
+    }
+
     /// @inheritdoc IVault
-    function registerVault(address meme, address creator, AssetConfig[] calldata assets)
-        external
-        onlyController
-    {
+    function registerVault(
+        address meme,
+        address creator,
+        AssetConfig[] calldata assets
+    ) external onlyController {
+        assert(
+            validateAssets(assets),
+            "One or more assets do not support IERC20 interface"
+        );
         if (meme == address(0) || creator == address(0)) revert ZeroAddress();
         if (meme == address(s_usdg)) revert AssetNotAllowed(meme);
+
         VaultInfo storage v = s_vaults[meme];
         if (v.registeredAt != 0) revert VaultAlreadyRegistered(meme);
 
@@ -203,17 +237,17 @@ contract Vault is
     // ---------------------------------------------------------------------------------------------
 
     /// @inheritdoc IVault
-    function notifyFees(address meme, uint256 usdgAmount)
-        external
-        onlyHook
-        onlyRegistered(meme)
-    {
+    function notifyFees(
+        address meme,
+        uint256 usdgAmount
+    ) external onlyHook onlyRegistered(meme) {
         if (usdgAmount == 0) revert ZeroAmount();
         address usdg_ = address(s_usdg);
         uint256 balance = IERC20(usdg_).balanceOf(address(this));
         uint256 accounted_ = s_accounted[usdg_];
         uint256 unaccounted = balance > accounted_ ? balance - accounted_ : 0;
-        if (unaccounted < usdgAmount) revert UnaccountedBalanceTooLow(unaccounted, usdgAmount);
+        if (unaccounted < usdgAmount)
+            revert UnaccountedBalanceTooLow(unaccounted, usdgAmount);
 
         s_accounted[usdg_] = accounted_ + usdgAmount;
 
@@ -239,7 +273,10 @@ contract Vault is
     }
 
     /// @inheritdoc IVault
-    function convertFees(address meme, uint256[] calldata minAmountsOut)
+    function convertFees(
+        address meme,
+        uint256[] calldata minAmountsOut
+    )
         external
         onlyKeeper
         nonReentrant
@@ -271,7 +308,9 @@ contract Vault is
         amountsOut = new uint256[](n);
         uint256 spent;
         for (uint256 i; i < n; ++i) {
-            uint256 amountIn = i == n - 1 ? total - spent : (total * assets[i].weightBps) / BPS;
+            uint256 amountIn = i == n - 1
+                ? total - spent
+                : (total * assets[i].weightBps) / BPS;
             spent += amountIn;
             amountsOut[i] = _swap(assets[i].token, amountIn, minAmountsOut[i]);
         }
@@ -303,12 +342,10 @@ contract Vault is
     // ---------------------------------------------------------------------------------------------
 
     /// @inheritdoc IVault
-    function stake(address meme, uint256 amount)
-        external
-        nonReentrant
-        whenNotPaused
-        onlyRegistered(meme)
-    {
+    function stake(
+        address meme,
+        uint256 amount
+    ) external nonReentrant whenNotPaused onlyRegistered(meme) {
         _stake(meme, amount);
     }
 
@@ -321,19 +358,33 @@ contract Vault is
         bytes32 r,
         bytes32 s
     ) external nonReentrant whenNotPaused onlyRegistered(meme) {
-        try IERC20Permit(meme).permit(msg.sender, address(this), amount, deadline, v, r, s) {}
-            catch {}
+        try
+            IERC20Permit(meme).permit(
+                msg.sender,
+                address(this),
+                amount,
+                deadline,
+                v,
+                r,
+                s
+            )
+        {} catch {}
         _stake(meme, amount);
     }
 
     /// @inheritdoc IVault
-    function unstake(address meme, uint256 amount) external nonReentrant onlyRegistered(meme) {
+    function unstake(
+        address meme,
+        uint256 amount
+    ) external nonReentrant onlyRegistered(meme) {
         _checkpoint(meme, msg.sender);
         _unstake(meme, amount);
     }
 
     /// @inheritdoc IVault
-    function claim(address meme) external nonReentrant whenNotPaused onlyRegistered(meme) {
+    function claim(
+        address meme
+    ) external nonReentrant whenNotPaused onlyRegistered(meme) {
         _checkpoint(meme, msg.sender);
         uint256 n = s_assets[meme].length;
         for (uint256 i; i < n; ++i) {
@@ -342,12 +393,10 @@ contract Vault is
     }
 
     /// @inheritdoc IVault
-    function claim(address meme, address[] calldata assets)
-        external
-        nonReentrant
-        whenNotPaused
-        onlyRegistered(meme)
-    {
+    function claim(
+        address meme,
+        address[] calldata assets
+    ) external nonReentrant whenNotPaused onlyRegistered(meme) {
         _checkpoint(meme, msg.sender);
         for (uint256 i; i < assets.length; ++i) {
             _payReward(meme, _assetIndex(meme, assets[i]));
@@ -355,7 +404,9 @@ contract Vault is
     }
 
     /// @inheritdoc IVault
-    function exit(address meme) external nonReentrant whenNotPaused onlyRegistered(meme) {
+    function exit(
+        address meme
+    ) external nonReentrant whenNotPaused onlyRegistered(meme) {
         _checkpoint(meme, msg.sender);
         uint256 staked = s_stakers[meme][msg.sender].amount;
         if (staked != 0) _unstake(meme, staked);
@@ -366,7 +417,9 @@ contract Vault is
     }
 
     /// @inheritdoc IVault
-    function emergencyUnstake(address meme) external nonReentrant onlyRegistered(meme) {
+    function emergencyUnstake(
+        address meme
+    ) external nonReentrant onlyRegistered(meme) {
         VaultInfo storage v = s_vaults[meme];
         Staker storage st = s_stakers[meme][msg.sender];
         uint256 amount = st.amount;
@@ -388,12 +441,9 @@ contract Vault is
     // ---------------------------------------------------------------------------------------------
 
     /// @inheritdoc IVault
-    function claimCreatorRewards(address meme)
-        external
-        nonReentrant
-        whenNotPaused
-        onlyRegistered(meme)
-    {
+    function claimCreatorRewards(
+        address meme
+    ) external nonReentrant whenNotPaused onlyRegistered(meme) {
         address creator = s_vaults[meme].creator;
         AssetConfig[] storage assets = s_assets[meme];
         uint256 n = assets.length;
@@ -409,7 +459,10 @@ contract Vault is
     }
 
     /// @inheritdoc IVault
-    function transferCreator(address meme, address newCreator) external onlyRegistered(meme) {
+    function transferCreator(
+        address meme,
+        address newCreator
+    ) external onlyRegistered(meme) {
         VaultInfo storage v = s_vaults[meme];
         if (msg.sender != v.creator) revert NotCreator();
         v.pendingCreator = newCreator;
@@ -473,12 +526,17 @@ contract Vault is
     }
 
     /// @inheritdoc IVault
-    function rescueERC20(address token, address to, uint256 amount) external onlyOwner {
+    function rescueERC20(
+        address token,
+        address to,
+        uint256 amount
+    ) external onlyOwner {
         if (to == address(0)) revert ZeroAddress();
         uint256 balance = IERC20(token).balanceOf(address(this));
         uint256 accounted_ = s_accounted[token];
         uint256 surplus = balance > accounted_ ? balance - accounted_ : 0;
-        if (amount > surplus) revert RescueExceedsSurplus(token, surplus, amount);
+        if (amount > surplus)
+            revert RescueExceedsSurplus(token, surplus, amount);
         IERC20(token).safeTransfer(to, amount);
         emit Rescued(token, to, amount);
     }
@@ -533,7 +591,9 @@ contract Vault is
     }
 
     /// @inheritdoc IVault
-    function getAssets(address meme) external view returns (AssetConfig[] memory) {
+    function getAssets(
+        address meme
+    ) external view returns (AssetConfig[] memory) {
         return s_assets[meme];
     }
 
@@ -548,7 +608,10 @@ contract Vault is
     }
 
     /// @inheritdoc IVault
-    function stakedOf(address meme, address account) external view returns (uint256) {
+    function stakedOf(
+        address meme,
+        address account
+    ) external view returns (uint256) {
         return s_stakers[meme][account].amount;
     }
 
@@ -559,18 +622,24 @@ contract Vault is
     }
 
     /// @inheritdoc IVault
-    function pendingCreditOf(address meme, address account) external view returns (uint256) {
+    function pendingCreditOf(
+        address meme,
+        address account
+    ) external view returns (uint256) {
         (, uint256 credit) = _settle(meme, s_stakers[meme][account]);
         return credit;
     }
 
     /// @inheritdoc IVault
-    function earned(address meme, address account)
+    function earned(
+        address meme,
+        address account
+    )
         external
         view
         returns (address[] memory assets, uint256[] memory amounts)
     {
-        (amounts,) = _settle(meme, s_stakers[meme][account]);
+        (amounts, ) = _settle(meme, s_stakers[meme][account]);
         assets = _assetTokens(meme);
         for (uint256 i; i < amounts.length; ++i) {
             amounts[i] += s_owed[meme][account][i];
@@ -578,7 +647,9 @@ contract Vault is
     }
 
     /// @inheritdoc IVault
-    function creatorAccrued(address meme)
+    function creatorAccrued(
+        address meme
+    )
         external
         view
         returns (address[] memory assets, uint256[] memory amounts)
@@ -654,52 +725,67 @@ contract Vault is
     /// @dev Pure accounting step of `_checkpoint`, see the contract-level comment.
     /// @return owedDelta Converted rewards per asset earned since the checkpoint of `st`.
     /// @return credit    USDG credit of `st` in the open epoch after the checkpoint.
-    function _settle(address meme, Staker memory st)
-        internal
-        view
-        returns (uint256[] memory owedDelta, uint256 credit)
-    {
+    function _settle(
+        address meme,
+        Staker memory st
+    ) internal view returns (uint256[] memory owedDelta, uint256 credit) {
         VaultInfo storage v = s_vaults[meme];
         uint256 n = s_assets[meme].length;
         owedDelta = new uint256[](n);
         uint64 openEpoch = v.epoch;
 
         if (st.epoch == openEpoch) {
-            credit = st.credit + Math.mulDiv(st.amount, v.accUsdPerShare - st.accCheckpoint, PRECISION);
+            credit =
+                st.credit +
+                Math.mulDiv(
+                    st.amount,
+                    v.accUsdPerShare - st.accCheckpoint,
+                    PRECISION
+                );
             return (owedDelta, credit);
         }
 
         uint64 first = st.epoch;
         uint64 lastClosed = openEpoch - 1;
         Epoch storage firstEpoch = s_epochs[meme][first];
-        uint256 firstCredit =
-            st.credit + Math.mulDiv(st.amount, firstEpoch.accEnd - st.accCheckpoint, PRECISION);
+        uint256 firstCredit = st.credit +
+            Math.mulDiv(
+                st.amount,
+                firstEpoch.accEnd - st.accCheckpoint,
+                PRECISION
+            );
 
         for (uint256 i; i < n; ++i) {
             if (firstCredit != 0 && firstEpoch.stakerUsd != 0) {
                 owedDelta[i] = Math.mulDiv(
-                    firstCredit, s_epochAssetOut[meme][first][i], firstEpoch.stakerUsd
+                    firstCredit,
+                    s_epochAssetOut[meme][first][i],
+                    firstEpoch.stakerUsd
                 );
             }
             if (lastClosed > first && st.amount != 0) {
                 owedDelta[i] += Math.mulDiv(
                     st.amount,
-                    s_cumAssetPerShare[meme][lastClosed][i] - s_cumAssetPerShare[meme][first][i],
+                    s_cumAssetPerShare[meme][lastClosed][i] -
+                        s_cumAssetPerShare[meme][first][i],
                     PRECISION
                 );
             }
         }
 
         credit = Math.mulDiv(
-            st.amount, v.accUsdPerShare - s_epochs[meme][lastClosed].accEnd, PRECISION
+            st.amount,
+            v.accUsdPerShare - s_epochs[meme][lastClosed].accEnd,
+            PRECISION
         );
     }
 
     /// @dev Sells `amountIn` USDG for `asset` through the adapter, output by balance difference.
-    function _swap(address asset, uint256 amountIn, uint256 minAmountOut)
-        internal
-        returns (uint256 amountOut)
-    {
+    function _swap(
+        address asset,
+        uint256 amountIn,
+        uint256 minAmountOut
+    ) internal returns (uint256 amountOut) {
         IERC20 usdg_ = s_usdg;
         if (amountIn == 0 || asset == address(usdg_)) {
             amountOut = amountIn;
@@ -708,13 +794,23 @@ contract Vault is
             if (adapter == address(0)) revert SwapAdapterNotSet();
             uint256 before = IERC20(asset).balanceOf(address(this));
             usdg_.safeTransfer(adapter, amountIn);
-            ISwapAdapter(adapter).swap(address(usdg_), asset, amountIn, minAmountOut, address(this));
+            ISwapAdapter(adapter).swap(
+                address(usdg_),
+                asset,
+                amountIn,
+                minAmountOut,
+                address(this)
+            );
             amountOut = IERC20(asset).balanceOf(address(this)) - before;
         }
-        if (amountOut < minAmountOut) revert SlippageExceeded(asset, amountOut, minAmountOut);
+        if (amountOut < minAmountOut)
+            revert SlippageExceeded(asset, amountOut, minAmountOut);
     }
 
-    function _assetIndex(address meme, address asset) internal view returns (uint256) {
+    function _assetIndex(
+        address meme,
+        address asset
+    ) internal view returns (uint256) {
         AssetConfig[] storage assets = s_assets[meme];
         for (uint256 i; i < assets.length; ++i) {
             if (assets[i].token == asset) return i;
@@ -722,7 +818,9 @@ contract Vault is
         revert AssetNotInVault(meme, asset);
     }
 
-    function _assetTokens(address meme) internal view returns (address[] memory tokens) {
+    function _assetTokens(
+        address meme
+    ) internal view returns (address[] memory tokens) {
         AssetConfig[] storage assets = s_assets[meme];
         tokens = new address[](assets.length);
         for (uint256 i; i < assets.length; ++i) {
