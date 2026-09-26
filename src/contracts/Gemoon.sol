@@ -17,7 +17,6 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {
     IPositionCreator,
     IPositionDeployer,
-    IFeeCollector,
     DeploymentInfo
 } from "./interfaces/IPosition.sol";
 import "./utils/Ticks.sol";
