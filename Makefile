@@ -1,5 +1,6 @@
 include .env
-export RPC=https://ethereum-sepolia-rpc.publicnode.com
+export RPC ?= "http://127.0.0.1:8545"
+FORK_RPC ?= "https://ethereum-sepolia-rpc.publicnode.com"
 
 deploy-gemoon:
 	@echo PRIVKEY: $(PRIVATE_KEY)
@@ -37,3 +38,6 @@ clean:
 
 compile:
 	forge build --force
+
+run-evm:
+	anvil --fork-url $(FORK_RPC) --fork-block-number 11766637 --chain-id 1 --balance 100000000
