@@ -178,31 +178,12 @@ contract Vault is
     // Registration
     // ---------------------------------------------------------------------------------------------
 
-    function validateAssets(
-        AssetConfig[] calldata assets
-    ) internal returns (bool) {
-        for (uint256 i; i < assets.length; ++i) {
-            if (
-                !InterfaceChecker.supportsInterface(
-                    assets[i].token,
-                    type(IERC20).interfaceId
-                )
-            ) {
-                revert NotERC20(assets[i].token);
-            }
-        }
-    }
-
     /// @inheritdoc IVault
     function registerVault(
         address meme,
         address creator,
         AssetConfig[] calldata assets
     ) external onlyController {
-        assert(
-            validateAssets(assets),
-            "One or more assets do not support IERC20 interface"
-        );
         if (meme == address(0) || creator == address(0)) revert ZeroAddress();
         if (meme == address(s_usdg)) revert AssetNotAllowed(meme);
 
