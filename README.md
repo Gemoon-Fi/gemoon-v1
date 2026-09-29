@@ -1,66 +1,160 @@
-## Foundry
+# Gemoon
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+Протокол запуска мем-токенов на Uniswap V4. Один вызов контроллера создаёт токен, пул Meme/USDG
+с хуком и одностороннюю позицию со всей эмиссией. Хук берёт комиссию с каждого свопа в USDG,
+волт делит её между создателем и стейкерами мема и конвертирует в наградные активы.
 
-Foundry consists of:
+## Контракты
 
--   **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
--   **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
--   **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
--   **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+| Контракт | Файл | Роль |
+|---|---|---|
+| GemoonController | `src/contracts/Gemoon.sol` | Точка входа: деплой токена, пула и позиции. Прокси, OwnableUpgradeable. |
+| HookManager | `src/contracts/hooks/HookManager.sol` | Хук Uniswap V4: комиссия 1.25% в USDG на каждом свопе, выплата протоколу и волту. Прокси, Ownable2Step, адрес майнится под биты разрешений. |
+| Vault | `src/contracts/vault/Vault.sol` | Один контракт, логический волт на каждый мем: приём комиссий, стейкинг, конвертация, выплаты. Прокси, Ownable2Step. |
+| GemoonToken | `src/contracts/Token.sol` | ERC20 мема с метаданными и админами. Не обновляемый. |
+| PositionDeployer | `src/contracts/utils/PositionDeployer.sol` | Внутренняя библиотека, инлайнится в контроллер: минт позиции через PositionManager и Permit2. Отдельного адреса нет. |
+| Deployer, Ticks | `src/contracts/Deployer.sol`, `src/contracts/utils/Ticks.sol` | Внешние библиотеки, линкуются при деплое. |
 
-## Documentation
+Все ключевые контракты стоят за `TransparentUpgradeableProxy`, у каждого свой `ProxyAdmin`.
+Pair-токен один на весь протокол: контроллер, хук и волт рассчитаны на одну и ту же USDG.
 
-https://book.getfoundry.sh/
+## Флоу взаимодействия
 
-## Usage
+### Развёртывание, один раз
 
-### Build
+`DeployGemoon` поднимает три прокси в одном прогоне: Vault, HookManager, GemoonController.
+Хук получает адрес волта в `initialize`, контроллер получает хук, волт и PositionManager сеттерами,
+волт получает хук и контроллер. В конце владение уходит на `GEMOON_OWNER`, волту нужен отдельный
+`acceptOwnership`. Владелец волта затем настраивает allowlist наградных активов, keeper и swap
+adapter.
 
-```shell
-$ forge build
+Полуразвёрнутое состояние безопасно: контроллер не деплоит токены без хука, волта и
+PositionManager, хук не пускает пулы незарегистрированных мемов, волт принимает комиссии только от
+своего хука.
+
+### Жизненный цикл мема
+
+1. **Создание.** Создатель зовёт `GemoonController.deployToken(config)` с конфигом токена,
+   адресами наград и набором наградных активов с весами. Контроллер минтит токен себе, добавляет
+   себя и вызывающего в админы токена, регистрирует мем в волте, инициализирует пул Meme/USDG с
+   хуком и нулевым LP fee и минтит всю эмиссию в одностороннюю позицию выше стартовой цены.
+   NFT позиции остаётся у контроллера. События: `TokenCreated`, `PoolCreated`, `PositionCreated`.
+
+2. **Торговля.** Трейдеры ходят через любой роутер Uniswap V4, например Universal Router.
+   На каждом свопе хук берёт 1.25% в USDG: в `beforeSwap`, если сумма USDG задана пользователем,
+   иначе в `afterSwap`. Комиссия копится в хуке как ERC6909-клеймы, отдельно по каждому мему.
+
+3. **Выплата комиссии.** В конце каждого свопа хук пытается выплатить всё накопленное по этому
+   мему: 0.25% протоколу на `protocolRecipient`, 1% волту, и сразу зовёт `Vault.notifyFees`.
+   Если в PoolManager пока нет USDG, как на свежем деплое, выплата откатывается внутри try/catch,
+   своп проходит, сумма остаётся начисленной. Забрать её потом может кто угодно через
+   `HookManager.distribute(meme)`, или это сделает следующий своп.
+
+4. **Учёт в волте.** `notifyFees` делит пришедший USDG: 10% создателю, остальное pro rata текущим
+   стейкерам мема. Если стейкеров нет, всё создателю. Стейкер зарабатывает только на комиссиях,
+   пришедших пока он застейкан. Начисления копятся в USDG внутри открытой эпохи.
+
+5. **Конвертация.** Keeper зовёт `Vault.convertFees(meme, minAmountsOut)`. Волт меняет весь USDG
+   открытой эпохи на наградные активы по весам через swap adapter и закрывает эпоху. Только после
+   этого начисления становятся claimable, уже в купленных активах.
+
+6. **Стейкеры и создатель.** Держатели мема стейкают его через `stake` или `stakeWithPermit`,
+   забирают награды через `claim` целиком или по выбранным активам, снимают стейк через `unstake`
+   с сохранением наград, либо `exit` для всего сразу. `emergencyUnstake` возвращает стейк даже на
+   паузе. Создатель получает долю через `claimCreatorRewards`, вызвать может любой, деньги всегда
+   идут текущему создателю. Роль создателя передаётся в два шага: `transferCreator`,
+   `acceptCreator`.
+
+### Администрирование
+
+- **Токен.** Админы меняют картинку и описание, состав админов меняется через
+  `GemoonController.changeAdmin`.
+- **Волт.** Владелец управляет allowlist активов, keeper, swap adapter и паузой. Пауза
+  останавливает стейк, клейм и конвертацию, но не приём комиссий и не вывод стейка.
+  `rescueERC20` для ошибочно присланных токенов.
+- **Хук.** Владелец меняет получателя протокольной доли и адрес волта.
+- **Контроллер.** Владелец меняет хук, волт, PositionManager с Permit2 и выводит средства с
+  самого контроллера.
+- **Апгрейды.** Каждый прокси обновляется через свой ProxyAdmin скриптами `ProxyVaultUpgrade`,
+  `ProxyHookUpgrade`, `ProxyGemoonControllerUpgrade`. `VerifyWiring` проверяет, что связка цела.
+
+## Параметры протокола
+
+| Параметр | Значение | Где |
+|---|---|---|
+| Эмиссия мема | 100 000 000 000 токенов, 18 знаков | `INITIAL_SUPPLY_X18`, `IGemoon.sol` |
+| Стартовая цена | 300 000 мемов за 1 USDG (в единицах 1e18) | `PRICE_PER_TOKEN`, `IGemoon.sol` |
+| Tick spacing | 200 | `TICK_SPACING`, `IGemoon.sol` |
+| LP fee пула | 0, комиссию берёт хук | `Gemoon.sol` |
+| Комиссия хука | 1.25% (125 bips), из них 0.25% протоколу | `HookManager.initialize`, настраивается |
+| Доля создателя | 10% от каждой комиссии | `CREATOR_SHARE_BPS`, `Vault.sol` |
+| Наградных активов на волт | до 5 | `MAX_ASSETS`, `Vault.sol` |
+
+## Развёртывание
+
+Переменные окружения лежат в `.env`, файл не коммитится, шаблон в `.env.example`.
+Пустое значение считается незаданным.
+
+| Переменная | Назначение |
+|---|---|
+| `RPC`, `PRIVATE_KEY` | Сеть и ключ деплоера. |
+| `POOL_MANAGER`, `POSITION_MANAGER`, `PERMIT2` | Uniswap V4 в целевой сети. |
+| `USDG_ADDRESS` | Pair-токен всех пулов. |
+| `PROTOCOL_FEE_RECIPIENT` | Получатель протокольной доли комиссии. |
+| `HOOK_TOTAL_FEE_BIPS`, `HOOK_PROTOCOL_FEE_BIPS` | Комиссия хука, по умолчанию 125 и 25. |
+| `VAULT_KEEPER`, `VAULT_SWAP_ADAPTER`, `VAULT_ALLOWED_ASSETS` | Настройки волта. Адаптер и allowlist можно задать позже. |
+| `GEMOON_OWNER`, `GEMOON_PROXY_ADMIN_OWNER` | Итоговый владелец контрактов и владелец ProxyAdmin. По умолчанию деплоер. |
+| `*_PROXY_ADDRESS`, `*_PROXY_ADMIN_ADDRESS` | Заполняются из логов деплоя, нужны апгрейдам и проверке. |
+
+```sh
+make deploy-gemoon            # Vault + HookManager + GemoonController, связка, владение
+make verify-wiring            # read-only проверка, что контракты указывают друг на друга
+make upgrade-vault-proxy      # новая имплементация волта
+make upgrade-hook-proxy       # новая имплементация хука, адрес майнится под биты разрешений
+make upgrade-controller-proxy # новая имплементация контроллера
+make deploy-vault             # отдельный волт, если нужно заменить существующий
 ```
 
-### Test
+После `deploy-gemoon` владелец волта зовёт `acceptOwnership`, если он отличается от деплоера.
+Хук и контроллер принадлежат владельцу сразу. Адреса из логов переносятся в `.env`.
 
-```shell
-$ forge test
+Хук деплоится через CREATE2: и имплементация, и прокси должны нести биты разрешений в адресе.
+Скрипт сам подбирает соль и проверяет результат. В сети должен существовать детерминированный
+CREATE2-деплоер `0x4e59b44847b379578588920cA78FbF26c0B4956C`.
+
+## Тесты
+
+```sh
+make unit-tests     # всё, кроме test/fork
+make devnet-tests   # форк девнета, нужен DEVNET_RPC
+forge test          # всё вместе; если DEVNET_RPC задан в .env, форк-тесты тоже запустятся
 ```
 
-### Format
+- `test/VaultTest.sol`, `test/VaultUpgradeTest.sol`: волт, включая инварианты и апгрейд.
+- `test/DeployGemoonTest.sol`: логика скрипта деплоя, связка, владение, биты адреса хука,
+  чтение параметров из окружения.
+- `test/ControllerDeployTokenTest.sol`: end-to-end в процессе теста. Настоящие PoolManager,
+  PositionManager и Permit2 из `lib/`, деплой через скрипт, `deployToken`, свопы, путь комиссии
+  до протокола и волта, fuzz на инвариант «протокол + волт + начислено = 1.25% оборота».
+- `test/fork/ControllerDevnetForkTest.sol`: то же против девнета, Sepolia-форк с Uniswap V4,
+  chain id 1337. Ничего не бродкастит, форк живёт внутри прогона. `DEVNET_BLOCK` фиксирует блок.
 
-```shell
-$ forge fmt
-```
+Форк-тест проверяет логику контрактов один в один с сетью, но не проверяет инфраструктуру
+транзакций: лимит размера контракта, газ-лимит блока, реальный CREATE2-деплоер и путь
+`run()` скрипта. Для этого нужен живой прогон скриптом с broadcast.
 
-### Gas Snapshots
+## Известные особенности и tech debt
 
-```shell
-$ forge snapshot
-```
-
-### Anvil
-
-```shell
-$ anvil
-```
-
-### Deploy
-
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+- **Vault больше лимита EIP-170.** Рантайм 27 188 байт при лимите 24 576. На Monad лимит выше,
+  на Ethereum-подобных сетях и на anvil без `--disable-code-size-limit` деплой волта упадёт.
+  Форк-тесты этого не ловят.
+- **Первый своп не выплачивает комиссию.** Роутер переводит USDG свопера уже после `afterSwap`,
+  а все пулы односторонние, USDG в PoolManager появляется только от покупок. Комиссия остаётся
+  начисленной до следующего свопа или `distribute`.
+- **Ликвидность заперта.** NFT позиции лежит на контроллере, функции управлять ей у контроллера
+  нет. Забрать ликвидность можно только апгрейдом.
+- **`ProxyGemoonControllerUpgrade` зовёт `reinitialize`** под `reinitializer(GEMOON_VERSION)`, а
+  версия равна 1, которую уже занял `initialize`. Апгрейд с вызовом упадёт, пока версия не
+  поднята. Апгрейд хука и волта пропускает вызов, если версия не изменилась.
+- **`deployToken` изменил ABI в 2.0:** параметр имени стратегии убран, интеграции нужно обновить.
+- **Мёртвый слот `_deployStrategies`** в контроллере сохранён ради storage layout прокси.

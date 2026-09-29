@@ -1,5 +1,5 @@
 include .env
-export RPC ?= "http://127.0.0.1:8545"
+export RPC ?= "https://anvil.devinside.tech"
 FORK_RPC ?= "https://ethereum-sepolia-rpc.publicnode.com"
 
 # Vault + HookManager + GemoonController, wired, in one run.

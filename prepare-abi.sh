@@ -13,3 +13,11 @@ for i in ${interfaces}; do
 	git apply --allow-empty /tmp/${abi_json}
 	rm /tmp/${abi_json}
 done
+
+# Update README:
+rm ${PWD}/../README.md || true
+
+echo '# Addresses:' > ${PWD}/../abi/README.md
+grep -Pi 'proxy_address=\K0x[A-Za-z0-9]{40}' ./.env | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> ${PWD}/../abi/README.md
+echo '## Usage:' >> ${PWD}/../abi/README.md
+cat ./README-ABI.md >> ${PWD}/../abi/README.md
