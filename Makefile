@@ -27,7 +27,9 @@ unit-tests:
 
 # Fork tests against the devnet, need DEVNET_RPC (see .env.example).
 devnet-tests:
-	DEVNET_RPC=$(DEVNET_RPC) DEVNET_BLOCK=$(DEVNET_BLOCK) forge test --match-path "test/fork/*" -vv
+	DEVNET_RPC=$(DEVNET_RPC) DEVNET_BLOCK=$(DEVNET_BLOCK) OPERATOR_ADDRESS=$(OPERATOR_ADDRESS) forge test --match-path "test/fork/*" -vv
+
+full-tests: unit-tests devnet-tests
 
 clean:
 	forge clean
