@@ -8,6 +8,7 @@ via_ir = true
 ast = true
 build_info = true
 extra_output = ["storageLayout"]
+optimizer = true
 
 
 

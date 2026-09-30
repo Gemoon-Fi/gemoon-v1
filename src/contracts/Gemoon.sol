@@ -14,11 +14,13 @@ import {Currency} from "@uniswap-v4-core/types/Currency.sol";
 import {IHooks} from "@uniswap-v4-core/interfaces/IHooks.sol";
 import {PoolId, PoolIdLibrary} from "@uniswap-v4-core/types/PoolId.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {PositionDeployer} from "./utils/PositionDeployer.sol";
 import {
-    IPositionCreator,
-    IPositionDeployer,
-    DeploymentInfo
-} from "./interfaces/IPosition.sol";
+    IPositionManager
+} from "@uniswap-v4-periphery/interfaces/IPositionManager.sol";
+import {
+    IAllowanceTransfer
+} from "permit2/src/interfaces/IAllowanceTransfer.sol";
 import "./utils/Ticks.sol";
 import {IVault} from "./interfaces/IVault.sol";
 
@@ -40,11 +42,15 @@ contract GemoonController is
     error VaultNotSet();
     error HookPairTokenMismatch(address hookPairToken, address pairToken);
     error HookVaultMismatch(address hookVault, address vault);
+    error VaultPairTokenMismatch(address vaultUsdg, address pairToken);
+    error PositionManagerNotSet();
 
     event HookUpdated(address indexed hook);
     event VaultUpdated(address indexed vault);
-
-    mapping(string => address) private _deployStrategies;
+    event PositionManagerUpdated(
+        address indexed positionManager,
+        address indexed permit2
+    );
 
     address private _weth;
 
@@ -56,6 +62,10 @@ contract GemoonController is
     address public hook;
     /// @notice Vault that receives the fees of every Meme and holds its stakes.
     IVault public vault;
+    /// @notice Uniswap V4 PositionManager that mints the initial position of every Meme.
+    IPositionManager public positionManager;
+    /// @notice Permit2 the PositionManager pulls the Meme supply through.
+    IAllowanceTransfer public permit2;
 
     /// @dev Version of the Gemoon contract.
     uint64 public constant GEMOON_VERSION = 1;
@@ -112,32 +122,48 @@ contract GemoonController is
     }
 
     /// @notice Sets the vault new Meme tokens are registered in.
-    /// @dev Only owner. Must be the vault the hook pays fees to.
+    /// @dev Only owner. Must be the vault the hook pays fees to, and it must account fees in the
+    /// pair token of this controller, otherwise every hook payout would revert.
     /// @param vault_ Vault address.
     function setVault(address vault_) external onlyOwner {
         if (vault_ == address(0)) revert InvalidAddress();
+        address vaultUsdg = IVault(vault_).usdg();
+        if (vaultUsdg != _weth) revert VaultPairTokenMismatch(vaultUsdg, _weth);
         vault = IVault(vault_);
         emit VaultUpdated(vault_);
     }
 
-    /// @dev Configuration for deploying a token.
-    /// @notice Entry point for deploying a token.
-    /// @notice If `creatorAddress` is not set in `rewardsConfig`, they will be set to the address of this contract.
+    /// @notice Sets the PositionManager and Permit2 used to mint the initial position of new
+    ///         Memes.
+    /// @dev Only owner.
+    /// @param positionManager_ Uniswap V4 PositionManager.
+    /// @param permit2_         Permit2 contract the PositionManager settles through.
+    function setPositionManager(
+        address positionManager_,
+        address permit2_
+    ) external onlyOwner {
+        if (positionManager_ == address(0) || permit2_ == address(0))
+            revert InvalidAddress();
+        positionManager = IPositionManager(positionManager_);
+        permit2 = IAllowanceTransfer(permit2_);
+        emit PositionManagerUpdated(positionManager_, permit2_);
+    }
+
+    /// @notice Entry point for deploying a Meme: token, its vault, the Meme/pair pool and the
+    ///         initial one-sided position holding the whole supply, owned by this contract.
+    /// @dev If `rewardRecipient` is not set in `rewardsConfig`, it defaults to `creatorAddress`.
+    /// Admins of the token are the given ones plus this contract and the caller.
+    /// @param config Token, rewards and vault configuration.
+    /// @return Address of the new Meme token.
     function deployToken(
-        string memory deployStrategy,
         DeployConfig memory config
     ) external payable override returns (address) {
-        IPositionDeployer deployer = IPositionDeployer(
-            _deployStrategies[deployStrategy]
-        );
-        require(
-            address(deployer) != address(0),
-            "given position deployer not found"
-        );
         address hook_ = hook;
         IVault vault_ = vault;
         if (hook_ == address(0)) revert HookNotSet();
         if (address(vault_) == address(0)) revert VaultNotSet();
+        if (address(positionManager) == address(0))
+            revert PositionManagerNotSet();
         address hookVault = IGemoonHook(hook_).vault();
         if (hookVault != address(vault_))
             revert HookVaultMismatch(hookVault, address(vault_));
@@ -167,16 +193,8 @@ contract GemoonController is
 
         tokenConfig.admins = newAdmins;
 
+        // The whole supply is minted to this contract and goes into the position below.
         address deployedToken = Deployer.deployToken(tokenConfig);
-
-        // Transfer all liquidity to deploy strategy
-        require(
-            IERC20(deployedToken).transfer(
-                address(deployer),
-                INITIAL_SUPPLY_X18
-            ),
-            "fail transfer liquidity to deployer"
-        );
 
         // The hook accepts the pool only if the vault of the Meme already exists.
         vault_.registerVault(
@@ -185,20 +203,16 @@ contract GemoonController is
             config.vaultAssets
         );
 
-        DeploymentInfo memory depInfo = _configurePool(
-            deployer,
+        uint256 positionId = _configurePool(
             config.rewardsConfig,
             deployedToken,
             hook_
         );
 
-        depInfo.rewardRecipient = config.rewardsConfig.rewardRecipient;
-        depInfo.creatorAdmin = config.rewardsConfig.creatorAddress;
-
         emit TokenCreated(
             deployedToken,
             config.rewardsConfig.creatorAddress,
-            depInfo.positionId,
+            positionId,
             config.rewardsConfig.rewardRecipient,
             config.tokenConfig.name,
             config.tokenConfig.symbol
@@ -207,12 +221,14 @@ contract GemoonController is
         return deployedToken;
     }
 
+    /// @dev Initializes the Meme/pair pool with the hook and mints the whole Meme supply into a
+    /// one-sided position above the initial price. The position NFT is owned by this contract.
+    /// @return positionId NFT id of the minted position.
     function _configurePool(
-        IPositionDeployer deployer,
         RewardsConfig memory rewardsConfig_,
         address deployedToken,
         address hook_
-    ) private returns (DeploymentInfo memory) {
+    ) private returns (uint256 positionId) {
         require(
             deployedToken != address(0),
             "Deployed token address cannot be zero"
@@ -244,7 +260,7 @@ contract GemoonController is
             token1 == deployedToken ? PRICE_PER_TOKEN : 1e18
         );
 
-        (, , int24 tick) = Ticks.getTicks(
+        (int24 tickLower, int24 tickUpper, int24 tick) = Ticks.getTicks(
             poolKey,
             sqrtX96Price,
             deployedToken,
@@ -261,17 +277,28 @@ contract GemoonController is
         ) {} catch {
             revert("Pool initialization failed, check price validity");
         }
-        DeploymentInfo memory depInfo = deployer.deployPosition(
-            address(0),
-            rewardsConfig_.creatorAddress,
-            deployedToken,
-            _weth,
-            poolId,
-            sqrtX96Price,
-            hook_
+        PositionDeployer.Position memory position = PositionDeployer.mint(
+            PositionDeployer.MintParams({
+                positionManager: positionManager,
+                permit2: permit2,
+                poolKey: poolKey,
+                deployedToken: deployedToken,
+                amount: INITIAL_SUPPLY_X18,
+                tickLower: tickLower,
+                tickUpper: tickUpper,
+                recipient: address(this)
+            })
         );
 
-        return depInfo;
+        emit PositionCreated(
+            deployedToken,
+            position.tokenId,
+            tickLower,
+            tickUpper,
+            position.liquidity
+        );
+
+        return position.tokenId;
     }
 
     function changeAdmin(

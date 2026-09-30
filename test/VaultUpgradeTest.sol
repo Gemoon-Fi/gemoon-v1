@@ -12,7 +12,7 @@ import {
 import {Upgrades} from "@oz-upgrades/Upgrades.sol";
 import {Vault} from "../src/contracts/vault/Vault.sol";
 import {IVault, AssetConfig} from "../src/contracts/interfaces/IVault.sol";
-import {DeployVault, ProxyVaultUpgrade} from "../script/GemoonDeploy.sol";
+import {DeployVault, ProxyVaultUpgrade, GemoonDeployBase} from "../script/GemoonDeploy.sol";
 import {MockToken, MockSwapAdapter} from "./VaultTest.sol";
 
 /// @dev Next Vault version, to exercise the reinitialize / downgrade paths of the upgrade script.
@@ -62,7 +62,7 @@ contract VaultUpgradeTest is Test {
 
         vault = deployScript.deployVault(
             address(deployScript),
-            DeployVault.VaultDeployParams({
+            GemoonDeployBase.VaultDeployParams({
                 owner: owner,
                 proxyAdminOwner: address(upgradeScript),
                 usdg: address(usdg),
@@ -136,7 +136,7 @@ contract VaultUpgradeTest is Test {
         address[] memory allowed = new address[](0);
         Vault fresh = deployScript.deployVault(
             address(deployScript),
-            DeployVault.VaultDeployParams({
+            GemoonDeployBase.VaultDeployParams({
                 owner: owner,
                 proxyAdminOwner: owner,
                 usdg: address(usdg),
@@ -207,7 +207,7 @@ contract VaultUpgradeTest is Test {
         upgradeScript.upgradeVault(address(upgradeScript), address(vault), proxyAdmin, v2);
 
         address v1 = address(new Vault());
-        vm.expectRevert(abi.encodeWithSelector(ProxyVaultUpgrade.VersionDowngrade.selector, 2, 1));
+        vm.expectRevert(abi.encodeWithSelector(GemoonDeployBase.VersionDowngrade.selector, 2, 1));
         upgradeScript.upgradeVault(address(upgradeScript), address(vault), proxyAdmin, v1);
     }
 
@@ -215,7 +215,7 @@ contract VaultUpgradeTest is Test {
         address newImpl = address(new Vault());
         vm.expectRevert(
             abi.encodeWithSelector(
-                ProxyVaultUpgrade.NotProxyAdminOwner.selector, address(upgradeScript), alice
+                GemoonDeployBase.NotProxyAdminOwner.selector, address(upgradeScript), alice
             )
         );
         upgradeScript.upgradeVault(alice, address(vault), proxyAdmin, newImpl);
@@ -224,7 +224,7 @@ contract VaultUpgradeTest is Test {
     function test_UpgradeVault_WrongProxyAdmin_Reverts() external {
         address newImpl = address(new Vault());
         vm.expectRevert(
-            abi.encodeWithSelector(ProxyVaultUpgrade.ProxyAdminMismatch.selector, alice, proxyAdmin)
+            abi.encodeWithSelector(GemoonDeployBase.ProxyAdminMismatch.selector, alice, proxyAdmin)
         );
         upgradeScript.upgradeVault(address(upgradeScript), address(vault), alice, newImpl);
     }

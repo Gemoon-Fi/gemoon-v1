@@ -46,8 +46,16 @@ interface IGemoonController {
         PoolId indexed pool, address indexed token0, address indexed token1, uint256 initialPrice, int24 tick
     );
 
-    // admins will be (address(this) + address(msg.sender))
-    function deployToken(string memory deployStrategy, DeployConfig memory config) external payable returns (address);
+    /// @notice Initial liquidity position of a Meme, minted on deployment and held by the
+    ///         controller.
+    event PositionCreated(
+        address indexed token, uint256 indexed positionId, int24 tickLower, int24 tickUpper, uint128 liquidity
+    );
+
+    /// @notice Deploys a Meme token, registers its vault, creates the pool and mints the initial
+    ///         position. Admins of the token are `config.tokenConfig.admins` plus the controller
+    ///         and the caller.
+    function deployToken(DeployConfig memory config) external payable returns (address);
 
     function changeAdmin(address token, address oldAdmin, address newAdmin) external;
 }
