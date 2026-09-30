@@ -27,20 +27,37 @@ contract MockToken is ERC20 {
     }
 }
 
-/// @dev Burns the input and mints `amountIn * rate / 1e18` of the output to the recipient.
+/// @dev Keeps the input and mints `amountIn * rate / 1e18` of the output to the recipient.
+/// `shouldRevert` simulates a failing swap (slippage, missing route, stale oracle).
 contract MockSwapAdapter is ISwapAdapter {
     mapping(address => uint256) public rate;
+    bool public shouldRevert;
+    bool public revertEmpty;
 
     function setRate(address tokenOut, uint256 rate_) external {
         rate[tokenOut] = rate_;
     }
 
-    function swap(address, address tokenOut, uint256 amountIn, uint256 minAmountOut, address recipient)
+    function setShouldRevert(bool shouldRevert_) external {
+        shouldRevert = shouldRevert_;
+    }
+
+    /// @dev Reverts without data, like an out-of-gas or a bare `revert()`.
+    function setRevertEmpty(bool revertEmpty_) external {
+        revertEmpty = revertEmpty_;
+    }
+
+    function swap(address, address tokenOut, uint256 amountIn, address recipient)
         external
         returns (uint256 amountOut)
     {
+        require(!shouldRevert, "adapter: revert");
+        if (revertEmpty) {
+            assembly {
+                revert(0, 0)
+            }
+        }
         amountOut = (amountIn * rate[tokenOut]) / 1e18;
-        require(amountOut >= minAmountOut, "slippage");
         MockToken(tokenOut).mint(recipient, amountOut);
     }
 }
@@ -57,7 +74,6 @@ abstract contract VaultFixture is Test {
     address proxyAdminOwner = makeAddr("proxyAdminOwner");
     address controller = makeAddr("controller");
     address hook = makeAddr("hook");
-    address keeper = makeAddr("keeper");
     address creator = makeAddr("creator");
     address alice = makeAddr("alice");
     address bob = makeAddr("bob");
@@ -83,7 +99,6 @@ abstract contract VaultFixture is Test {
         vm.startPrank(owner);
         vault.setController(controller);
         vault.setHook(hook);
-        vault.setKeeper(keeper);
         vault.setSwapAdapter(address(adapter));
         vault.setAssetAllowed(address(aapl), true);
         vault.setAssetAllowed(address(wbtc), true);
@@ -114,9 +129,7 @@ abstract contract VaultFixture is Test {
     }
 
     function _convert() internal returns (uint256[] memory) {
-        uint256 n = vault.getAssets(address(meme)).length;
-        vm.prank(keeper);
-        return vault.convertFees(address(meme), new uint256[](n));
+        return vault.convertFees(address(meme));
     }
 
     function _stake(address account, uint256 amount) internal {
@@ -247,36 +260,15 @@ contract VaultTest is VaultFixture {
 
     // ------------------------------------------------------------------ conversion
 
-    function test_ConvertFees_NotKeeper_Reverts() external {
-        _register(_assets6040());
-        _notify(100e6);
-        vm.expectRevert(IVault.NotKeeper.selector);
-        vault.convertFees(address(meme), new uint256[](2));
-    }
-
     function test_ConvertFees_Nothing_Reverts() external {
         _register(_assets6040());
-        vm.prank(keeper);
         vm.expectRevert(IVault.NothingToConvert.selector);
-        vault.convertFees(address(meme), new uint256[](2));
+        vault.convertFees(address(meme));
     }
 
-    function test_ConvertFees_LengthMismatch_Reverts() external {
-        _register(_assets6040());
-        _notify(100e6);
-        vm.prank(keeper);
-        vm.expectRevert(IVault.LengthMismatch.selector);
-        vault.convertFees(address(meme), new uint256[](1));
-    }
-
-    function test_ConvertFees_MinOutAboveQuote_Reverts() external {
-        _register(_assets6040());
-        _notify(100e6);
-        uint256[] memory minOut = new uint256[](2);
-        minOut[0] = 120e18 + 1; // 60 USDG -> 120 AAPL
-        vm.prank(keeper);
-        vm.expectRevert();
-        vault.convertFees(address(meme), minOut);
+    function test_ConvertFees_NotRegistered_Reverts() external {
+        vm.expectRevert(abi.encodeWithSelector(IVault.VaultNotRegistered.selector, address(meme)));
+        vault.convertFees(address(meme));
     }
 
     function test_ConvertFees_SplitsByWeight() external {
@@ -599,6 +591,233 @@ contract VaultTest is VaultFixture {
         assertEq(out[1], (aaplIn * 2e30) / 1e18);
         assertEq(usdg.balanceOf(address(vault)), out[0], "only the USDG leg stays");
     }
+    // ------------------------------------------------------------------ automatic conversion
+
+    function _setThreshold(uint256 threshold) internal {
+        vm.prank(owner);
+        vault.setConversionThreshold(threshold);
+    }
+
+    function test_SetConversionThreshold_NotOwner_Reverts() external {
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
+        vault.setConversionThreshold(1);
+    }
+
+    function test_SetConversionThreshold_Owner_SetsAndEmits() external {
+        vm.expectEmit(true, true, true, true);
+        emit IVault.ConversionThresholdUpdated(100e6);
+        _setThreshold(100e6);
+        assertEq(vault.conversionThreshold(), 100e6);
+    }
+
+    function test_ConvertFees_AnyCaller_Succeeds() external {
+        _register(_assets6040());
+        _notify(100e6);
+        vm.prank(alice);
+        vault.convertFees(address(meme));
+        assertEq(vault.vaultInfo(address(meme)).epoch, 1);
+    }
+
+    function test_ConvertFees_BelowThreshold_Reverts() external {
+        _register(_assets6040());
+        _setThreshold(100e6);
+        _notify(99e6);
+        vm.expectRevert(
+            abi.encodeWithSelector(IVault.BelowConversionThreshold.selector, 99e6, 100e6)
+        );
+        vault.convertFees(address(meme));
+    }
+
+    function test_ConvertFees_AdapterReverts_Bubbles() external {
+        _register(_assets6040());
+        _notify(100e6);
+        adapter.setShouldRevert(true);
+        vm.expectRevert(bytes("adapter: revert"));
+        vault.convertFees(address(meme));
+    }
+
+    function test_ConvertFees_ZeroOutput_Reverts() external {
+        _register(_assets6040());
+        _notify(100e6);
+        adapter.setRate(address(aapl), 0);
+        vm.expectRevert(abi.encodeWithSelector(IVault.ZeroSwapOutput.selector, address(aapl)));
+        vault.convertFees(address(meme));
+    }
+
+    function test_NotifyFees_BelowThreshold_KeepsEpochOpen() external {
+        _register(_assets6040());
+        _setThreshold(100e6);
+        _stake(alice, 1_000e18);
+        _notify(60e6);
+        assertEq(vault.vaultInfo(address(meme)).epoch, 0);
+        assertEq(vault.pendingUSDG(address(meme)), 60e6);
+        assertEq(usdg.balanceOf(address(vault)), 60e6);
+    }
+
+    function test_NotifyFees_ReachesThreshold_ConvertsInSameTx() external {
+        _register(_assets6040());
+        _setThreshold(100e6);
+        _stake(alice, 1_000e18);
+        _notify(60e6);
+        _notify(40e6);
+
+        assertEq(vault.vaultInfo(address(meme)).epoch, 1);
+        assertEq(vault.pendingUSDG(address(meme)), 0);
+        assertEq(usdg.balanceOf(address(vault)), 0);
+        assertEq(_earned(alice, 0), 108e18, "90% of 120 AAPL");
+        assertEq(_earned(alice, 1), 36e8, "90% of 40 WBTC");
+        assertEq(_creatorAccrued(0), 12e18);
+        assertEq(_creatorAccrued(1), 4e8);
+    }
+
+    function test_NotifyFees_AboveThreshold_ConvertsWholePending() external {
+        _register(_assets6040());
+        _setThreshold(100e6);
+        _notify(1_000e6);
+        assertEq(vault.vaultInfo(address(meme)).epoch, 1);
+        assertEq(vault.pendingUSDG(address(meme)), 0);
+        assertEq(_creatorAccrued(0), 1_200e18, "nobody stakes: all AAPL to the creator");
+    }
+
+    function test_NotifyFees_ThresholdZero_NeverConvertsAutomatically() external {
+        _register(_assets6040());
+        _notify(1_000e6);
+        assertEq(vault.vaultInfo(address(meme)).epoch, 0);
+        assertEq(vault.pendingUSDG(address(meme)), 1_000e6);
+    }
+
+    function test_NotifyFees_Paused_SkipsConversion() external {
+        _register(_assets6040());
+        _setThreshold(100e6);
+        vm.prank(owner);
+        vault.setPaused(true);
+
+        _notify(100e6);
+        VaultInfo memory info = vault.vaultInfo(address(meme));
+        assertEq(info.epoch, 0);
+        assertEq(vault.pendingUSDG(address(meme)), 100e6);
+        assertEq(info.lastConversionFailure, 0, "a skip is not a failure");
+
+        vm.prank(owner);
+        vault.setPaused(false);
+        vault.convertFees(address(meme));
+        assertEq(vault.vaultInfo(address(meme)).epoch, 1);
+    }
+
+    function test_NotifyFees_ConversionReverts_KeepsCreditAndStartsCooldown() external {
+        _register(_assets6040());
+        _setThreshold(100e6);
+        _stake(alice, 1_000e18);
+        adapter.setShouldRevert(true);
+
+        usdg.mint(address(vault), 100e6);
+        vm.expectEmit(true, false, false, false);
+        emit IVault.ConversionFailed(address(meme), "");
+        vm.prank(hook);
+        vault.notifyFees(address(meme), 100e6);
+
+        VaultInfo memory info = vault.vaultInfo(address(meme));
+        assertEq(info.epoch, 0);
+        assertEq(info.pendingStakerUSDG, 90e6);
+        assertEq(info.pendingCreatorUSDG, 10e6);
+        assertEq(info.lastConversionFailure, block.timestamp);
+        assertEq(vault.accounted(address(usdg)), 100e6);
+        assertEq(usdg.balanceOf(address(vault)), 100e6);
+        assertEq(vault.pendingCreditOf(address(meme), alice), 90e6);
+    }
+
+    function test_NotifyFees_WithinCooldown_DoesNotRetry() external {
+        _register(_assets6040());
+        _setThreshold(100e6);
+        adapter.setShouldRevert(true);
+        _notify(100e6);
+        adapter.setShouldRevert(false);
+
+        vm.warp(block.timestamp + vault.CONVERSION_COOLDOWN() - 1);
+        _notify(1e6);
+        assertEq(vault.vaultInfo(address(meme)).epoch, 0, "still cooling down");
+        assertEq(vault.pendingUSDG(address(meme)), 101e6);
+
+        vm.warp(block.timestamp + 1);
+        _notify(1e6);
+        assertEq(vault.vaultInfo(address(meme)).epoch, 1, "retried after the cooldown");
+        assertEq(vault.pendingUSDG(address(meme)), 0);
+    }
+
+    function test_NotifyFees_ConversionRevertsWithoutData_NoCooldown() external {
+        _register(_assets6040());
+        _setThreshold(100e6);
+        adapter.setRevertEmpty(true);
+
+        usdg.mint(address(vault), 100e6);
+        vm.expectEmit(true, false, false, true);
+        emit IVault.ConversionFailed(address(meme), "");
+        vm.prank(hook);
+        vault.notifyFees(address(meme), 100e6);
+
+        assertEq(vault.vaultInfo(address(meme)).epoch, 0);
+        assertEq(vault.pendingUSDG(address(meme)), 100e6);
+        assertEq(vault.vaultInfo(address(meme)).lastConversionFailure, 0, "no cooldown");
+
+        // The very next notification retries and succeeds once the adapter works again.
+        adapter.setRevertEmpty(false);
+        _notify(1e6);
+        assertEq(vault.vaultInfo(address(meme)).epoch, 1);
+    }
+
+    function test_ConvertFees_Manual_IgnoresCooldown() external {
+        _register(_assets6040());
+        _setThreshold(100e6);
+        adapter.setShouldRevert(true);
+        _notify(100e6);
+        adapter.setShouldRevert(false);
+
+        vault.convertFees(address(meme));
+        assertEq(vault.vaultInfo(address(meme)).epoch, 1);
+    }
+
+    function test_NotifyFees_FailedThenFixed_ConvertsAccumulatedEpochAtOnce() external {
+        _register(_assets6040());
+        _setThreshold(100e6);
+        _stake(alice, 1_000e18);
+        adapter.setShouldRevert(true);
+        _notify(100e6);
+        _notify(100e6); // within the cooldown: no attempt
+        adapter.setShouldRevert(false);
+        vm.warp(block.timestamp + vault.CONVERSION_COOLDOWN());
+        _notify(100e6);
+
+        assertEq(vault.vaultInfo(address(meme)).epoch, 1);
+        assertEq(_earned(alice, 0), 324e18, "90% of 360 AAPL bought with 300 USDG");
+    }
+
+    /// @dev With a working adapter the pending USDG of a vault never stays at or above the
+    /// threshold after a notification, an epoch closes exactly when it is crossed, and the vault
+    /// balance always covers what it accounts.
+    function testFuzz_NotifyFees_AutoConversion_ClosesEpochExactlyAtThreshold(
+        uint64 threshold,
+        uint64[8] calldata fees
+    ) external {
+        threshold = uint64(bound(threshold, 1, type(uint64).max));
+        _register(_assets6040());
+        _setThreshold(threshold);
+        _stake(alice, 1_000e18);
+
+        uint64 epochs;
+        for (uint256 i; i < fees.length; ++i) {
+            uint256 fee = bound(fees[i], 1, type(uint64).max);
+            uint256 pendingBefore = vault.pendingUSDG(address(meme));
+            _notify(fee);
+            if (pendingBefore + fee >= threshold) ++epochs;
+
+            assertLt(vault.pendingUSDG(address(meme)), threshold);
+            assertEq(vault.vaultInfo(address(meme)).epoch, epochs);
+            assertGe(usdg.balanceOf(address(vault)), vault.accounted(address(usdg)));
+            assertGe(aapl.balanceOf(address(vault)), vault.accounted(address(aapl)));
+            assertGe(wbtc.balanceOf(address(vault)), vault.accounted(address(wbtc)));
+        }
+    }
 }
 
 // ---------------------------------------------------------------------- invariants
@@ -608,18 +827,16 @@ contract VaultHandler is Test {
     MockToken internal usdg;
     MockToken internal meme;
     address internal hook;
-    address internal keeper;
     address[] public actors;
 
     uint256 public ghostNotified;
     uint256 public ghostPaidOut;
 
-    constructor(Vault vault_, MockToken usdg_, MockToken meme_, address hook_, address keeper_) {
+    constructor(Vault vault_, MockToken usdg_, MockToken meme_, address hook_) {
         vault = vault_;
         usdg = usdg_;
         meme = meme_;
         hook = hook_;
-        keeper = keeper_;
         for (uint256 i; i < 4; ++i) {
             actors.push(makeAddr(string(abi.encodePacked("actor", vm.toString(i)))));
         }
@@ -657,9 +874,9 @@ contract VaultHandler is Test {
     }
 
     function convert() external {
-        if (vault.pendingUSDG(address(meme)) == 0) return;
-        vm.prank(keeper);
-        vault.convertFees(address(meme), new uint256[](1));
+        uint256 pending = vault.pendingUSDG(address(meme));
+        if (pending == 0 || pending < vault.conversionThreshold()) return;
+        vault.convertFees(address(meme));
     }
 
     function claim(uint256 actorSeed) external {
@@ -679,14 +896,23 @@ contract VaultHandler is Test {
 }
 
 /// @dev Single USDG-denominated asset, so every payout is comparable to what was notified.
+/// The threshold sits in the middle of the handler's fee range, so epochs close both
+/// automatically inside `notifyFees` and manually through `convert`.
 contract VaultInvariantTest is VaultFixture {
+    uint256 constant THRESHOLD = 5e14;
     VaultHandler handler;
 
     function setUp() external {
         _deployVault();
         _register(_assetsUsdgOnly());
-        handler = new VaultHandler(vault, usdg, meme, hook, keeper);
+        vm.prank(owner);
+        vault.setConversionThreshold(THRESHOLD);
+        handler = new VaultHandler(vault, usdg, meme, hook);
         targetContract(address(handler));
+    }
+
+    function invariant_Pending_StaysBelowThreshold() external view {
+        assertLt(vault.pendingUSDG(address(meme)), THRESHOLD);
     }
 
     function invariant_TotalStaked_EqualsSumOfStakes() external view {

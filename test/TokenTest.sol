@@ -206,7 +206,7 @@ contract TokenTest is Test {
             })
         );
 
-        vm.expectRevert("Caller is not admin");
+        vm.expectRevert(bytes("Caller is not an admin"));
         token.changeDescription("New description");
     }
 

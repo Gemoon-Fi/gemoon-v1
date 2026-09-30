@@ -5,6 +5,7 @@ import "forge-std/Script.sol";
 import {GemoonController} from "../src/contracts/Gemoon.sol";
 import {HookManager} from "../src/contracts/hooks/HookManager.sol";
 import {Vault} from "../src/contracts/vault/Vault.sol";
+import {UniswapV3SwapAdapter} from "../src/contracts/adapters/UniswapV3SwapAdapter.sol";
 import "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
 import "@openzeppelin/contracts/proxy/transparent/ProxyAdmin.sol";
 import "@oz-upgrades/Upgrades.sol";
@@ -54,7 +55,7 @@ abstract contract GemoonDeployBase is Script {
         address usdg;
         address controller;
         address hook;
-        address keeper;
+        uint256 conversionThreshold;
         address swapAdapter;
         address[] allowedAssets;
     }
@@ -106,7 +107,9 @@ abstract contract GemoonDeployBase is Script {
         if (params.controller != address(0)) vault.setController(params.controller);
         if (params.hook != address(0)) vault.setHook(params.hook);
         if (params.swapAdapter != address(0)) vault.setSwapAdapter(params.swapAdapter);
-        vault.setKeeper(params.keeper);
+        if (params.conversionThreshold != 0) {
+            vault.setConversionThreshold(params.conversionThreshold);
+        }
 
         for (uint256 i; i < params.allowedAssets.length; ++i) {
             vault.setAssetAllowed(params.allowedAssets[i], true);
@@ -315,7 +318,8 @@ abstract contract GemoonDeployBase is Script {
 ///  - PERMIT2                    Permit2 the PositionManager settles through (required)
 ///  - USDG_ADDRESS               pair token of every pool, fees are charged in it (required)
 ///  - PROTOCOL_FEE_RECIPIENT     receives the protocol share of the swap fee (required)
-///  - VAULT_KEEPER               caller of `Vault.convertFees` (required)
+///  - VAULT_CONVERSION_THRESHOLD pending USDG (in USDG units) that closes an epoch; 0 disables
+///                               automatic conversion (required)
 ///  - GEMOON_OWNER               final owner of the three contracts (default: broadcaster)
 ///  - GEMOON_PROXY_ADMIN_OWNER   owner of the three ProxyAdmins, i.e. who can upgrade
 ///                               (default: GEMOON_OWNER)
@@ -337,7 +341,7 @@ contract DeployGemoon is GemoonDeployBase {
         address protocolRecipient;
         uint256 feeBips;
         uint256 protocolFeeBips;
-        address keeper;
+        uint256 conversionThreshold;
         address swapAdapter;
         address[] allowedAssets;
     }
@@ -368,7 +372,7 @@ contract DeployGemoon is GemoonDeployBase {
         console.log("PROTOCOL FEE RECIPIENT: ", params.protocolRecipient);
         console.log("HOOK TOTAL FEE BIPS: ", params.feeBips);
         console.log("HOOK PROTOCOL FEE BIPS: ", params.protocolFeeBips);
-        console.log("VAULT KEEPER: ", params.keeper);
+        console.log("VAULT CONVERSION THRESHOLD: ", params.conversionThreshold);
         console.log("VAULT SWAP ADAPTER: ", params.swapAdapter);
         for (uint256 i; i < params.allowedAssets.length; ++i) {
             console.log("VAULT ALLOWED ASSET: ", params.allowedAssets[i]);
@@ -392,7 +396,7 @@ contract DeployGemoon is GemoonDeployBase {
             protocolRecipient: vm.envAddress("PROTOCOL_FEE_RECIPIENT"),
             feeBips: _envUintOr("HOOK_TOTAL_FEE_BIPS", 125),
             protocolFeeBips: _envUintOr("HOOK_PROTOCOL_FEE_BIPS", 25),
-            keeper: vm.envAddress("VAULT_KEEPER"),
+            conversionThreshold: vm.envUint("VAULT_CONVERSION_THRESHOLD"),
             swapAdapter: _envAddressOr("VAULT_SWAP_ADAPTER", address(0)),
             allowedAssets: _envAddressList("VAULT_ALLOWED_ASSETS")
         });
@@ -416,7 +420,7 @@ contract DeployGemoon is GemoonDeployBase {
                 usdg: params.usdg,
                 controller: address(0),
                 hook: address(0),
-                keeper: params.keeper,
+                conversionThreshold: params.conversionThreshold,
                 swapAdapter: params.swapAdapter,
                 allowedAssets: params.allowedAssets
             })
@@ -469,7 +473,8 @@ contract DeployGemoon is GemoonDeployBase {
 /// existing deployment.
 /// @dev Env:
 ///  - USDG_ADDRESS                 token fees arrive in (required)
-///  - VAULT_KEEPER                 caller of convertFees (required)
+///  - VAULT_CONVERSION_THRESHOLD   pending USDG that closes an epoch, 0 disables automatic
+///                                 conversion (required)
 ///  - GEMOON_OWNER                 final owner, e.g. multisig (default: broadcaster)
 ///  - GEMOON_PROXY_ADMIN_OWNER     owner of the ProxyAdmin, i.e. who can upgrade (default: GEMOON_OWNER)
 ///  - VAULT_SWAP_ADAPTER           USDG -> asset adapter (optional, can be set later)
@@ -491,7 +496,7 @@ contract DeployVault is GemoonDeployBase {
             usdg: vm.envAddress("USDG_ADDRESS"),
             controller: _envAddressOr("CONTROLLER_PROXY_ADDRESS", address(0)),
             hook: _envAddressOr("HOOK_PROXY_ADDRESS", address(0)),
-            keeper: vm.envAddress("VAULT_KEEPER"),
+            conversionThreshold: vm.envUint("VAULT_CONVERSION_THRESHOLD"),
             swapAdapter: _envAddressOr("VAULT_SWAP_ADAPTER", address(0)),
             allowedAssets: _envAddressList("VAULT_ALLOWED_ASSETS")
         });
@@ -505,7 +510,7 @@ contract DeployVault is GemoonDeployBase {
         console.log("USDG: ", params.usdg);
         console.log("CONTROLLER: ", params.controller);
         console.log("HOOK: ", params.hook);
-        console.log("KEEPER: ", params.keeper);
+        console.log("CONVERSION THRESHOLD: ", params.conversionThreshold);
         console.log("SWAP ADAPTER: ", params.swapAdapter);
         for (uint256 i; i < params.allowedAssets.length; ++i) {
             console.log("ALLOWED ASSET: ", params.allowedAssets[i]);
@@ -689,7 +694,7 @@ contract VerifyWiring is GemoonDeployBase {
         _logProxy("VAULT", address(vault));
         console.log("VAULT OWNER: ", vault.owner());
         console.log("VAULT PENDING OWNER: ", vault.pendingOwner());
-        console.log("VAULT KEEPER: ", vault.keeper());
+        console.log("VAULT CONVERSION THRESHOLD: ", vault.conversionThreshold());
         _logProxy("HOOK", address(hook));
         console.log("HOOK OWNER: ", hook.owner());
         console.log("HOOK PENDING OWNER: ", hook.pendingOwner());
@@ -700,5 +705,41 @@ contract VerifyWiring is GemoonDeployBase {
         console.log("CONTROLLER PERMIT2: ", address(controller.permit2()));
         console.log("PAIR TOKEN: ", vault.usdg());
         console.log("WIRING OK");
+    }
+}
+
+/// @notice Deploys a UniswapV3SwapAdapter for an existing Vault.
+/// @dev Env:
+///  - UNISWAP_V3_FACTORY           Uniswap V3 factory (required)
+///  - VAULT_PROXY_ADDRESS          Vault proxy the adapter serves (required)
+///  - USDG_ADDRESS                 token the vault sells, must equal `Vault.usdg()` (required)
+///  - GEMOON_OWNER                 owner of the adapter, sets routes (default: broadcaster)
+///  - ADAPTER_TWAP_WINDOW          TWAP window in seconds (default: 600)
+/// After the run: the owner calls `setRoute(asset, fee, maxSlippageBps)` for every reward asset
+/// (e.g. 100 bps) and the vault owner calls `Vault.setSwapAdapter` with the logged address. Make
+/// sure every pool's observation cardinality covers the window.
+contract DeployUniswapV3SwapAdapter is GemoonDeployBase {
+    function run() external {
+        vm.startBroadcast();
+        (, address deployer,) = vm.readCallers();
+
+        address owner = _envAddressOr("GEMOON_OWNER", deployer);
+        address factory = vm.envAddress("UNISWAP_V3_FACTORY");
+        address vault = vm.envAddress("VAULT_PROXY_ADDRESS");
+        address usdg = vm.envAddress("USDG_ADDRESS");
+        uint32 window = uint32(_envUintOr("ADAPTER_TWAP_WINDOW", 600));
+
+        if (Vault(vault).usdg() != usdg) revert WiringMismatch("adapter usdg");
+        UniswapV3SwapAdapter adapter =
+            new UniswapV3SwapAdapter(owner, factory, vault, usdg, window);
+
+        vm.stopBroadcast();
+
+        console.log("SWAP ADAPTER: ", address(adapter));
+        console.log("OWNER: ", owner);
+        console.log("FACTORY: ", factory);
+        console.log("VAULT: ", vault);
+        console.log("USDG: ", usdg);
+        console.log("TWAP WINDOW: ", uint256(window));
     }
 }

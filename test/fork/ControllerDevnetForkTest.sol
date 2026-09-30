@@ -37,7 +37,8 @@ import {MintableToken} from "../mocks/MintableToken.sol";
 /// @notice Controller and token deployment against the devnet: a Sepolia fork (chain id 1337)
 /// with the canonical Uniswap V4 PoolManager, PositionManager and Permit2. The Gemoon contracts
 /// are deployed onto the fork through the deploy script, the pair token is a mock USDG.
-/// @dev Env: DEVNET_RPC enables the suite (skipped when empty), DEVNET_BLOCK pins the block.
+/// @dev Env: DEVNET_RPC enables the suite (skipped when empty), DEVNET_BLOCK pins the block,
+/// OPERATOR_ADDRESS is the funded devnet account that owns the deployment (default: anvil #0).
 /// Nothing is broadcast, the fork lives only inside this test run.
 contract ControllerDevnetForkTest is Test {
     using StateLibrary for IPoolManager;
@@ -48,8 +49,9 @@ contract ControllerDevnetForkTest is Test {
     address constant POOL_MANAGER = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
     address constant POSITION_MANAGER = 0x429ba70129df741B2Ca2a85BC3A2a3328e5c09b4;
     address constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
+    address constant ANVIL_ACCOUNT_0 = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
     /// @dev Funded devnet account, becomes the owner of the deployed contracts.
-    address constant DEVNET_ACCOUNT = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
+    address DEVNET_ACCOUNT;
 
     uint256 constant PAIR_UNIT = 1e6; // mock USDG has 6 decimals
 
@@ -68,7 +70,6 @@ contract ControllerDevnetForkTest is Test {
     address creator = makeAddr("creator");
     address trader = makeAddr("trader");
     address protocolRecipient = makeAddr("protocolRecipient");
-    address keeper = makeAddr("keeper");
 
     modifier whenForked() {
         if (!forked) return;
@@ -85,6 +86,7 @@ contract ControllerDevnetForkTest is Test {
         if (bytes(rawBlock).length == 0) vm.createSelectFork(rpc);
         else vm.createSelectFork(rpc, vm.parseUint(rawBlock));
         forked = true;
+        DEVNET_ACCOUNT = vm.envOr("OPERATOR_ADDRESS", ANVIL_ACCOUNT_0);
 
         assertEq(block.chainid, DEVNET_CHAIN_ID, "not the devnet");
         assertGt(POOL_MANAGER.code.length, 0, "PoolManager missing");
@@ -110,7 +112,7 @@ contract ControllerDevnetForkTest is Test {
                 protocolRecipient: protocolRecipient,
                 feeBips: 125,
                 protocolFeeBips: 25,
-                keeper: keeper,
+                conversionThreshold: 0,
                 swapAdapter: address(0),
                 allowedAssets: assets
             })

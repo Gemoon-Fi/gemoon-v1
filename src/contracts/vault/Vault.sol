@@ -24,7 +24,6 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {IVault, AssetConfig, VaultInfo} from "../interfaces/IVault.sol";
 import {ISwapAdapter} from "../interfaces/ISwapAdapter.sol";
-import {InterfaceChecker} from "../utils/InterfaceChecker.sol";
 
 /// @title Gemoon fee vault.
 /// @notice See {IVault}.
@@ -45,6 +44,12 @@ import {InterfaceChecker} from "../utils/InterfaceChecker.sol";
 ///  - later epoch: credit of the checkpoint epoch is converted at that epoch's rate, epochs in
 ///    between are paid via K, and the credit of the open epoch starts from S_(E-1).
 /// All divisions round down, so claimable rewards never exceed what conversions bought.
+///
+/// Conversion trigger: an epoch is closed as soon as the pending USDG of a vault reaches
+/// `s_conversionThreshold`. `notifyFees` attempts it at its end through an external self-call
+/// wrapped in try/catch, so the fee credit never fails because of the swap; a failed attempt sets
+/// `lastConversionFailure` and is not retried for CONVERSION_COOLDOWN. `convertFees` is public so
+/// anyone can close a stuck epoch once the threshold is met. Price protection is the adapter's job.
 ///
 /// Deployed behind a TransparentUpgradeableProxy. OZ parents keep their state in ERC-7201
 /// namespaces, the vault's own storage starts at slot 0 and is append-only across upgrades.
@@ -84,6 +89,7 @@ contract Vault is
     uint256 public constant CREATOR_SHARE_BPS = 1_000; // 10%
     uint256 public constant MAX_ASSETS = 5;
     uint256 public constant PRECISION = 1e36;
+    uint256 public constant CONVERSION_COOLDOWN = 1 minutes;
 
     // ---------------------------------------------------------------------------------------------
     // Storage (proxy). Append-only across upgrades: never reorder, retype or remove fields.
@@ -93,7 +99,8 @@ contract Vault is
     IERC20 private s_usdg;
     address private s_controller;
     address private s_hook;
-    address private s_keeper;
+    /// @dev Former keeper role. Unused since conversion became automatic, kept for the layout.
+    address private s_deprecatedKeeper;
     address private s_swapAdapter;
 
     mapping(address asset => bool) private s_assetAllowed;
@@ -116,6 +123,9 @@ contract Vault is
     mapping(address meme => mapping(uint256 epoch => mapping(uint256 assetIndex => uint256)))
         private s_cumAssetPerShare;
 
+    /// @dev Pending USDG a vault needs before its epoch is converted. Zero: automatic off.
+    uint256 private s_conversionThreshold;
+
     // ---------------------------------------------------------------------------------------------
     // Modifiers
     // ---------------------------------------------------------------------------------------------
@@ -127,11 +137,6 @@ contract Vault is
 
     modifier onlyHook() {
         if (msg.sender != s_hook) revert NotHook();
-        _;
-    }
-
-    modifier onlyKeeper() {
-        if (msg.sender != s_keeper) revert NotKeeper();
         _;
     }
 
@@ -251,15 +256,15 @@ contract Vault is
         v.pendingCreatorUSDG += toCreator;
 
         emit FeesNotified(meme, toStakers, toCreator);
+
+        _tryConvert(meme, v);
     }
 
     /// @inheritdoc IVault
     function convertFees(
-        address meme,
-        uint256[] calldata minAmountsOut
+        address meme
     )
         external
-        onlyKeeper
         nonReentrant
         whenNotPaused
         onlyRegistered(meme)
@@ -267,13 +272,14 @@ contract Vault is
     {
         AssetConfig[] storage assets = s_assets[meme];
         uint256 n = assets.length;
-        if (minAmountsOut.length != n) revert LengthMismatch();
 
         VaultInfo storage v = s_vaults[meme];
         uint256 stakerUsd = v.pendingStakerUSDG;
         uint256 creatorUsd = v.pendingCreatorUSDG;
         uint256 total = stakerUsd + creatorUsd;
         if (total == 0) revert NothingToConvert();
+        uint256 threshold = s_conversionThreshold;
+        if (total < threshold) revert BelowConversionThreshold(total, threshold);
 
         // Effects: close the epoch before any external call.
         uint64 e = v.epoch;
@@ -293,7 +299,7 @@ contract Vault is
                 ? total - spent
                 : (total * assets[i].weightBps) / BPS;
             spent += amountIn;
-            amountsOut[i] = _swap(assets[i].token, amountIn, minAmountsOut[i]);
+            amountsOut[i] = _swap(assets[i].token, amountIn);
         }
 
         // Effects: book the outputs.
@@ -479,10 +485,9 @@ contract Vault is
     }
 
     /// @inheritdoc IVault
-    function setKeeper(address keeper_) external onlyOwner {
-        if (keeper_ == address(0)) revert ZeroAddress();
-        s_keeper = keeper_;
-        emit KeeperUpdated(keeper_);
+    function setConversionThreshold(uint256 threshold) external onlyOwner {
+        s_conversionThreshold = threshold;
+        emit ConversionThresholdUpdated(threshold);
     }
 
     /// @inheritdoc IVault
@@ -542,13 +547,13 @@ contract Vault is
     }
 
     /// @inheritdoc IVault
-    function keeper() external view returns (address) {
-        return s_keeper;
+    function swapAdapter() external view returns (address) {
+        return s_swapAdapter;
     }
 
     /// @inheritdoc IVault
-    function swapAdapter() external view returns (address) {
-        return s_swapAdapter;
+    function conversionThreshold() external view returns (uint256) {
+        return s_conversionThreshold;
     }
 
     /// @inheritdoc IVault
@@ -761,31 +766,47 @@ contract Vault is
         );
     }
 
+    /// @dev Automatic conversion at the end of `notifyFees`. Skipped when it cannot succeed
+    /// (threshold zero or not reached, paused, cooling down after a failure). A revert of the
+    /// conversion itself is caught so the fee credit never fails because of it.
+    /// Only a revert that carries data starts the cooldown: an empty reason is an out-of-gas
+    /// (or a bare `revert()`), which the caller of the swap controls through the gas limit, and
+    /// must not let one underfunded transaction pause the automation for everyone.
+    function _tryConvert(address meme, VaultInfo storage v) internal {
+        uint256 threshold = s_conversionThreshold;
+        if (threshold == 0) return;
+        if (v.pendingStakerUSDG + v.pendingCreatorUSDG < threshold) return;
+        if (paused()) return;
+        uint64 lastFailure = v.lastConversionFailure;
+        if (
+            lastFailure != 0 &&
+            block.timestamp < uint256(lastFailure) + CONVERSION_COOLDOWN
+        ) return;
+
+        try this.convertFees(meme) {} catch (bytes memory reason) {
+            if (reason.length != 0) v.lastConversionFailure = uint64(block.timestamp);
+            emit ConversionFailed(meme, reason);
+        }
+    }
+
     /// @dev Sells `amountIn` USDG for `asset` through the adapter, output by balance difference.
+    /// The adapter enforces its own price bound; the vault only rejects an empty output, which
+    /// would close an epoch whose credits buy nothing.
     function _swap(
         address asset,
-        uint256 amountIn,
-        uint256 minAmountOut
+        uint256 amountIn
     ) internal returns (uint256 amountOut) {
+        if (amountIn == 0) return 0;
         IERC20 usdg_ = s_usdg;
-        if (amountIn == 0 || asset == address(usdg_)) {
-            amountOut = amountIn;
-        } else {
-            address adapter = s_swapAdapter;
-            if (adapter == address(0)) revert SwapAdapterNotSet();
-            uint256 before = IERC20(asset).balanceOf(address(this));
-            usdg_.safeTransfer(adapter, amountIn);
-            ISwapAdapter(adapter).swap(
-                address(usdg_),
-                asset,
-                amountIn,
-                minAmountOut,
-                address(this)
-            );
-            amountOut = IERC20(asset).balanceOf(address(this)) - before;
-        }
-        if (amountOut < minAmountOut)
-            revert SlippageExceeded(asset, amountOut, minAmountOut);
+        if (asset == address(usdg_)) return amountIn;
+
+        address adapter = s_swapAdapter;
+        if (adapter == address(0)) revert SwapAdapterNotSet();
+        uint256 before = IERC20(asset).balanceOf(address(this));
+        usdg_.safeTransfer(adapter, amountIn);
+        ISwapAdapter(adapter).swap(address(usdg_), asset, amountIn, address(this));
+        amountOut = IERC20(asset).balanceOf(address(this)) - before;
+        if (amountOut == 0) revert ZeroSwapOutput(asset);
     }
 
     function _assetIndex(

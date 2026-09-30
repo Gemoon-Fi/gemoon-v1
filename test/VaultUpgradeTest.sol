@@ -41,7 +41,6 @@ contract VaultUpgradeTest is Test {
     address owner = makeAddr("owner");
     address controller = makeAddr("controller");
     address hook = makeAddr("hook");
-    address keeper = makeAddr("keeper");
     address creator = makeAddr("creator");
     address alice = makeAddr("alice");
     address bob = makeAddr("bob");
@@ -68,7 +67,7 @@ contract VaultUpgradeTest is Test {
                 usdg: address(usdg),
                 controller: controller,
                 hook: hook,
-                keeper: keeper,
+                conversionThreshold: 0,
                 swapAdapter: address(adapter),
                 allowedAssets: allowed
             })
@@ -106,8 +105,7 @@ contract VaultUpgradeTest is Test {
     }
 
     function _convert() internal {
-        vm.prank(keeper);
-        vault.convertFees(address(meme), new uint256[](2));
+        vault.convertFees(address(meme));
     }
 
     function _initializedVersion() internal view returns (uint64) {
@@ -123,7 +121,7 @@ contract VaultUpgradeTest is Test {
         assertEq(vault.usdg(), address(usdg));
         assertEq(vault.controller(), controller);
         assertEq(vault.hook(), hook);
-        assertEq(vault.keeper(), keeper);
+        assertEq(vault.conversionThreshold(), 0, "0: automatic conversion off");
         assertEq(vault.swapAdapter(), address(adapter));
         assertTrue(vault.isAssetAllowed(address(aapl)));
         assertTrue(vault.isAssetAllowed(address(usdg)));
@@ -142,7 +140,7 @@ contract VaultUpgradeTest is Test {
                 usdg: address(usdg),
                 controller: address(0),
                 hook: address(0),
-                keeper: keeper,
+                conversionThreshold: 5e6,
                 swapAdapter: address(0),
                 allowedAssets: allowed
             })
@@ -150,6 +148,7 @@ contract VaultUpgradeTest is Test {
         assertEq(fresh.owner(), address(deployScript));
         assertEq(fresh.pendingOwner(), owner);
         assertEq(fresh.controller(), address(0));
+        assertEq(fresh.conversionThreshold(), 5e6);
     }
 
     function test_Initialize_Twice_Reverts() external {

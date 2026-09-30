@@ -35,7 +35,6 @@ contract DeployGemoonTest is Test {
     address owner = makeAddr("owner");
     address proxyAdminOwner = makeAddr("proxyAdminOwner");
     address protocolRecipient = makeAddr("protocolRecipient");
-    address keeper = makeAddr("keeper");
 
     function setUp() external {
         script = new DeployGemoon();
@@ -56,7 +55,7 @@ contract DeployGemoonTest is Test {
             protocolRecipient: protocolRecipient,
             feeBips: 125,
             protocolFeeBips: 25,
-            keeper: keeper,
+            conversionThreshold: 5e6,
             swapAdapter: address(0),
             allowedAssets: assets
         });
@@ -85,7 +84,7 @@ contract DeployGemoonTest is Test {
 
     function test_DeployAll_Config_AppliedFromParams() external {
         DeployGemoon.Deployment memory d = _deploy(owner);
-        assertEq(d.vault.keeper(), keeper);
+        assertEq(d.vault.conversionThreshold(), 5e6);
         assertTrue(d.vault.isAssetAllowed(address(aapl)));
         assertFalse(d.vault.isAssetAllowed(address(usdg)));
         assertEq(d.hook.protocolRecipient(), protocolRecipient);
@@ -149,7 +148,7 @@ contract DeployGemoonTest is Test {
         vm.setEnv("PERMIT2", vm.toString(permit2));
         vm.setEnv("USDG_ADDRESS", vm.toString(address(usdg)));
         vm.setEnv("PROTOCOL_FEE_RECIPIENT", vm.toString(protocolRecipient));
-        vm.setEnv("VAULT_KEEPER", vm.toString(keeper));
+        vm.setEnv("VAULT_CONVERSION_THRESHOLD", "5000000");
         vm.setEnv("GEMOON_OWNER", vm.toString(owner));
         vm.setEnv("GEMOON_PROXY_ADMIN_OWNER", "");
         vm.setEnv("HOOK_TOTAL_FEE_BIPS", "300");
@@ -171,6 +170,7 @@ contract DeployGemoonTest is Test {
         assertEq(hook.TOTAL_FEE_BIPS(), 300);
         assertEq(hook.PROTOCOL_FEE_BIPS(), 25);
         assertTrue(vault.isAssetAllowed(address(aapl)));
+        assertEq(vault.conversionThreshold(), 5e6);
         assertEq(uint160(address(hook)) & Hooks.ALL_HOOK_MASK, HOOK_FLAGS);
     }
 
@@ -183,7 +183,7 @@ contract DeployGemoonTest is Test {
                 usdg: address(aapl),
                 controller: address(0),
                 hook: address(0),
-                keeper: keeper,
+                conversionThreshold: 0,
                 swapAdapter: address(0),
                 allowedAssets: new address[](0)
             })

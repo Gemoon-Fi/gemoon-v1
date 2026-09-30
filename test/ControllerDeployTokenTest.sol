@@ -47,7 +47,6 @@ contract ControllerDeployTokenTest is Test {
     address creator = makeAddr("creator");
     address trader = makeAddr("trader");
     address protocolRecipient = makeAddr("protocolRecipient");
-    address keeper = makeAddr("keeper");
 
     function setUp() external {
         usdg = new MintableToken("USDG", 6);
@@ -74,7 +73,7 @@ contract ControllerDeployTokenTest is Test {
                 protocolRecipient: protocolRecipient,
                 feeBips: 125,
                 protocolFeeBips: 25,
-                keeper: keeper,
+                conversionThreshold: 0,
                 swapAdapter: address(0),
                 allowedAssets: assets
             })

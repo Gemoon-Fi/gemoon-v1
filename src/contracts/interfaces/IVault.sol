@@ -18,6 +18,8 @@ struct AssetConfig {
 /// @param accUsdPerShare     USDG credited per staked Meme since registration, scaled by PRECISION.
 /// @param pendingStakerUSDG  USDG credited to stakers in the open epoch, not yet converted.
 /// @param pendingCreatorUSDG USDG credited to the creator in the open epoch, not yet converted.
+/// @param lastConversionFailure Timestamp of the last failed automatic conversion, zero if none.
+///                              Automatic conversion is not retried for CONVERSION_COOLDOWN after it.
 struct VaultInfo {
     address creator;
     address pendingCreator;
@@ -27,6 +29,7 @@ struct VaultInfo {
     uint256 accUsdPerShare;
     uint256 pendingStakerUSDG;
     uint256 pendingCreatorUSDG;
+    uint64 lastConversionFailure;
 }
 
 /// @title Gemoon fee vault.
@@ -39,13 +42,16 @@ struct VaultInfo {
 ///                       the rest pro rata to current stakers. If nobody stakes, all of it goes
 ///                       to the creator. So a staker earns only fees that arrive while staked, and
 ///                       the reward rate follows pool volume.
-///  3. `convertFees`   - keeper: swaps all USDG credited in the open epoch into the vault assets
-///                       by weight and closes the epoch. Every credit of that epoch is paid out in
-///                       the assets bought by that epoch's conversion, pro rata to its USDG amount.
+///  3. `convertFees`   - swaps all USDG credited in the open epoch into the vault assets by weight
+///                       and closes the epoch. Every credit of that epoch is paid out in the assets
+///                       bought by that epoch's conversion, pro rata to its USDG amount.
+///                       Runs automatically at the end of `notifyFees` once the pending USDG of
+///                       the vault reaches `conversionThreshold`, and can be called by anyone
+///                       under the same condition. Price protection lives in the swap adapter.
 ///  4. `stake/unstake/claim` - Meme holders. Only converted rewards can be claimed.
 ///
 /// Roles: owner (Ownable2Step) - admin setters and pause; controller - registration;
-/// hook - fee notification; keeper - conversion.
+/// hook - fee notification. Conversion is permissionless.
 ///
 /// Invariants (for invariant tests):
 ///  - For every meme: totalStaked(meme) == sum of stakedOf(meme, account).
@@ -55,6 +61,9 @@ struct VaultInfo {
 ///    claimable rewards never exceeds what the conversion bought.
 ///  - Sum of AssetConfig.weightBps of every registered vault == BPS.
 ///  - Stakers can always withdraw principal via `unstake` / `emergencyUnstake`, even when paused.
+///  - `notifyFees` never reverts because of the automatic conversion: a failing conversion is
+///    caught, the credited USDG stays pending and is converted later.
+///  - No epoch is closed while pending USDG is below `conversionThreshold`.
 interface IVault {
     // ---------------------------------------------------------------------------------------------
     // Errors
@@ -64,7 +73,6 @@ interface IVault {
     error ZeroAmount();
     error NotController();
     error NotHook();
-    error NotKeeper();
     error NotCreator();
     error NotPendingCreator();
     error VaultAlreadyRegistered(address meme);
@@ -74,11 +82,11 @@ interface IVault {
     error InvalidAssetsLength();
     error InvalidWeights();
     error AssetNotInVault(address meme, address asset);
-    error LengthMismatch();
     error InsufficientStake(uint256 staked, uint256 requested);
     error UnaccountedBalanceTooLow(uint256 unaccounted, uint256 notified);
     error NothingToConvert();
-    error SlippageExceeded(address asset, uint256 amountOut, uint256 minAmountOut);
+    error BelowConversionThreshold(uint256 pending, uint256 threshold);
+    error ZeroSwapOutput(address asset);
     error SwapAdapterNotSet();
     error RescueExceedsSurplus(address token, uint256 surplus, uint256 requested);
 
@@ -88,6 +96,7 @@ interface IVault {
 
     event VaultRegistered(address indexed meme, address indexed creator, AssetConfig[] assets);
     event FeesNotified(address indexed meme, uint256 toStakers, uint256 toCreator);
+    event ConversionFailed(address indexed meme, bytes reason);
     event FeesConverted(
         address indexed meme,
         uint64 indexed epoch,
@@ -114,7 +123,7 @@ interface IVault {
     event CreatorTransferred(address indexed meme, address indexed from, address indexed to);
     event ControllerUpdated(address indexed controller);
     event HookUpdated(address indexed hook);
-    event KeeperUpdated(address indexed keeper);
+    event ConversionThresholdUpdated(uint256 threshold);
     event SwapAdapterUpdated(address indexed adapter);
     event AssetAllowedUpdated(address indexed asset, bool allowed);
     event Rescued(address indexed token, address indexed to, uint256 amount);
@@ -135,22 +144,25 @@ interface IVault {
     // Fee intake and conversion
     // ---------------------------------------------------------------------------------------------
 
-    /// @notice Credits USDG already transferred to the vault to the vault of `meme`.
-    /// @dev Only hook, in the same tx as the transfer. Not affected by pause.
+    /// @notice Credits USDG already transferred to the vault to the vault of `meme`, then converts
+    ///         the open epoch if its pending USDG reached `conversionThreshold`.
+    /// @dev Only hook, in the same tx as the transfer. The credit is not affected by pause.
     /// Reverts if USDG balance minus accounted USDG is below `usdgAmount`.
+    /// The conversion is skipped while paused, while the threshold is zero, or within
+    /// CONVERSION_COOLDOWN of a failed attempt; if it reverts, `ConversionFailed` is emitted and
+    /// the credit stays pending. A revert without data (out of gas) does not start the cooldown.
     /// @param meme       Meme whose pool generated the fees.
     /// @param usdgAmount USDG amount transferred.
     function notifyFees(address meme, uint256 usdgAmount) external;
 
     /// @notice Swaps all USDG credited in the open epoch of `meme` into its reward assets by weight
     ///         and closes the epoch.
-    /// @dev Only keeper, nonReentrant, whenNotPaused.
-    /// @param meme          Meme vault to convert.
-    /// @param minAmountsOut Minimum output per asset, in the order of `getAssets(meme)`.
-    /// @return amountsOut   Output per asset, stakers' and creator's parts together.
-    function convertFees(address meme, uint256[] calldata minAmountsOut)
-        external
-        returns (uint256[] memory amountsOut);
+    /// @dev Callable by anyone, nonReentrant, whenNotPaused. Reverts if pending USDG is zero or
+    /// below `conversionThreshold`. Price protection is enforced by the swap adapter; the vault
+    /// only rejects a zero output.
+    /// @param meme        Meme vault to convert.
+    /// @return amountsOut Output per asset, stakers' and creator's parts together.
+    function convertFees(address meme) external returns (uint256[] memory amountsOut);
 
     // ---------------------------------------------------------------------------------------------
     // Staking
@@ -236,8 +248,10 @@ interface IVault {
     /// @notice Sets the hook allowed to notify fees.
     function setHook(address hook) external;
 
-    /// @notice Sets the keeper allowed to convert fees.
-    function setKeeper(address keeper) external;
+    /// @notice Sets the pending USDG a vault needs before its epoch is converted, in USDG units.
+    /// @dev Zero disables the automatic conversion in `notifyFees`; manual `convertFees` then
+    /// only requires a non-zero pending amount.
+    function setConversionThreshold(uint256 threshold) external;
 
     /// @notice Sets the adapter that performs USDG -> asset swaps.
     function setSwapAdapter(address adapter) external;
@@ -272,6 +286,9 @@ interface IVault {
     /// @notice Scale of `accUsdPerShare`.
     function PRECISION() external view returns (uint256);
 
+    /// @notice Seconds the automatic conversion waits after a failed attempt.
+    function CONVERSION_COOLDOWN() external view returns (uint256);
+
     /// @notice USDG, the token fees arrive in.
     function usdg() external view returns (address);
 
@@ -279,9 +296,10 @@ interface IVault {
 
     function hook() external view returns (address);
 
-    function keeper() external view returns (address);
-
     function swapAdapter() external view returns (address);
+
+    /// @notice Pending USDG a vault needs before its epoch is converted. Zero: automatic off.
+    function conversionThreshold() external view returns (uint256);
 
     function isAssetAllowed(address asset) external view returns (bool);
 

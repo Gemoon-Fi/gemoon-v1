@@ -386,7 +386,6 @@ contract HookManager is
         poolManager.take(i_pairToken, protocol_, toProtocol);
         poolManager.take(i_pairToken, vault_, toVault);
         if (toVault != 0) IVault(vault_).notifyFees(meme, toVault);
-        // if (toVault != 0) IVault(vault_).convertFees(meme, toVault);
 
         emit FeesDistributed(meme, protocol_, vault_, toProtocol, toVault);
     }
