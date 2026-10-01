@@ -1,17 +1,21 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity ^0.8.21;
 
 import "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {TransparentUpgradeableProxy} from
-    "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
-import {IUniswapV3SwapCallback} from
-    "@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3SwapCallback.sol";
+import {
+    TransparentUpgradeableProxy
+} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
+import {
+    IUniswapV3SwapCallback
+} from "@uniswap/v3-core/contracts/interfaces/callback/IUniswapV3SwapCallback.sol";
 import {TickMath} from "@uniswap-v4-core/libraries/TickMath.sol";
 
-import {UniswapV3SwapAdapter} from "../src/contracts/adapters/UniswapV3SwapAdapter.sol";
+import {
+    UniswapV3SwapAdapter
+} from "../src/contracts/adapters/UniswapV3SwapAdapter.sol";
 import {Vault} from "../src/contracts/vault/Vault.sol";
 import {AssetConfig} from "../src/contracts/interfaces/IVault.sol";
 import {MockToken} from "./VaultTest.sol";
@@ -44,17 +48,24 @@ contract MockV3Pool {
         fillBps = bps;
     }
 
-    function observe(uint32[] calldata secondsAgos)
+    function observe(
+        uint32[] calldata secondsAgos
+    )
         external
         view
-        returns (int56[] memory tickCumulatives, uint160[] memory liquidityCumulatives)
+        returns (
+            int56[] memory tickCumulatives,
+            uint160[] memory liquidityCumulatives
+        )
     {
         require(!observeReverts, "OLD");
         tickCumulatives = new int56[](secondsAgos.length);
         liquidityCumulatives = new uint160[](secondsAgos.length);
         for (uint256 i; i < secondsAgos.length; ++i) {
             // Constant tick over the whole history, cumulative relative to now.
-            tickCumulatives[i] = -int56(twapTick) * int56(uint56(secondsAgos[i]));
+            tickCumulatives[i] =
+                -int56(twapTick) *
+                int56(uint56(secondsAgos[i]));
         }
     }
 
@@ -68,33 +79,44 @@ contract MockV3Pool {
         require(amountSpecified > 0, "exact input only");
         uint256 amountIn = (uint256(amountSpecified) * fillBps) / 10_000;
         uint256 amountOut = quoteAtTick(spotTick, amountIn, zeroForOne);
-        (address tokenIn, address tokenOut) = zeroForOne ? (token0, token1) : (token1, token0);
+        (address tokenIn, address tokenOut) = zeroForOne
+            ? (token0, token1)
+            : (token1, token0);
         (amount0, amount1) = zeroForOne
             ? (int256(amountIn), -int256(amountOut))
             : (-int256(amountOut), int256(amountIn));
 
         uint256 before = IERC20(tokenIn).balanceOf(address(this));
-        IUniswapV3SwapCallback(msg.sender).uniswapV3SwapCallback(amount0, amount1, data);
-        require(IERC20(tokenIn).balanceOf(address(this)) - before >= amountIn, "IIA");
+        IUniswapV3SwapCallback(msg.sender).uniswapV3SwapCallback(
+            amount0,
+            amount1,
+            data
+        );
+        require(
+            IERC20(tokenIn).balanceOf(address(this)) - before >= amountIn,
+            "IIA"
+        );
         MockToken(tokenOut).mint(recipient, amountOut);
     }
 
-    function quoteAtTick(int24 tick, uint256 amountIn, bool zeroForOne)
-        public
-        pure
-        returns (uint256)
-    {
+    function quoteAtTick(
+        int24 tick,
+        uint256 amountIn,
+        bool zeroForOne
+    ) public pure returns (uint256) {
         uint160 sqrtPriceX96 = TickMath.getSqrtPriceAtTick(tick);
         if (sqrtPriceX96 <= type(uint128).max) {
             uint256 ratioX192 = uint256(sqrtPriceX96) * sqrtPriceX96;
-            return zeroForOne
-                ? Math.mulDiv(amountIn, ratioX192, 1 << 192)
-                : Math.mulDiv(amountIn, 1 << 192, ratioX192);
+            return
+                zeroForOne
+                    ? Math.mulDiv(amountIn, ratioX192, 1 << 192)
+                    : Math.mulDiv(amountIn, 1 << 192, ratioX192);
         }
         uint256 ratioX128 = Math.mulDiv(sqrtPriceX96, sqrtPriceX96, 1 << 64);
-        return zeroForOne
-            ? Math.mulDiv(amountIn, ratioX128, 1 << 128)
-            : Math.mulDiv(amountIn, 1 << 128, ratioX128);
+        return
+            zeroForOne
+                ? Math.mulDiv(amountIn, ratioX128, 1 << 128)
+                : Math.mulDiv(amountIn, 1 << 128, ratioX128);
     }
 }
 
@@ -105,11 +127,19 @@ contract MockV3Factory {
         pools[_key(a, b, fee)] = pool;
     }
 
-    function getPool(address a, address b, uint24 fee) external view returns (address) {
+    function getPool(
+        address a,
+        address b,
+        uint24 fee
+    ) external view returns (address) {
         return pools[_key(a, b, fee)];
     }
 
-    function _key(address a, address b, uint24 fee) internal pure returns (bytes32) {
+    function _key(
+        address a,
+        address b,
+        uint24 fee
+    ) internal pure returns (bytes32) {
         (a, b) = a < b ? (a, b) : (b, a);
         return keccak256(abi.encode(a, b, fee));
     }
@@ -136,7 +166,9 @@ contract UniswapV3SwapAdapterTest is Test {
     function setUp() external {
         usdg = new MockToken("USDG", 6);
         // Both swap directions must be covered, so find an asset on each side of USDG.
-        while (address(assetLow) == address(0) || address(assetHigh) == address(0)) {
+        while (
+            address(assetLow) == address(0) || address(assetHigh) == address(0)
+        ) {
             MockToken t = new MockToken("ASSET", 18);
             if (address(t) < address(usdg)) {
                 if (address(assetLow) == address(0)) assetLow = t;
@@ -147,10 +179,26 @@ contract UniswapV3SwapAdapterTest is Test {
         factory = new MockV3Factory();
         poolHigh = new MockV3Pool(address(usdg), address(assetHigh));
         poolLow = new MockV3Pool(address(usdg), address(assetLow));
-        factory.setPool(address(usdg), address(assetHigh), FEE, address(poolHigh));
-        factory.setPool(address(usdg), address(assetLow), FEE, address(poolLow));
+        factory.setPool(
+            address(usdg),
+            address(assetHigh),
+            FEE,
+            address(poolHigh)
+        );
+        factory.setPool(
+            address(usdg),
+            address(assetLow),
+            FEE,
+            address(poolLow)
+        );
 
-        adapter = new UniswapV3SwapAdapter(owner, address(factory), vault, address(usdg), WINDOW);
+        adapter = new UniswapV3SwapAdapter(
+            owner,
+            address(factory),
+            vault,
+            address(usdg),
+            WINDOW
+        );
         vm.startPrank(owner);
         adapter.setRoute(address(assetHigh), FEE, SLIPPAGE_BPS);
         adapter.setRoute(address(assetLow), FEE, SLIPPAGE_BPS);
@@ -159,7 +207,10 @@ contract UniswapV3SwapAdapterTest is Test {
 
     // ------------------------------------------------------------------ helpers
 
-    function _swap(MockToken asset, uint256 amountIn) internal returns (uint256) {
+    function _swap(
+        MockToken asset,
+        uint256 amountIn
+    ) internal returns (uint256) {
         usdg.mint(address(adapter), amountIn);
         vm.prank(vault);
         return adapter.swap(address(usdg), address(asset), amountIn, alice);
@@ -175,20 +226,58 @@ contract UniswapV3SwapAdapterTest is Test {
 
     function test_Constructor_ZeroAddress_Reverts() external {
         vm.expectRevert(UniswapV3SwapAdapter.ZeroAddress.selector);
-        new UniswapV3SwapAdapter(owner, address(0), vault, address(usdg), WINDOW);
+        new UniswapV3SwapAdapter(
+            owner,
+            address(0),
+            vault,
+            address(usdg),
+            WINDOW
+        );
         vm.expectRevert(UniswapV3SwapAdapter.ZeroAddress.selector);
-        new UniswapV3SwapAdapter(owner, address(factory), address(0), address(usdg), WINDOW);
+        new UniswapV3SwapAdapter(
+            owner,
+            address(factory),
+            address(0),
+            address(usdg),
+            WINDOW
+        );
         vm.expectRevert(UniswapV3SwapAdapter.ZeroAddress.selector);
-        new UniswapV3SwapAdapter(owner, address(factory), vault, address(0), WINDOW);
+        new UniswapV3SwapAdapter(
+            owner,
+            address(factory),
+            vault,
+            address(0),
+            WINDOW
+        );
     }
 
     function test_Constructor_WindowOutOfBounds_Reverts() external {
-        vm.expectRevert(abi.encodeWithSelector(UniswapV3SwapAdapter.InvalidTwapWindow.selector, 59));
-        new UniswapV3SwapAdapter(owner, address(factory), vault, address(usdg), 59);
         vm.expectRevert(
-            abi.encodeWithSelector(UniswapV3SwapAdapter.InvalidTwapWindow.selector, 3601)
+            abi.encodeWithSelector(
+                UniswapV3SwapAdapter.InvalidTwapWindow.selector,
+                59
+            )
         );
-        new UniswapV3SwapAdapter(owner, address(factory), vault, address(usdg), 3601);
+        new UniswapV3SwapAdapter(
+            owner,
+            address(factory),
+            vault,
+            address(usdg),
+            59
+        );
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                UniswapV3SwapAdapter.InvalidTwapWindow.selector,
+                3601
+            )
+        );
+        new UniswapV3SwapAdapter(
+            owner,
+            address(factory),
+            vault,
+            address(usdg),
+            3601
+        );
     }
 
     function test_Constructor_SetsOwnerDirectly() external view {
@@ -201,28 +290,45 @@ contract UniswapV3SwapAdapterTest is Test {
 
     function test_SetRoute_NotOwner_Reverts() external {
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Ownable.OwnableUnauthorizedAccount.selector,
+                alice
+            )
+        );
         adapter.setRoute(address(assetHigh), FEE, SLIPPAGE_BPS);
     }
 
     function test_SetRoute_PoolNotFound_Reverts() external {
         vm.prank(owner);
         vm.expectRevert(
-            abi.encodeWithSelector(UniswapV3SwapAdapter.PoolNotFound.selector, address(assetHigh), 500)
+            abi.encodeWithSelector(
+                UniswapV3SwapAdapter.PoolNotFound.selector,
+                address(assetHigh),
+                500
+            )
         );
         adapter.setRoute(address(assetHigh), 500, SLIPPAGE_BPS);
     }
 
     function test_SetRoute_SlippageAboveCap_Reverts() external {
         vm.prank(owner);
-        vm.expectRevert(abi.encodeWithSelector(UniswapV3SwapAdapter.SlippageTooHigh.selector, 501));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                UniswapV3SwapAdapter.SlippageTooHigh.selector,
+                501
+            )
+        );
         adapter.setRoute(address(assetHigh), FEE, 501);
     }
 
     function test_SetRoute_Usdg_Reverts() external {
         vm.prank(owner);
         vm.expectRevert(
-            abi.encodeWithSelector(UniswapV3SwapAdapter.InvalidAsset.selector, address(usdg))
+            abi.encodeWithSelector(
+                UniswapV3SwapAdapter.InvalidAsset.selector,
+                address(usdg)
+            )
         );
         adapter.setRoute(address(usdg), FEE, SLIPPAGE_BPS);
     }
@@ -236,11 +342,18 @@ contract UniswapV3SwapAdapterTest is Test {
 
     function test_SetRoute_StoresAndEmits() external {
         vm.expectEmit(true, true, true, true);
-        emit UniswapV3SwapAdapter.RouteSet(address(assetHigh), address(poolHigh), FEE, 250);
+        emit UniswapV3SwapAdapter.RouteSet(
+            address(assetHigh),
+            address(poolHigh),
+            FEE,
+            250
+        );
         vm.prank(owner);
         adapter.setRoute(address(assetHigh), FEE, 250);
 
-        UniswapV3SwapAdapter.Route memory route = adapter.routeOf(address(assetHigh));
+        UniswapV3SwapAdapter.Route memory route = adapter.routeOf(
+            address(assetHigh)
+        );
         assertEq(route.pool, address(poolHigh));
         assertEq(route.fee, FEE);
         assertEq(route.maxSlippageBps, 250);
@@ -254,14 +367,22 @@ contract UniswapV3SwapAdapterTest is Test {
         usdg.mint(address(adapter), AMOUNT);
         vm.prank(vault);
         vm.expectRevert(
-            abi.encodeWithSelector(UniswapV3SwapAdapter.RouteNotSet.selector, address(assetHigh))
+            abi.encodeWithSelector(
+                UniswapV3SwapAdapter.RouteNotSet.selector,
+                address(assetHigh)
+            )
         );
         adapter.swap(address(usdg), address(assetHigh), AMOUNT, alice);
     }
 
     function test_SetTwapWindow_OutOfBounds_Reverts() external {
         vm.startPrank(owner);
-        vm.expectRevert(abi.encodeWithSelector(UniswapV3SwapAdapter.InvalidTwapWindow.selector, 0));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                UniswapV3SwapAdapter.InvalidTwapWindow.selector,
+                0
+            )
+        );
         adapter.setTwapWindow(0);
         adapter.setTwapWindow(3600);
         assertEq(adapter.twapWindow(), 3600);
@@ -289,7 +410,8 @@ contract UniswapV3SwapAdapterTest is Test {
         vm.prank(vault);
         vm.expectRevert(
             abi.encodeWithSelector(
-                UniswapV3SwapAdapter.UnexpectedTokenIn.selector, address(assetLow)
+                UniswapV3SwapAdapter.UnexpectedTokenIn.selector,
+                address(assetLow)
             )
         );
         adapter.swap(address(assetLow), address(assetHigh), AMOUNT, alice);
@@ -311,13 +433,18 @@ contract UniswapV3SwapAdapterTest is Test {
 
     function test_Callback_NotRoutePool_Reverts() external {
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(UniswapV3SwapAdapter.NotPool.selector, alice));
+        vm.expectRevert(
+            abi.encodeWithSelector(UniswapV3SwapAdapter.NotPool.selector, alice)
+        );
         adapter.uniswapV3SwapCallback(1, 0, abi.encode(address(assetHigh)));
 
         // A route pool of another asset is not accepted either.
         vm.prank(address(poolLow));
         vm.expectRevert(
-            abi.encodeWithSelector(UniswapV3SwapAdapter.NotPool.selector, address(poolLow))
+            abi.encodeWithSelector(
+                UniswapV3SwapAdapter.NotPool.selector,
+                address(poolLow)
+            )
         );
         adapter.uniswapV3SwapCallback(1, 0, abi.encode(address(assetHigh)));
     }
@@ -335,26 +462,39 @@ contract UniswapV3SwapAdapterTest is Test {
         assertEq(assetLow.balanceOf(alice), outLow);
         assertGe(outLow, adapter.minAmountOut(address(assetLow), AMOUNT));
 
-        assertEq(usdg.balanceOf(address(adapter)), 0, "input fully paid to the pools");
+        assertEq(
+            usdg.balanceOf(address(adapter)),
+            0,
+            "input fully paid to the pools"
+        );
         assertEq(usdg.balanceOf(address(poolHigh)), AMOUNT);
         assertEq(usdg.balanceOf(address(poolLow)), AMOUNT);
     }
 
     function test_Quote_NetOfPoolFee() external view {
         // tick 0: 1 unit in = 1 unit out before the 0.3% fee.
-        assertEq(adapter.quote(address(assetHigh), AMOUNT), (AMOUNT * (1e6 - FEE)) / 1e6);
+        assertEq(
+            adapter.quote(address(assetHigh), AMOUNT),
+            (AMOUNT * (1e6 - FEE)) / 1e6
+        );
         // 1% tolerance on top of that.
         assertEq(
             adapter.minAmountOut(address(assetHigh), AMOUNT),
-            ((AMOUNT * (1e6 - FEE)) / 1e6 * (10_000 - SLIPPAGE_BPS)) / 10_000
+            (((AMOUNT * (1e6 - FEE)) / 1e6) * (10_000 - SLIPPAGE_BPS)) / 10_000
         );
     }
 
     function test_Swap_SpotWithinTolerance_Succeeds() external {
         _worse(poolHigh, 50); // ~0.5% worse than TWAP, inside fee + 1%
         _worse(poolLow, 50);
-        assertGe(_swap(assetHigh, AMOUNT), adapter.minAmountOut(address(assetHigh), AMOUNT));
-        assertGe(_swap(assetLow, AMOUNT), adapter.minAmountOut(address(assetLow), AMOUNT));
+        assertGe(
+            _swap(assetHigh, AMOUNT),
+            adapter.minAmountOut(address(assetHigh), AMOUNT)
+        );
+        assertGe(
+            _swap(assetLow, AMOUNT),
+            adapter.minAmountOut(address(assetLow), AMOUNT)
+        );
     }
 
     function test_Swap_SpotBeyondTolerance_Reverts() external {
@@ -363,9 +503,13 @@ contract UniswapV3SwapAdapterTest is Test {
         usdg.mint(address(adapter), 2 * AMOUNT);
 
         vm.startPrank(vault);
-        vm.expectPartialRevert(UniswapV3SwapAdapter.InsufficientOutput.selector);
+        vm.expectPartialRevert(
+            UniswapV3SwapAdapter.InsufficientOutput.selector
+        );
         adapter.swap(address(usdg), address(assetHigh), AMOUNT, alice);
-        vm.expectPartialRevert(UniswapV3SwapAdapter.InsufficientOutput.selector);
+        vm.expectPartialRevert(
+            UniswapV3SwapAdapter.InsufficientOutput.selector
+        );
         adapter.swap(address(usdg), address(assetLow), AMOUNT, alice);
         vm.stopPrank();
     }
@@ -395,7 +539,10 @@ contract UniswapV3SwapAdapterTest is Test {
 
     /// @dev At any price level, a spot equal to the TWAP always clears the bound and the whole
     /// input is paid to the pool.
-    function testFuzz_Swap_SpotEqualsTwap_ClearsBound(int24 tick, uint96 amountIn) external {
+    function testFuzz_Swap_SpotEqualsTwap_ClearsBound(
+        int24 tick,
+        uint96 amountIn
+    ) external {
         tick = int24(bound(tick, -300_000, 300_000));
         amountIn = uint96(bound(amountIn, 1, type(uint96).max));
         poolHigh.setTicks(tick, tick);
@@ -409,7 +556,10 @@ contract UniswapV3SwapAdapterTest is Test {
     }
 
     /// @dev The swap succeeds exactly when the spot output meets the TWAP-derived bound.
-    function testFuzz_Swap_AcceptsIffSpotMeetsBound(int24 shift, uint96 amountIn) external {
+    function testFuzz_Swap_AcceptsIffSpotMeetsBound(
+        int24 shift,
+        uint96 amountIn
+    ) external {
         shift = int24(bound(shift, -2_000, 2_000));
         amountIn = uint96(bound(amountIn, 1e6, type(uint96).max));
         poolHigh.setTicks(0, shift);
@@ -420,7 +570,15 @@ contract UniswapV3SwapAdapterTest is Test {
         usdg.mint(address(adapter), amountIn);
         vm.prank(vault);
         if (spotOut >= minOut) {
-            assertEq(adapter.swap(address(usdg), address(assetHigh), amountIn, alice), spotOut);
+            assertEq(
+                adapter.swap(
+                    address(usdg),
+                    address(assetHigh),
+                    amountIn,
+                    alice
+                ),
+                spotOut
+            );
         } else {
             vm.expectRevert(
                 abi.encodeWithSelector(
@@ -452,7 +610,11 @@ contract UniswapV3SwapAdapterTest is Test {
             )
         );
         UniswapV3SwapAdapter realAdapter = new UniswapV3SwapAdapter(
-            owner, address(factory), address(realVault), address(usdg), WINDOW
+            owner,
+            address(factory),
+            address(realVault),
+            address(usdg),
+            WINDOW
         );
         vm.startPrank(owner);
         realAdapter.setRoute(address(assetHigh), FEE, SLIPPAGE_BPS);
@@ -478,9 +640,15 @@ contract UniswapV3SwapAdapterTest is Test {
 
         assertEq(realVault.vaultInfo(address(meme)).epoch, 1);
         assertEq(usdg.balanceOf(address(realVault)), 0);
-        assertEq(assetHigh.balanceOf(address(realVault)), 60e6, "tick 0: 1:1 units");
+        assertEq(
+            assetHigh.balanceOf(address(realVault)),
+            60e6,
+            "tick 0: 1:1 units"
+        );
         assertEq(assetLow.balanceOf(address(realVault)), 40e6);
-        (, uint256[] memory creatorAmounts) = realVault.creatorAccrued(address(meme));
+        (, uint256[] memory creatorAmounts) = realVault.creatorAccrued(
+            address(meme)
+        );
         assertEq(creatorAmounts[0], 60e6, "nobody stakes: all to the creator");
         assertEq(creatorAmounts[1], 40e6);
 
@@ -491,6 +659,9 @@ contract UniswapV3SwapAdapterTest is Test {
         realVault.notifyFees(address(meme), 100e6);
         assertEq(realVault.vaultInfo(address(meme)).epoch, 1);
         assertEq(realVault.pendingUSDG(address(meme)), 100e6);
-        assertEq(realVault.vaultInfo(address(meme)).lastConversionFailure, block.timestamp);
+        assertEq(
+            realVault.vaultInfo(address(meme)).lastConversionFailure,
+            block.timestamp
+        );
     }
 }

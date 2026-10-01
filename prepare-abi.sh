@@ -15,9 +15,13 @@ for i in ${interfaces}; do
 done
 
 # Update README:
-rm ${PWD}/../README.md || true
+rm ${PWD}/../abi/README.md || true
 
 echo '# Addresses:' > ${PWD}/../abi/README.md
 grep -Pi 'proxy_address=\K0x[A-Za-z0-9]{40}' ./.env | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> ${PWD}/../abi/README.md
+grep -Pi 'UNISWAP_V3_FACTORY=\K0x[A-Za-z0-9]{40}' ./.env | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> ${PWD}/../abi/README.md
+grep -Pi 'NATIVE_TOKEN_ADDRESS=\K0x[A-Za-z0-9]{40}' ./.env | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> ${PWD}/../abi/README.md
+grep -Pi 'VAULT_SWAP_ADAPTER=\K0x[A-Za-z0-9]{40}' ./.env | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> ${PWD}/../abi/README.md
+grep -Pi 'USDG_ADDRESS=\K0x[A-Za-z0-9]{40}' ./.env | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> ${PWD}/../abi/README.md
 echo '## Usage:' >> ${PWD}/../abi/README.md
 cat ./README-ABI.md >> ${PWD}/../abi/README.md

@@ -9,6 +9,9 @@ deploy-gemoon:
 deploy-vault:
 	forge script --via-ir ./script/GemoonDeploy.sol:DeployVault --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
 
+deploy-swap-adapter:
+	forge script --via-ir ./script/GemoonDeploy.sol:DeployUniswapV3SwapAdapter --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
+
 upgrade-vault-proxy:
 	forge script --via-ir ./script/GemoonDeploy.sol:ProxyVaultUpgrade --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
 
