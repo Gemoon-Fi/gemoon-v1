@@ -23,6 +23,8 @@ struct TokenConfig {
 }
 
 interface IGemoonToken is IERC20 {
+    function creator() external view returns (address);
+
     function imageAddress() external view returns (string memory);
 
     function updateImage(string memory addr) external;

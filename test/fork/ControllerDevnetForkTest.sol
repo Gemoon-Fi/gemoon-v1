@@ -230,8 +230,10 @@ contract ControllerDevnetForkTest is Test {
         assertEq(Currency.unwrap(key.currency1), token1, "currency1");
 
         (uint160 sqrtPriceX96, int24 tick,, uint24 lpFee) = poolManager.getSlot0(key.toId());
+        uint256 pairUnit = 10 ** usdg.decimals();
         uint160 expected = PriceMath.getSqrtPriceX96(
-            token0 == token ? PRICE_PER_TOKEN : 1e18, token1 == token ? PRICE_PER_TOKEN : 1e18
+            token0 == token ? PRICE_PER_TOKEN : pairUnit,
+            token1 == token ? PRICE_PER_TOKEN : pairUnit
         );
         assertEq(sqrtPriceX96, expected, "initial price");
         assertEq(lpFee, 0, "pool lp fee");

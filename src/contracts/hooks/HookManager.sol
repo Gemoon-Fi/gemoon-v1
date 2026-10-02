@@ -26,6 +26,7 @@ import {
     Ownable2StepUpgradeable
 } from "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
 import {IVault} from "../interfaces/IVault.sol";
+import {SignedMath} from "@openzeppelin/contracts/utils/math/SignedMath.sol";
 
 /// @title Gemoon UniswapV4 hook manager.
 /// @notice Charges a fixed 1.25% swap fee, always denominated in `i_pairToken`:
@@ -51,6 +52,7 @@ contract HookManager is
 {
     using SafeCast for uint256;
     using PoolIdLibrary for PoolKey;
+    using SignedMath for int256;
 
     // ---------------------------------------------------------------------------------------------
     // Errors / events
@@ -62,6 +64,26 @@ contract HookManager is
     error InvalidFeeBips();
     error VaultNotRegistered(address meme);
     error NotSelf();
+
+    /// @notice One swap in a Meme pool, emitted at the end of every swap.
+    /// @param meme       Meme of the pool.
+    /// @param router     Caller of `PoolManager.swap`, usually a router, not the trader.
+    /// @param trader     Address the swapper passed in `hookData` as an abi-encoded address, zero
+    ///                   if none. Self-reported: for display only, never for authorization.
+    /// @param isBuy      True if the swapper paid pair token and received Meme.
+    /// @param pairAmount Pair-token side of the swap as priced by the pool, hook fee excluded.
+    /// @param memeAmount Meme side of the swap.
+    /// @param fee        Hook fee charged on this swap, in pair token. The swapper pays
+    ///                   `pairAmount + fee` on a buy and receives `pairAmount - fee` on a sell.
+    event MemeSwapped(
+        address indexed meme,
+        address indexed router,
+        address indexed trader,
+        bool isBuy,
+        uint256 pairAmount,
+        uint256 memeAmount,
+        uint256 fee
+    );
 
     event FeeCharged(
         PoolId indexed poolId,
@@ -257,28 +279,47 @@ contract HookManager is
             );
         }
 
-        int128 fee = _chargeFee(key, sender, _abs(params.amountSpecified));
+        int128 fee = _chargeFee(key, sender, params.amountSpecified.abs());
         return (IHooks.beforeSwap.selector, toBeforeSwapDelta(fee, 0), 0);
     }
 
     /// @dev pairToken amount is computed by the pool (sell exactIn / buy exactOut): take the fee now.
-    /// Then, on every swap, try to pay out everything accrued so far.
+    /// Then emit the trade and, on every swap, try to pay out everything accrued so far.
+    /// `delta` is the pool's result for the swapper: net of the fee taken in `_beforeSwap`, before
+    /// the fee returned from here.
     function _afterSwap(
         address sender,
         PoolKey calldata key,
         SwapParams calldata params,
         BalanceDelta delta,
-        bytes calldata
+        bytes calldata hookData
     ) internal override returns (bytes4, int128) {
+        bool pairIs0 = key.currency0 == i_pairToken;
+        uint256 pairAmount = int256(pairIs0 ? delta.amount0() : delta.amount1()).abs();
+        uint256 memeAmount = int256(pairIs0 ? delta.amount1() : delta.amount0()).abs();
+
         int128 fee;
-        if (!_pairTokenIsSpecified(key, params)) {
-            int128 amount = key.currency0 == i_pairToken
-                ? delta.amount0()
-                : delta.amount1();
-            fee = _chargeFee(key, sender, _abs(amount));
+        uint256 feeAmount;
+        if (_pairTokenIsSpecified(key, params)) {
+            // Already charged in `_beforeSwap` on the amount the swapper specified.
+            feeAmount = _feeOf(params.amountSpecified.abs());
+        } else {
+            fee = _chargeFee(key, sender, pairAmount);
+            feeAmount = uint256(uint128(fee));
         }
 
-        try this.payout(_meme(key)) {} catch (bytes memory reason) {
+        address meme = _meme(key);
+        emit MemeSwapped(
+            meme,
+            sender,
+            _trader(hookData),
+            params.zeroForOne == pairIs0,
+            pairAmount,
+            memeAmount,
+            feeAmount
+        );
+
+        try this.payout(meme) {} catch (bytes memory reason) {
             emit PayoutFailed(reason);
         }
         return (IHooks.afterSwap.selector, fee);
@@ -306,7 +347,7 @@ contract HookManager is
         address sender,
         uint256 amount
     ) internal returns (int128) {
-        uint256 fee = (amount * TOTAL_FEE_BIPS) / BIPS;
+        uint256 fee = _feeOf(amount);
         if (fee == 0) return 0;
 
         accrued[_meme(key)] += fee;
@@ -324,8 +365,15 @@ contract HookManager is
             );
     }
 
-    function _abs(int256 x) private pure returns (uint256) {
-        return uint256(x < 0 ? -x : x);
+    function _feeOf(uint256 amount) internal view returns (uint256) {
+        return (amount * TOTAL_FEE_BIPS) / BIPS;
+    }
+
+    /// @dev Trader address self-reported by the swapper through `hookData`, zero if absent or
+    /// not exactly one abi-encoded word. Never trusted for anything but events.
+    function _trader(bytes calldata hookData) internal pure returns (address) {
+        if (hookData.length != 32) return address(0);
+        return address(uint160(uint256(bytes32(hookData))));
     }
 
     // ---------------------------------------------------------------------------------------------

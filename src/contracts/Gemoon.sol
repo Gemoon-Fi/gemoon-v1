@@ -7,6 +7,9 @@ import "./Deployer.sol";
 import "./interfaces/IToken.sol";
 import "./utils/Admin.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {
+    IERC20Metadata
+} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "./utils/Price.sol";
 import {IPoolManager} from "@uniswap-v4-core/interfaces/IPoolManager.sol";
 import {PoolKey} from "@uniswap-v4-core/types/PoolKey.sol";
@@ -255,9 +258,11 @@ contract GemoonController is
             tickSpacing: TICK_SPACING,
             hooks: IHooks(hook_)
         });
+        // PRICE_PER_TOKEN Meme units per one whole pair token, whatever its decimals.
+        uint256 pairUnit = 10 ** IERC20Metadata(_weth).decimals();
         uint160 sqrtX96Price = PriceMath.getSqrtPriceX96(
-            token0 == deployedToken ? PRICE_PER_TOKEN : 1e18,
-            token1 == deployedToken ? PRICE_PER_TOKEN : 1e18
+            token0 == deployedToken ? PRICE_PER_TOKEN : pairUnit,
+            token1 == deployedToken ? PRICE_PER_TOKEN : pairUnit
         );
 
         (int24 tickLower, int24 tickUpper, int24 tick) = Ticks.getTicks(

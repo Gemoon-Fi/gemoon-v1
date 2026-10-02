@@ -16,6 +16,7 @@ import {TickMath} from "@uniswap-v4-core/libraries/TickMath.sol";
 import {
     UniswapV3SwapAdapter
 } from "../src/contracts/adapters/UniswapV3SwapAdapter.sol";
+import {IUniswapV3SwapAdapter} from "../src/contracts/interfaces/IUniswapV3SwapAdapter.sol";
 import {Vault} from "../src/contracts/vault/Vault.sol";
 import {AssetConfig} from "../src/contracts/interfaces/IVault.sol";
 import {MockToken} from "./VaultTest.sol";
@@ -225,7 +226,7 @@ contract UniswapV3SwapAdapterTest is Test {
     // ------------------------------------------------------------------ construction / admin
 
     function test_Constructor_ZeroAddress_Reverts() external {
-        vm.expectRevert(UniswapV3SwapAdapter.ZeroAddress.selector);
+        vm.expectRevert(IUniswapV3SwapAdapter.ZeroAddress.selector);
         new UniswapV3SwapAdapter(
             owner,
             address(0),
@@ -233,7 +234,7 @@ contract UniswapV3SwapAdapterTest is Test {
             address(usdg),
             WINDOW
         );
-        vm.expectRevert(UniswapV3SwapAdapter.ZeroAddress.selector);
+        vm.expectRevert(IUniswapV3SwapAdapter.ZeroAddress.selector);
         new UniswapV3SwapAdapter(
             owner,
             address(factory),
@@ -241,7 +242,7 @@ contract UniswapV3SwapAdapterTest is Test {
             address(usdg),
             WINDOW
         );
-        vm.expectRevert(UniswapV3SwapAdapter.ZeroAddress.selector);
+        vm.expectRevert(IUniswapV3SwapAdapter.ZeroAddress.selector);
         new UniswapV3SwapAdapter(
             owner,
             address(factory),
@@ -254,7 +255,7 @@ contract UniswapV3SwapAdapterTest is Test {
     function test_Constructor_WindowOutOfBounds_Reverts() external {
         vm.expectRevert(
             abi.encodeWithSelector(
-                UniswapV3SwapAdapter.InvalidTwapWindow.selector,
+                IUniswapV3SwapAdapter.InvalidTwapWindow.selector,
                 59
             )
         );
@@ -267,7 +268,7 @@ contract UniswapV3SwapAdapterTest is Test {
         );
         vm.expectRevert(
             abi.encodeWithSelector(
-                UniswapV3SwapAdapter.InvalidTwapWindow.selector,
+                IUniswapV3SwapAdapter.InvalidTwapWindow.selector,
                 3601
             )
         );
@@ -303,7 +304,7 @@ contract UniswapV3SwapAdapterTest is Test {
         vm.prank(owner);
         vm.expectRevert(
             abi.encodeWithSelector(
-                UniswapV3SwapAdapter.PoolNotFound.selector,
+                IUniswapV3SwapAdapter.PoolNotFound.selector,
                 address(assetHigh),
                 500
             )
@@ -315,7 +316,7 @@ contract UniswapV3SwapAdapterTest is Test {
         vm.prank(owner);
         vm.expectRevert(
             abi.encodeWithSelector(
-                UniswapV3SwapAdapter.SlippageTooHigh.selector,
+                IUniswapV3SwapAdapter.SlippageTooHigh.selector,
                 501
             )
         );
@@ -326,7 +327,7 @@ contract UniswapV3SwapAdapterTest is Test {
         vm.prank(owner);
         vm.expectRevert(
             abi.encodeWithSelector(
-                UniswapV3SwapAdapter.InvalidAsset.selector,
+                IUniswapV3SwapAdapter.InvalidAsset.selector,
                 address(usdg)
             )
         );
@@ -342,7 +343,7 @@ contract UniswapV3SwapAdapterTest is Test {
 
     function test_SetRoute_StoresAndEmits() external {
         vm.expectEmit(true, true, true, true);
-        emit UniswapV3SwapAdapter.RouteSet(
+        emit IUniswapV3SwapAdapter.RouteSet(
             address(assetHigh),
             address(poolHigh),
             FEE,
@@ -351,7 +352,7 @@ contract UniswapV3SwapAdapterTest is Test {
         vm.prank(owner);
         adapter.setRoute(address(assetHigh), FEE, 250);
 
-        UniswapV3SwapAdapter.Route memory route = adapter.routeOf(
+        IUniswapV3SwapAdapter.Route memory route = adapter.routeOf(
             address(assetHigh)
         );
         assertEq(route.pool, address(poolHigh));
@@ -368,7 +369,7 @@ contract UniswapV3SwapAdapterTest is Test {
         vm.prank(vault);
         vm.expectRevert(
             abi.encodeWithSelector(
-                UniswapV3SwapAdapter.RouteNotSet.selector,
+                IUniswapV3SwapAdapter.RouteNotSet.selector,
                 address(assetHigh)
             )
         );
@@ -379,7 +380,7 @@ contract UniswapV3SwapAdapterTest is Test {
         vm.startPrank(owner);
         vm.expectRevert(
             abi.encodeWithSelector(
-                UniswapV3SwapAdapter.InvalidTwapWindow.selector,
+                IUniswapV3SwapAdapter.InvalidTwapWindow.selector,
                 0
             )
         );
@@ -402,7 +403,7 @@ contract UniswapV3SwapAdapterTest is Test {
     function test_Swap_NotVault_Reverts() external {
         usdg.mint(address(adapter), AMOUNT);
         vm.prank(alice);
-        vm.expectRevert(UniswapV3SwapAdapter.NotVault.selector);
+        vm.expectRevert(IUniswapV3SwapAdapter.NotVault.selector);
         adapter.swap(address(usdg), address(assetHigh), AMOUNT, alice);
     }
 
@@ -410,7 +411,7 @@ contract UniswapV3SwapAdapterTest is Test {
         vm.prank(vault);
         vm.expectRevert(
             abi.encodeWithSelector(
-                UniswapV3SwapAdapter.UnexpectedTokenIn.selector,
+                IUniswapV3SwapAdapter.UnexpectedTokenIn.selector,
                 address(assetLow)
             )
         );
@@ -419,7 +420,7 @@ contract UniswapV3SwapAdapterTest is Test {
 
     function test_Swap_ZeroAmount_Reverts() external {
         vm.prank(vault);
-        vm.expectRevert(UniswapV3SwapAdapter.ZeroAmount.selector);
+        vm.expectRevert(IUniswapV3SwapAdapter.ZeroAmount.selector);
         adapter.swap(address(usdg), address(assetHigh), 0, alice);
     }
 
@@ -434,7 +435,7 @@ contract UniswapV3SwapAdapterTest is Test {
     function test_Callback_NotRoutePool_Reverts() external {
         vm.prank(alice);
         vm.expectRevert(
-            abi.encodeWithSelector(UniswapV3SwapAdapter.NotPool.selector, alice)
+            abi.encodeWithSelector(IUniswapV3SwapAdapter.NotPool.selector, alice)
         );
         adapter.uniswapV3SwapCallback(1, 0, abi.encode(address(assetHigh)));
 
@@ -442,7 +443,7 @@ contract UniswapV3SwapAdapterTest is Test {
         vm.prank(address(poolLow));
         vm.expectRevert(
             abi.encodeWithSelector(
-                UniswapV3SwapAdapter.NotPool.selector,
+                IUniswapV3SwapAdapter.NotPool.selector,
                 address(poolLow)
             )
         );
@@ -504,11 +505,11 @@ contract UniswapV3SwapAdapterTest is Test {
 
         vm.startPrank(vault);
         vm.expectPartialRevert(
-            UniswapV3SwapAdapter.InsufficientOutput.selector
+            IUniswapV3SwapAdapter.InsufficientOutput.selector
         );
         adapter.swap(address(usdg), address(assetHigh), AMOUNT, alice);
         vm.expectPartialRevert(
-            UniswapV3SwapAdapter.InsufficientOutput.selector
+            IUniswapV3SwapAdapter.InsufficientOutput.selector
         );
         adapter.swap(address(usdg), address(assetLow), AMOUNT, alice);
         vm.stopPrank();
@@ -522,7 +523,7 @@ contract UniswapV3SwapAdapterTest is Test {
         vm.prank(vault);
         vm.expectRevert(
             abi.encodeWithSelector(
-                UniswapV3SwapAdapter.PartialFill.selector,
+                IUniswapV3SwapAdapter.PartialFill.selector,
                 address(assetHigh),
                 AMOUNT,
                 (AMOUNT * 9_990) / 10_000
@@ -582,7 +583,7 @@ contract UniswapV3SwapAdapterTest is Test {
         } else {
             vm.expectRevert(
                 abi.encodeWithSelector(
-                    UniswapV3SwapAdapter.InsufficientOutput.selector,
+                    IUniswapV3SwapAdapter.InsufficientOutput.selector,
                     address(assetHigh),
                     spotOut,
                     minOut

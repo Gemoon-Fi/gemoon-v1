@@ -99,10 +99,7 @@ HookManager для интеграций:
    - `getAssets(meme)`: наградные активы и их веса.
 3. Забрать: `claim(meme)` всё, либо `claim(meme, assets[])` только выбранные активы.
 4. Выйти: `unstake(meme, amount)`, награды остаются claimable. `exit(meme)` снимает весь стейк и
-   забирает награды за один вызов.
-
-`emergencyUnstake(meme)` возвращает стейк даже на паузе, но всё заработанное с последнего
-`stake`, `unstake` или `claim` теряется. Использовать только когда обычный вывод недоступен.
+   забирает награды за один вызов. `unstake` работает и на паузе, `exit` и `claim` — нет.
 
 Стейкер получает долю только от комиссий, пришедших пока он застейкан. Если стейкеров нет, вся
 комиссия уходит создателю.
@@ -120,7 +117,7 @@ HookManager для интеграций:
 
 `IGemoonToken`: ERC20 плюс permit и burn.
 
-- Чтение: `imageAddress()`, `description()`, `getSocialMedia()`, `showAdmins()`.
+- Чтение: `creator()`, `imageAddress()`, `description()`, `getSocialMedia()`, `showAdmins()`.
 - Только админ: `updateImage(url)`, `changeDescription(text)`.
 - Замена админа: `GemoonController.changeAdmin(token, oldAdmin, newAdmin)`. Заменить можно
   только админа с `removable = true`.
@@ -133,7 +130,7 @@ HookManager для интеграций:
 | Vault | `VaultRegistered(meme, creator, assets)` | волт мема создан |
 | Vault | `FeesNotified(meme, toStakers, toCreator)` | пришла комиссия в USDG |
 | Vault | `FeesConverted(meme, epoch, usdgIn, toStakers[], toCreator[])` | USDG сконвертирован, награды стали claimable |
-| Vault | `Staked`, `Unstaked`, `EmergencyUnstaked`, `RewardPaid`, `CreatorRewardPaid` | действия пользователей |
+| Vault | `Staked`, `Unstaked`, `RewardPaid`, `CreatorRewardPaid` | действия пользователей |
 | Vault | `CreatorTransferStarted`, `CreatorTransferred` | смена создателя |
 | Token | `UpdateImage`, `UpdateDescription` | смена метаданных |
 

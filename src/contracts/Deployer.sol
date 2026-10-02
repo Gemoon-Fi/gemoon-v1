@@ -4,9 +4,9 @@ pragma solidity ^0.8.20;
 import {GemoonToken, TokenConfig} from "./Token.sol";
 
 library Deployer {
-	function deployToken(TokenConfig memory config) external returns(address) {
-		GemoonToken token = new GemoonToken(config);
+    function deployToken(TokenConfig memory config) external returns (address) {
+        GemoonToken token = new GemoonToken(config, msg.sender);
 
-		return address(token);
-	}
+        return address(token);
+    }
 }

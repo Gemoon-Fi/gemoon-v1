@@ -6,16 +6,35 @@ import "../src/contracts/utils/Admin.sol";
 import "../src/contracts/interfaces/IToken.sol";
 import {console} from "forge-std/console.sol";
 
-// struct TokenConfig {
-//     string imgUrl;
-//     string description;
-//     SocialMedia socialMedia;
-//     string name;
-//     string symbol;
-//     AdminConfig[] admins;
-// }
-
 contract TokenTest is Test {
+    address internal constant CREATOR = address(0xC0FFEE);
+
+    function test_Creator_SetInConstructor_ReturnsCreator() external {
+        address[] memory initAdmins = new address[](1);
+        bool[] memory removables = new bool[](1);
+        initAdmins[0] = msg.sender;
+        removables[0] = false;
+
+        GemoonToken token = new GemoonToken(
+            TokenConfig({
+                imgUrl: "https://a.com",
+                description: "A test token",
+                socialMedia: SocialMedia({
+                    farcaster: "https://farcaster.xyz",
+                    twitterX: "https://twitter.com/test",
+                    telegram: "https://t.me/test",
+                    website: "https://test.com"
+                }),
+                name: "Test Token",
+                symbol: "TEST",
+                admins: initAdminsStruct(initAdmins, removables)
+            }),
+            CREATOR
+        );
+
+        assertEq(token.creator(), CREATOR);
+    }
+
     function testTokenGetAdmin() external {
         address[] memory initAdmins = new address[](2);
         bool[] memory removables = new bool[](2);
@@ -38,7 +57,8 @@ contract TokenTest is Test {
                 name: "Test Token",
                 symbol: "TEST",
                 admins: initAdminsStruct(initAdmins, removables)
-            })
+            }),
+            CREATOR
         );
 
         assertEq(Admin(token).getAdmins().length, 2, "Not enough admins");
@@ -86,7 +106,8 @@ contract TokenTest is Test {
                 name: "Test Token",
                 symbol: "TEST",
                 admins: initAdminsStruct(initAdmins, removables)
-            })
+            }),
+            CREATOR
         );
 
         assertEq(Admin(token).isAdmin(msg.sender), true, "Should be admin");
@@ -114,7 +135,8 @@ contract TokenTest is Test {
                 name: "Test Token",
                 symbol: "TEST",
                 admins: initAdminsStruct(initAdmins, removables)
-            })
+            }),
+            CREATOR
         );
 
         assertEq(Admin(token).isAdmin(address(this)), true, "Should be admin");
@@ -145,7 +167,8 @@ contract TokenTest is Test {
                 name: "Test Token",
                 symbol: "TEST",
                 admins: initAdminsStruct(initAdmins, removables)
-            })
+            }),
+            CREATOR
         );
 
         assertEq(Admin(token).isAdmin(address(this)), false, "Should be admin");
@@ -175,7 +198,8 @@ contract TokenTest is Test {
                 name: "Test Token",
                 symbol: "TEST",
                 admins: initAdminsStruct(initAdmins, removables)
-            })
+            }),
+            CREATOR
         );
 
         token.changeDescription("New description");
@@ -203,7 +227,8 @@ contract TokenTest is Test {
                 name: "Test Token",
                 symbol: "TEST",
                 admins: initAdminsStruct(initAdmins, removables)
-            })
+            }),
+            CREATOR
         );
 
         vm.expectRevert(bytes("Caller is not an admin"));
@@ -232,7 +257,8 @@ contract TokenTest is Test {
                 name: "Test Token",
                 symbol: "TEST",
                 admins: initAdminsStruct(initAdmins, removables)
-            })
+            }),
+            CREATOR
         );
 
         assertEq(token.description(), "A test token", "Invalid description");

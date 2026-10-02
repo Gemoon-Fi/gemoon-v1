@@ -279,7 +279,8 @@ contract Vault is
         uint256 total = stakerUsd + creatorUsd;
         if (total == 0) revert NothingToConvert();
         uint256 threshold = s_conversionThreshold;
-        if (total < threshold) revert BelowConversionThreshold(total, threshold);
+        if (total < threshold)
+            revert BelowConversionThreshold(total, threshold);
 
         // Effects: close the epoch before any external call.
         uint64 e = v.epoch;
@@ -401,26 +402,6 @@ contract Vault is
         for (uint256 i; i < n; ++i) {
             _payReward(meme, i);
         }
-    }
-
-    /// @inheritdoc IVault
-    function emergencyUnstake(
-        address meme
-    ) external nonReentrant onlyRegistered(meme) {
-        VaultInfo storage v = s_vaults[meme];
-        Staker storage st = s_stakers[meme][msg.sender];
-        uint256 amount = st.amount;
-        if (amount == 0) revert ZeroAmount();
-
-        st.amount = 0;
-        st.credit = 0;
-        st.accCheckpoint = v.accUsdPerShare;
-        st.epoch = v.epoch;
-        v.totalStaked -= amount;
-        s_accounted[meme] -= amount;
-
-        IERC20(meme).safeTransfer(msg.sender, amount);
-        emit EmergencyUnstaked(meme, msg.sender, amount);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -784,7 +765,8 @@ contract Vault is
         ) return;
 
         try this.convertFees(meme) {} catch (bytes memory reason) {
-            if (reason.length != 0) v.lastConversionFailure = uint64(block.timestamp);
+            if (reason.length != 0)
+                v.lastConversionFailure = uint64(block.timestamp);
             emit ConversionFailed(meme, reason);
         }
     }
@@ -804,7 +786,12 @@ contract Vault is
         if (adapter == address(0)) revert SwapAdapterNotSet();
         uint256 before = IERC20(asset).balanceOf(address(this));
         usdg_.safeTransfer(adapter, amountIn);
-        ISwapAdapter(adapter).swap(address(usdg_), asset, amountIn, address(this));
+        ISwapAdapter(adapter).swap(
+            address(usdg_),
+            asset,
+            amountIn,
+            address(this)
+        );
         amountOut = IERC20(asset).balanceOf(address(this)) - before;
         if (amountOut == 0) revert ZeroSwapOutput(asset);
     }

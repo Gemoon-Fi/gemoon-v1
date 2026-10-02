@@ -15,6 +15,7 @@ import {
 import {TickMath} from "@uniswap-v4-core/libraries/TickMath.sol";
 
 import {ISwapAdapter} from "../interfaces/ISwapAdapter.sol";
+import {IUniswapV3SwapAdapter} from "../interfaces/IUniswapV3SwapAdapter.sol";
 
 /// @title Uniswap V3 swap adapter with on-chain TWAP price protection.
 /// @notice Sells the vault's USDG for a reward asset in one Uniswap V3 pool per asset. The minimum
@@ -29,45 +30,8 @@ import {ISwapAdapter} from "../interfaces/ISwapAdapter.sol";
 /// The pool must keep enough observation cardinality for `twapWindow`, otherwise `observe` reverts
 /// ("OLD") and the vault's conversion fails until `increaseObservationCardinalityNext` is called.
 /// Not upgradeable on purpose: the vault replaces adapters through `Vault.setSwapAdapter`.
-contract UniswapV3SwapAdapter is ISwapAdapter, IUniswapV3SwapCallback, Ownable2Step {
+contract UniswapV3SwapAdapter is IUniswapV3SwapAdapter, IUniswapV3SwapCallback, Ownable2Step {
     using SafeERC20 for IERC20;
-
-    // ---------------------------------------------------------------------------------------------
-    // Types
-    // ---------------------------------------------------------------------------------------------
-
-    /// @notice Swap route of one reward asset.
-    /// @param pool           USDG/asset pool of the factory.
-    /// @param fee            Fee tier of `pool`, in hundredths of a bip.
-    /// @param maxSlippageBps Tolerated deviation from the TWAP quote, in bps.
-    struct Route {
-        address pool;
-        uint24 fee;
-        uint16 maxSlippageBps;
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // Errors / events
-    // ---------------------------------------------------------------------------------------------
-
-    error ZeroAddress();
-    error ZeroAmount();
-    error NotVault();
-    error NotPool(address caller);
-    error UnexpectedTokenIn(address tokenIn);
-    error InvalidAsset(address asset);
-    error RouteNotSet(address asset);
-    error PoolNotFound(address asset, uint24 fee);
-    error SlippageTooHigh(uint16 maxSlippageBps);
-    error InvalidTwapWindow(uint32 window);
-    error InsufficientOutput(address asset, uint256 amountOut, uint256 minAmountOut);
-    error PartialFill(address asset, uint256 amountIn, uint256 amountSpent);
-
-    event RouteSet(address indexed asset, address indexed pool, uint24 fee, uint16 maxSlippageBps);
-    event RouteRemoved(address indexed asset);
-    event TwapWindowUpdated(uint32 window);
-    event Swapped(address indexed asset, uint256 amountIn, uint256 amountOut, uint256 minAmountOut);
-    event Swept(address indexed token, address indexed to, uint256 amount);
 
     // ---------------------------------------------------------------------------------------------
     // Constants / immutables
@@ -137,11 +101,8 @@ contract UniswapV3SwapAdapter is ISwapAdapter, IUniswapV3SwapCallback, Ownable2S
         if (route.pool == address(0)) revert RouteNotSet(tokenOut);
 
         bool zeroForOne = tokenIn < tokenOut;
-        uint256 minOut = Math.mulDiv(
-            _expectedOut(route, amountIn, zeroForOne),
-            BPS - route.maxSlippageBps,
-            BPS
-        );
+        uint256 twapOut = _expectedOut(route, amountIn, zeroForOne);
+        uint256 minOut = Math.mulDiv(twapOut, BPS - route.maxSlippageBps, BPS);
 
         (int256 amount0, int256 amount1) = IUniswapV3Pool(route.pool).swap(
             recipient,
@@ -158,7 +119,7 @@ contract UniswapV3SwapAdapter is ISwapAdapter, IUniswapV3SwapCallback, Ownable2S
         amountOut = outDelta < 0 ? uint256(-outDelta) : 0;
         if (amountOut < minOut) revert InsufficientOutput(tokenOut, amountOut, minOut);
 
-        emit Swapped(tokenOut, amountIn, amountOut, minOut);
+        emit Swapped(tokenOut, amountIn, amountOut, twapOut, minOut);
     }
 
     /// @inheritdoc IUniswapV3SwapCallback
@@ -181,12 +142,7 @@ contract UniswapV3SwapAdapter is ISwapAdapter, IUniswapV3SwapCallback, Ownable2S
     // Admin
     // ---------------------------------------------------------------------------------------------
 
-    /// @notice Sets or replaces the route of `asset`.
-    /// @dev Reverts with the pool's own error (e.g. "OLD") if the pool cannot serve the current
-    /// TWAP window yet, so a route never points at a pool with too little observation history.
-    /// @param asset          Reward asset bought through this route.
-    /// @param fee            Fee tier of the USDG/asset pool to use.
-    /// @param maxSlippageBps Tolerated deviation from the TWAP quote, at most MAX_SLIPPAGE_BPS.
+    /// @inheritdoc IUniswapV3SwapAdapter
     function setRoute(address asset, uint24 fee, uint16 maxSlippageBps) external onlyOwner {
         if (asset == address(0)) revert ZeroAddress();
         if (asset == i_usdg) revert InvalidAsset(asset);
@@ -199,20 +155,19 @@ contract UniswapV3SwapAdapter is ISwapAdapter, IUniswapV3SwapCallback, Ownable2S
         emit RouteSet(asset, pool, fee, maxSlippageBps);
     }
 
-    /// @notice Removes the route of `asset`; swaps into it revert afterwards.
+    /// @inheritdoc IUniswapV3SwapAdapter
     function removeRoute(address asset) external onlyOwner {
         if (s_routes[asset].pool == address(0)) revert RouteNotSet(asset);
         delete s_routes[asset];
         emit RouteRemoved(asset);
     }
 
-    /// @notice Sets the TWAP window used for every quote.
+    /// @inheritdoc IUniswapV3SwapAdapter
     function setTwapWindow(uint32 window) external onlyOwner {
         _setTwapWindow(window);
     }
 
-    /// @notice Sends the whole balance of `token` to `to`. The adapter holds no funds between
-    ///         swaps, so anything here is dust of a partially filled swap or a mistaken transfer.
+    /// @inheritdoc IUniswapV3SwapAdapter
     function sweep(address token, address to) external onlyOwner {
         if (to == address(0)) revert ZeroAddress();
         uint256 amount = IERC20(token).balanceOf(address(this));
@@ -225,25 +180,24 @@ contract UniswapV3SwapAdapter is ISwapAdapter, IUniswapV3SwapCallback, Ownable2S
     // Views
     // ---------------------------------------------------------------------------------------------
 
-    /// @notice Route of `asset`, pool zero if none.
+    /// @inheritdoc IUniswapV3SwapAdapter
     function routeOf(address asset) external view returns (Route memory) {
         return s_routes[asset];
     }
 
-    /// @notice Current TWAP window in seconds.
+    /// @inheritdoc IUniswapV3SwapAdapter
     function twapWindow() external view returns (uint32) {
         return s_twapWindow;
     }
 
-    /// @notice Expected output of selling `amountIn` USDG for `asset` at the route's TWAP, net of
-    ///         the pool fee. The swap's minimum output is this minus `maxSlippageBps`.
+    /// @inheritdoc IUniswapV3SwapAdapter
     function quote(address asset, uint256 amountIn) external view returns (uint256) {
         Route memory route = s_routes[asset];
         if (route.pool == address(0)) revert RouteNotSet(asset);
         return _expectedOut(route, amountIn, i_usdg < asset);
     }
 
-    /// @notice Minimum output `swap` would accept for `amountIn` of USDG into `asset` right now.
+    /// @inheritdoc IUniswapV3SwapAdapter
     function minAmountOut(address asset, uint256 amountIn) external view returns (uint256) {
         Route memory route = s_routes[asset];
         if (route.pool == address(0)) revert RouteNotSet(asset);

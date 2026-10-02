@@ -60,7 +60,7 @@ struct VaultInfo {
 ///  - Sum of stakers' USDG credits of an epoch <= pendingStakerUSDG of that epoch, so the sum of
 ///    claimable rewards never exceeds what the conversion bought.
 ///  - Sum of AssetConfig.weightBps of every registered vault == BPS.
-///  - Stakers can always withdraw principal via `unstake` / `emergencyUnstake`, even when paused.
+///  - Stakers can always withdraw principal via `unstake`, even when paused.
 ///  - `notifyFees` never reverts because of the automatic conversion: a failing conversion is
 ///    caught, the credited USDG stays pending and is converted later.
 ///  - No epoch is closed while pending USDG is below `conversionThreshold`.
@@ -88,14 +88,26 @@ interface IVault {
     error BelowConversionThreshold(uint256 pending, uint256 threshold);
     error ZeroSwapOutput(address asset);
     error SwapAdapterNotSet();
-    error RescueExceedsSurplus(address token, uint256 surplus, uint256 requested);
+    error RescueExceedsSurplus(
+        address token,
+        uint256 surplus,
+        uint256 requested
+    );
 
     // ---------------------------------------------------------------------------------------------
     // Events
     // ---------------------------------------------------------------------------------------------
 
-    event VaultRegistered(address indexed meme, address indexed creator, AssetConfig[] assets);
-    event FeesNotified(address indexed meme, uint256 toStakers, uint256 toCreator);
+    event VaultRegistered(
+        address indexed meme,
+        address indexed creator,
+        AssetConfig[] assets
+    );
+    event FeesNotified(
+        address indexed meme,
+        uint256 toStakers,
+        uint256 toCreator
+    );
     event ConversionFailed(address indexed meme, bytes reason);
     event FeesConverted(
         address indexed meme,
@@ -104,9 +116,14 @@ interface IVault {
         uint256[] toStakers,
         uint256[] toCreator
     );
+
     event Staked(address indexed meme, address indexed account, uint256 amount);
-    event Unstaked(address indexed meme, address indexed account, uint256 amount);
-    event EmergencyUnstaked(address indexed meme, address indexed account, uint256 amount);
+
+    event Unstaked(
+        address indexed meme,
+        address indexed account,
+        uint256 amount
+    );
     event RewardPaid(
         address indexed meme,
         address indexed account,
@@ -119,8 +136,16 @@ interface IVault {
         address indexed asset,
         uint256 amount
     );
-    event CreatorTransferStarted(address indexed meme, address indexed from, address indexed to);
-    event CreatorTransferred(address indexed meme, address indexed from, address indexed to);
+    event CreatorTransferStarted(
+        address indexed meme,
+        address indexed from,
+        address indexed to
+    );
+    event CreatorTransferred(
+        address indexed meme,
+        address indexed from,
+        address indexed to
+    );
     event ControllerUpdated(address indexed controller);
     event HookUpdated(address indexed hook);
     event ConversionThresholdUpdated(uint256 threshold);
@@ -138,7 +163,11 @@ interface IVault {
     /// @param meme    Meme token, also the staking token of this vault.
     /// @param creator Receives the creator share of fees.
     /// @param assets  Reward assets and their weights, 1..MAX_ASSETS entries.
-    function registerVault(address meme, address creator, AssetConfig[] calldata assets) external;
+    function registerVault(
+        address meme,
+        address creator,
+        AssetConfig[] calldata assets
+    ) external;
 
     // ---------------------------------------------------------------------------------------------
     // Fee intake and conversion
@@ -162,7 +191,9 @@ interface IVault {
     /// only rejects a zero output.
     /// @param meme        Meme vault to convert.
     /// @return amountsOut Output per asset, stakers' and creator's parts together.
-    function convertFees(address meme) external returns (uint256[] memory amountsOut);
+    function convertFees(
+        address meme
+    ) external returns (uint256[] memory amountsOut);
 
     // ---------------------------------------------------------------------------------------------
     // Staking
@@ -211,12 +242,6 @@ interface IVault {
     /// @notice Unstakes the whole stake and claims all converted rewards.
     /// @param meme Meme vault to exit.
     function exit(address meme) external;
-
-    /// @notice Withdraws the whole stake without touching reward accounting.
-    /// @dev Works while paused. Rewards settled by previous checkpoints (stake/unstake/claim) stay
-    /// claimable, everything earned since the last checkpoint of the caller is forfeited.
-    /// @param meme Meme vault to exit.
-    function emergencyUnstake(address meme) external;
 
     // ---------------------------------------------------------------------------------------------
     // Creator
@@ -313,33 +338,40 @@ interface IVault {
     function vaultInfo(address meme) external view returns (VaultInfo memory);
 
     /// @notice Reward assets of `meme` and their weights, in conversion order.
-    function getAssets(address meme) external view returns (AssetConfig[] memory);
+    function getAssets(
+        address meme
+    ) external view returns (AssetConfig[] memory);
 
     function creatorOf(address meme) external view returns (address);
 
     function totalStaked(address meme) external view returns (uint256);
 
-    function stakedOf(address meme, address account) external view returns (uint256);
+    function stakedOf(
+        address meme,
+        address account
+    ) external view returns (uint256);
 
     /// @notice USDG credited in the open epoch of `meme` and not yet converted.
     function pendingUSDG(address meme) external view returns (uint256);
 
     /// @notice USDG credited to `account` in the open epoch, to be converted by the next `convertFees`.
-    function pendingCreditOf(address meme, address account) external view returns (uint256);
+    function pendingCreditOf(
+        address meme,
+        address account
+    ) external view returns (uint256);
 
     /// @notice Converted rewards of `account` claimable now, in every asset of `meme`.
     /// @return assets  Reward assets, same order as `getAssets(meme)`.
     /// @return amounts Claimable amount per asset.
-    function earned(address meme, address account)
-        external
-        view
-        returns (address[] memory assets, uint256[] memory amounts);
+    function earned(
+        address meme,
+        address account
+    ) external view returns (address[] memory assets, uint256[] memory amounts);
 
     /// @notice Converted creator share claimable now, in every asset of `meme`.
     /// @return assets  Reward assets, same order as `getAssets(meme)`.
     /// @return amounts Claimable amount per asset.
-    function creatorAccrued(address meme)
-        external
-        view
-        returns (address[] memory assets, uint256[] memory amounts);
+    function creatorAccrued(
+        address meme
+    ) external view returns (address[] memory assets, uint256[] memory amounts);
 }

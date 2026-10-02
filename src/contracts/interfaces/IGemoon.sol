@@ -25,7 +25,8 @@ struct DeployConfig {
 
 int24 constant TICK_SPACING = 200;
 
-// If fact amount of MON in pool will be 300_000 MON
+/// @dev Start price of every Meme pool: this many Meme units (18 decimals) for one whole pair
+/// token, i.e. for `10 ** pairToken.decimals()` raw units of USDG.
 uint256 constant PRICE_PER_TOKEN = 300_000 * 1e18;
 
 // TODO: move to GemoonController interface

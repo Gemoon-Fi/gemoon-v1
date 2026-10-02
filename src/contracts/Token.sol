@@ -11,10 +11,12 @@ contract GemoonToken is IGemoonToken, ERC20, ERC20Permit, ERC20Burnable, Admin {
     string private _imgUrl;
     string private _description;
     uint8 private _decimals;
+    address private _creator;
     SocialMedia private _socialMedia;
 
     constructor(
-        TokenConfig memory config
+        TokenConfig memory config,
+        address creator_
     )
         ERC20(config.name, config.symbol)
         ERC20Permit(config.name)
@@ -23,10 +25,15 @@ contract GemoonToken is IGemoonToken, ERC20, ERC20Permit, ERC20Burnable, Admin {
         _imgUrl = config.imgUrl;
         _description = config.description;
         _decimals = DECIMALS;
+        _creator = creator_;
         _socialMedia = config.socialMedia;
 
         /// @notice Minting the maximum supply of tokens to the deployer.
         _mint(msg.sender, 100_000_000_000 * 10 ** uint256(_decimals));
+    }
+
+    function creator() external view override returns (address) {
+        return _creator;
     }
 
     function decimals() public view override returns (uint8) {

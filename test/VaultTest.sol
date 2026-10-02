@@ -5,16 +5,24 @@ import "forge-std/Test.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
-import {TransparentUpgradeableProxy} from
-    "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
+import {
+    TransparentUpgradeableProxy
+} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
 import {Vault} from "../src/contracts/vault/Vault.sol";
-import {IVault, AssetConfig, VaultInfo} from "../src/contracts/interfaces/IVault.sol";
+import {
+    IVault,
+    AssetConfig,
+    VaultInfo
+} from "../src/contracts/interfaces/IVault.sol";
 import {ISwapAdapter} from "../src/contracts/interfaces/ISwapAdapter.sol";
 
 contract MockToken is ERC20 {
     uint8 private immutable i_decimals;
 
-    constructor(string memory symbol_, uint8 decimals_) ERC20(symbol_, symbol_) {
+    constructor(
+        string memory symbol_,
+        uint8 decimals_
+    ) ERC20(symbol_, symbol_) {
         i_decimals = decimals_;
     }
 
@@ -47,10 +55,12 @@ contract MockSwapAdapter is ISwapAdapter {
         revertEmpty = revertEmpty_;
     }
 
-    function swap(address, address tokenOut, uint256 amountIn, address recipient)
-        external
-        returns (uint256 amountOut)
-    {
+    function swap(
+        address,
+        address tokenOut,
+        uint256 amountIn,
+        address recipient
+    ) external returns (uint256 amountOut) {
         require(!shouldRevert, "adapter: revert");
         if (revertEmpty) {
             assembly {
@@ -112,7 +122,11 @@ abstract contract VaultFixture is Test {
         assets[1] = AssetConfig({token: address(wbtc), weightBps: 4_000});
     }
 
-    function _assetsUsdgOnly() internal view returns (AssetConfig[] memory assets) {
+    function _assetsUsdgOnly()
+        internal
+        view
+        returns (AssetConfig[] memory assets)
+    {
         assets = new AssetConfig[](1);
         assets[0] = AssetConfig({token: address(usdg), weightBps: 10_000});
     }
@@ -140,7 +154,10 @@ abstract contract VaultFixture is Test {
         vm.stopPrank();
     }
 
-    function _earned(address account, uint256 index) internal view returns (uint256) {
+    function _earned(
+        address account,
+        uint256 index
+    ) internal view returns (uint256) {
         (, uint256[] memory amounts) = vault.earned(address(meme), account);
         return amounts[index];
     }
@@ -176,7 +193,12 @@ contract VaultTest is VaultFixture {
     function test_RegisterVault_Twice_Reverts() external {
         _register(_assets6040());
         vm.prank(controller);
-        vm.expectRevert(abi.encodeWithSelector(IVault.VaultAlreadyRegistered.selector, address(meme)));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IVault.VaultAlreadyRegistered.selector,
+                address(meme)
+            )
+        );
         vault.registerVault(address(meme), creator, _assets6040());
     }
 
@@ -192,7 +214,12 @@ contract VaultTest is VaultFixture {
         AssetConfig[] memory assets = _assets6040();
         assets[0].token = address(meme);
         vm.prank(controller);
-        vm.expectRevert(abi.encodeWithSelector(IVault.AssetNotAllowed.selector, address(meme)));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IVault.AssetNotAllowed.selector,
+                address(meme)
+            )
+        );
         vault.registerVault(address(meme), creator, assets);
     }
 
@@ -200,7 +227,12 @@ contract VaultTest is VaultFixture {
         AssetConfig[] memory assets = _assets6040();
         assets[1].token = address(aapl);
         vm.prank(controller);
-        vm.expectRevert(abi.encodeWithSelector(IVault.DuplicateAsset.selector, address(aapl)));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IVault.DuplicateAsset.selector,
+                address(aapl)
+            )
+        );
         vault.registerVault(address(meme), creator, assets);
     }
 
@@ -221,14 +253,25 @@ contract VaultTest is VaultFixture {
 
     function test_NotifyFees_UnregisteredMeme_Reverts() external {
         vm.prank(hook);
-        vm.expectRevert(abi.encodeWithSelector(IVault.VaultNotRegistered.selector, address(meme)));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IVault.VaultNotRegistered.selector,
+                address(meme)
+            )
+        );
         vault.notifyFees(address(meme), 1e6);
     }
 
     function test_NotifyFees_WithoutTransfer_Reverts() external {
         _register(_assets6040());
         vm.prank(hook);
-        vm.expectRevert(abi.encodeWithSelector(IVault.UnaccountedBalanceTooLow.selector, 0, 1e6));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IVault.UnaccountedBalanceTooLow.selector,
+                0,
+                1e6
+            )
+        );
         vault.notifyFees(address(meme), 1e6);
     }
 
@@ -236,7 +279,13 @@ contract VaultTest is VaultFixture {
         _register(_assets6040());
         _notify(1e6);
         vm.prank(hook);
-        vm.expectRevert(abi.encodeWithSelector(IVault.UnaccountedBalanceTooLow.selector, 0, 1e6));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IVault.UnaccountedBalanceTooLow.selector,
+                0,
+                1e6
+            )
+        );
         vault.notifyFees(address(meme), 1e6);
     }
 
@@ -267,7 +316,12 @@ contract VaultTest is VaultFixture {
     }
 
     function test_ConvertFees_NotRegistered_Reverts() external {
-        vm.expectRevert(abi.encodeWithSelector(IVault.VaultNotRegistered.selector, address(meme)));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IVault.VaultNotRegistered.selector,
+                address(meme)
+            )
+        );
         vault.convertFees(address(meme));
     }
 
@@ -401,7 +455,13 @@ contract VaultTest is VaultFixture {
         address[] memory only = new address[](1);
         only[0] = address(usdg);
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(IVault.AssetNotInVault.selector, address(meme), address(usdg)));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IVault.AssetNotInVault.selector,
+                address(meme),
+                address(usdg)
+            )
+        );
         vault.claim(address(meme), only);
     }
 
@@ -433,7 +493,13 @@ contract VaultTest is VaultFixture {
         _register(_assets6040());
         _stake(alice, 1e18);
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(IVault.InsufficientStake.selector, 1e18, 2e18));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IVault.InsufficientStake.selector,
+                1e18,
+                2e18
+            )
+        );
         vault.unstake(address(meme), 2e18);
     }
 
@@ -463,23 +529,6 @@ contract VaultTest is VaultFixture {
         vault.setPaused(true);
         _notify(100e6);
         assertEq(vault.pendingUSDG(address(meme)), 100e6);
-    }
-
-    function test_EmergencyUnstake_ReturnsStake_ForfeitsUnsettled() external {
-        _register(_assetsUsdgOnly());
-        _stake(alice, 1_000e18);
-        _stake(bob, 1_000e18);
-        _notify(100e6);
-        _convert();
-
-        vm.prank(owner);
-        vault.setPaused(true);
-        vm.prank(alice);
-        vault.emergencyUnstake(address(meme));
-
-        assertEq(meme.balanceOf(alice), 1_000e18);
-        assertEq(_earned(alice, 0), 0, "unsettled rewards forfeited");
-        assertEq(_earned(bob, 0), 45e6, "other stakers unaffected");
     }
 
     // ------------------------------------------------------------------ creator role / admin
@@ -522,7 +571,14 @@ contract VaultTest is VaultFixture {
         meme.mint(address(vault), 5e18); // sent by mistake
 
         vm.prank(owner);
-        vm.expectRevert(abi.encodeWithSelector(IVault.RescueExceedsSurplus.selector, address(meme), 5e18, 6e18));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IVault.RescueExceedsSurplus.selector,
+                address(meme),
+                5e18,
+                6e18
+            )
+        );
         vault.rescueERC20(address(meme), owner, 6e18);
 
         vm.prank(owner);
@@ -531,7 +587,12 @@ contract VaultTest is VaultFixture {
     }
 
     function test_Setters_NotOwner_Reverts() external {
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Ownable.OwnableUnauthorizedAccount.selector,
+                alice
+            )
+        );
         vm.prank(alice);
         vault.setHook(alice);
     }
@@ -573,23 +634,40 @@ contract VaultTest is VaultFixture {
         vm.prank(bob);
         vault.claim(address(meme));
         vault.claimCreatorRewards(address(meme));
-        assertEq(vault.accounted(address(usdg)), out[0] - a - b - c, "only dust stays accounted");
-        assertEq(usdg.balanceOf(address(vault)), vault.accounted(address(usdg)));
+        assertEq(
+            vault.accounted(address(usdg)),
+            out[0] - a - b - c,
+            "only dust stays accounted"
+        );
+        assertEq(
+            usdg.balanceOf(address(vault)),
+            vault.accounted(address(usdg))
+        );
     }
 
-    function testFuzz_ConvertFees_WeightsSumToInput(uint64 fee, uint16 weight) external {
+    function testFuzz_ConvertFees_WeightsSumToInput(
+        uint64 fee,
+        uint16 weight
+    ) external {
         vm.assume(fee > 0);
         weight = uint16(bound(weight, 1, 9_999));
         AssetConfig[] memory assets = new AssetConfig[](2);
         assets[0] = AssetConfig({token: address(usdg), weightBps: weight});
-        assets[1] = AssetConfig({token: address(aapl), weightBps: 10_000 - weight});
+        assets[1] = AssetConfig({
+            token: address(aapl),
+            weightBps: 10_000 - weight
+        });
         _register(assets);
         _notify(fee);
         uint256[] memory out = _convert();
         uint256 aaplIn = fee - (uint256(fee) * weight) / 10_000;
         assertEq(out[0], (uint256(fee) * weight) / 10_000);
         assertEq(out[1], (aaplIn * 2e30) / 1e18);
-        assertEq(usdg.balanceOf(address(vault)), out[0], "only the USDG leg stays");
+        assertEq(
+            usdg.balanceOf(address(vault)),
+            out[0],
+            "only the USDG leg stays"
+        );
     }
     // ------------------------------------------------------------------ automatic conversion
 
@@ -600,7 +678,12 @@ contract VaultTest is VaultFixture {
 
     function test_SetConversionThreshold_NotOwner_Reverts() external {
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Ownable.OwnableUnauthorizedAccount.selector,
+                alice
+            )
+        );
         vault.setConversionThreshold(1);
     }
 
@@ -624,7 +707,11 @@ contract VaultTest is VaultFixture {
         _setThreshold(100e6);
         _notify(99e6);
         vm.expectRevert(
-            abi.encodeWithSelector(IVault.BelowConversionThreshold.selector, 99e6, 100e6)
+            abi.encodeWithSelector(
+                IVault.BelowConversionThreshold.selector,
+                99e6,
+                100e6
+            )
         );
         vault.convertFees(address(meme));
     }
@@ -641,7 +728,12 @@ contract VaultTest is VaultFixture {
         _register(_assets6040());
         _notify(100e6);
         adapter.setRate(address(aapl), 0);
-        vm.expectRevert(abi.encodeWithSelector(IVault.ZeroSwapOutput.selector, address(aapl)));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IVault.ZeroSwapOutput.selector,
+                address(aapl)
+            )
+        );
         vault.convertFees(address(meme));
     }
 
@@ -677,10 +769,16 @@ contract VaultTest is VaultFixture {
         _notify(1_000e6);
         assertEq(vault.vaultInfo(address(meme)).epoch, 1);
         assertEq(vault.pendingUSDG(address(meme)), 0);
-        assertEq(_creatorAccrued(0), 1_200e18, "nobody stakes: all AAPL to the creator");
+        assertEq(
+            _creatorAccrued(0),
+            1_200e18,
+            "nobody stakes: all AAPL to the creator"
+        );
     }
 
-    function test_NotifyFees_ThresholdZero_NeverConvertsAutomatically() external {
+    function test_NotifyFees_ThresholdZero_NeverConvertsAutomatically()
+        external
+    {
         _register(_assets6040());
         _notify(1_000e6);
         assertEq(vault.vaultInfo(address(meme)).epoch, 0);
@@ -705,7 +803,9 @@ contract VaultTest is VaultFixture {
         assertEq(vault.vaultInfo(address(meme)).epoch, 1);
     }
 
-    function test_NotifyFees_ConversionReverts_KeepsCreditAndStartsCooldown() external {
+    function test_NotifyFees_ConversionReverts_KeepsCreditAndStartsCooldown()
+        external
+    {
         _register(_assets6040());
         _setThreshold(100e6);
         _stake(alice, 1_000e18);
@@ -741,11 +841,17 @@ contract VaultTest is VaultFixture {
 
         vm.warp(block.timestamp + 1);
         _notify(1e6);
-        assertEq(vault.vaultInfo(address(meme)).epoch, 1, "retried after the cooldown");
+        assertEq(
+            vault.vaultInfo(address(meme)).epoch,
+            1,
+            "retried after the cooldown"
+        );
         assertEq(vault.pendingUSDG(address(meme)), 0);
     }
 
-    function test_NotifyFees_ConversionRevertsWithoutData_NoCooldown() external {
+    function test_NotifyFees_ConversionRevertsWithoutData_NoCooldown()
+        external
+    {
         _register(_assets6040());
         _setThreshold(100e6);
         adapter.setRevertEmpty(true);
@@ -758,7 +864,11 @@ contract VaultTest is VaultFixture {
 
         assertEq(vault.vaultInfo(address(meme)).epoch, 0);
         assertEq(vault.pendingUSDG(address(meme)), 100e6);
-        assertEq(vault.vaultInfo(address(meme)).lastConversionFailure, 0, "no cooldown");
+        assertEq(
+            vault.vaultInfo(address(meme)).lastConversionFailure,
+            0,
+            "no cooldown"
+        );
 
         // The very next notification retries and succeeds once the adapter works again.
         adapter.setRevertEmpty(false);
@@ -777,7 +887,9 @@ contract VaultTest is VaultFixture {
         assertEq(vault.vaultInfo(address(meme)).epoch, 1);
     }
 
-    function test_NotifyFees_FailedThenFixed_ConvertsAccumulatedEpochAtOnce() external {
+    function test_NotifyFees_FailedThenFixed_ConvertsAccumulatedEpochAtOnce()
+        external
+    {
         _register(_assets6040());
         _setThreshold(100e6);
         _stake(alice, 1_000e18);
@@ -789,7 +901,11 @@ contract VaultTest is VaultFixture {
         _notify(100e6);
 
         assertEq(vault.vaultInfo(address(meme)).epoch, 1);
-        assertEq(_earned(alice, 0), 324e18, "90% of 360 AAPL bought with 300 USDG");
+        assertEq(
+            _earned(alice, 0),
+            324e18,
+            "90% of 360 AAPL bought with 300 USDG"
+        );
     }
 
     /// @dev With a working adapter the pending USDG of a vault never stays at or above the
@@ -813,9 +929,18 @@ contract VaultTest is VaultFixture {
 
             assertLt(vault.pendingUSDG(address(meme)), threshold);
             assertEq(vault.vaultInfo(address(meme)).epoch, epochs);
-            assertGe(usdg.balanceOf(address(vault)), vault.accounted(address(usdg)));
-            assertGe(aapl.balanceOf(address(vault)), vault.accounted(address(aapl)));
-            assertGe(wbtc.balanceOf(address(vault)), vault.accounted(address(wbtc)));
+            assertGe(
+                usdg.balanceOf(address(vault)),
+                vault.accounted(address(usdg))
+            );
+            assertGe(
+                aapl.balanceOf(address(vault)),
+                vault.accounted(address(aapl))
+            );
+            assertGe(
+                wbtc.balanceOf(address(vault)),
+                vault.accounted(address(wbtc))
+            );
         }
     }
 }
@@ -838,7 +963,9 @@ contract VaultHandler is Test {
         meme = meme_;
         hook = hook_;
         for (uint256 i; i < 4; ++i) {
-            actors.push(makeAddr(string(abi.encodePacked("actor", vm.toString(i)))));
+            actors.push(
+                makeAddr(string(abi.encodePacked("actor", vm.toString(i))))
+            );
         }
     }
 
@@ -924,18 +1051,33 @@ contract VaultInvariantTest is VaultFixture {
     }
 
     function invariant_Balances_CoverAccounted() external view {
-        assertGe(usdg.balanceOf(address(vault)), vault.accounted(address(usdg)));
-        assertGe(meme.balanceOf(address(vault)), vault.accounted(address(meme)));
-        assertEq(meme.balanceOf(address(vault)), vault.totalStaked(address(meme)));
+        assertGe(
+            usdg.balanceOf(address(vault)),
+            vault.accounted(address(usdg))
+        );
+        assertGe(
+            meme.balanceOf(address(vault)),
+            vault.accounted(address(meme))
+        );
+        assertEq(
+            meme.balanceOf(address(vault)),
+            vault.totalStaked(address(meme))
+        );
     }
 
     function invariant_Claimable_NeverExceedsNotified() external view {
-        uint256 claimable = vault.pendingUSDG(address(meme)) + handler.ghostPaidOut();
+        uint256 claimable = vault.pendingUSDG(address(meme)) +
+            handler.ghostPaidOut();
         for (uint256 i; i < handler.actorsLength(); ++i) {
-            (, uint256[] memory amounts) = vault.earned(address(meme), handler.actors(i));
+            (, uint256[] memory amounts) = vault.earned(
+                address(meme),
+                handler.actors(i)
+            );
             claimable += amounts[0];
         }
-        (, uint256[] memory creatorAmounts) = vault.creatorAccrued(address(meme));
+        (, uint256[] memory creatorAmounts) = vault.creatorAccrued(
+            address(meme)
+        );
         claimable += creatorAmounts[0];
         assertLe(claimable, handler.ghostNotified());
     }
@@ -943,10 +1085,15 @@ contract VaultInvariantTest is VaultFixture {
     function invariant_Accounted_CoversClaimable() external view {
         uint256 owed = vault.pendingUSDG(address(meme));
         for (uint256 i; i < handler.actorsLength(); ++i) {
-            (, uint256[] memory amounts) = vault.earned(address(meme), handler.actors(i));
+            (, uint256[] memory amounts) = vault.earned(
+                address(meme),
+                handler.actors(i)
+            );
             owed += amounts[0];
         }
-        (, uint256[] memory creatorAmounts) = vault.creatorAccrued(address(meme));
+        (, uint256[] memory creatorAmounts) = vault.creatorAccrued(
+            address(meme)
+        );
         owed += creatorAmounts[0];
         assertLe(owed, vault.accounted(address(usdg)));
     }

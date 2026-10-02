@@ -22,8 +22,15 @@ import {HookManager} from "../src/contracts/hooks/HookManager.sol";
 import {Vault} from "../src/contracts/vault/Vault.sol";
 import {AssetConfig} from "../src/contracts/interfaces/IVault.sol";
 import {
-    DeployConfig, RewardsConfig, INITIAL_SUPPLY_X18, TICK_SPACING
+    DeployConfig,
+    RewardsConfig,
+    INITIAL_SUPPLY_X18,
+    TICK_SPACING,
+    PRICE_PER_TOKEN as INITIAL_PRICE
 } from "../src/contracts/interfaces/IGemoon.sol";
+import {PriceMath} from "../src/contracts/utils/Price.sol";
+import {StateLibrary} from "@uniswap-v4-core/libraries/StateLibrary.sol";
+import {PoolIdLibrary} from "@uniswap-v4-core/types/PoolId.sol";
 import {TokenConfig, SocialMedia, AdminConfig} from "../src/contracts/interfaces/IToken.sol";
 import {MintableToken} from "./mocks/MintableToken.sol";
 
@@ -31,6 +38,9 @@ import {MintableToken} from "./mocks/MintableToken.sol";
 /// Gemoon contracts deployed through the deploy script, then a Meme is deployed through the
 /// controller and traded against its initial position.
 contract ControllerDeployTokenTest is Test {
+    using StateLibrary for IPoolManager;
+    using PoolIdLibrary for PoolKey;
+
     uint256 constant PAIR_UNIT = 1e6; // USDG has 6 decimals
 
     MintableToken usdg;
@@ -124,21 +134,64 @@ contract ControllerDeployTokenTest is Test {
 
     function _buyMeme(address token, uint256 usdgIn) internal {
         usdg.mint(trader, usdgIn);
+        _swap(token, true, -int256(usdgIn), bytes(""));
+    }
+
+    /// @dev Swaps as `trader` through the test router. `buy`: pair token in, Meme out.
+    /// Negative `amountSpecified` is exact input, positive exact output.
+    function _swap(address token, bool buy, int256 amountSpecified, bytes memory hookData)
+        internal
+    {
         PoolKey memory key = _poolKey(token);
         bool usdgIs0 = Currency.unwrap(key.currency0) == address(usdg);
+        bool zeroForOne = buy == usdgIs0;
         vm.startPrank(trader);
-        usdg.approve(address(swapRouter), usdgIn);
+        usdg.approve(address(swapRouter), type(uint256).max);
+        IERC20(token).approve(address(swapRouter), type(uint256).max);
         swapRouter.swap(
             key,
             SwapParams({
-                zeroForOne: usdgIs0,
-                amountSpecified: -int256(usdgIn),
-                sqrtPriceLimitX96: usdgIs0 ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+                zeroForOne: zeroForOne,
+                amountSpecified: amountSpecified,
+                sqrtPriceLimitX96: zeroForOne
+                    ? TickMath.MIN_SQRT_PRICE + 1
+                    : TickMath.MAX_SQRT_PRICE - 1
             }),
             PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
-            bytes("")
+            hookData
         );
         vm.stopPrank();
+    }
+
+    struct Trade {
+        address meme;
+        address router;
+        address trader;
+        bool isBuy;
+        uint256 pairAmount;
+        uint256 memeAmount;
+        uint256 fee;
+    }
+
+    /// @dev The single `MemeSwapped` among the recorded logs.
+    function _memeSwapped() internal returns (Trade memory t) {
+        bytes32 sig = keccak256("MemeSwapped(address,address,address,bool,uint256,uint256,uint256)");
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 found;
+        for (uint256 i; i < logs.length; ++i) {
+            if (logs[i].emitter != address(hook) || logs[i].topics[0] != sig) continue;
+            ++found;
+            t.meme = address(uint160(uint256(logs[i].topics[1])));
+            t.router = address(uint160(uint256(logs[i].topics[2])));
+            t.trader = address(uint160(uint256(logs[i].topics[3])));
+            (t.isBuy, t.pairAmount, t.memeAmount, t.fee) =
+                abi.decode(logs[i].data, (bool, uint256, uint256, uint256));
+        }
+        assertEq(found, 1, "exactly one MemeSwapped");
+    }
+
+    function _fee(uint256 amount) internal pure returns (uint256) {
+        return (amount * 125) / 10_000;
     }
 
     function test_DeployToken_MintsWholeSupplyIntoPositionOwnedByController() external {
@@ -275,6 +328,121 @@ contract ControllerDeployTokenTest is Test {
         assertEq(hook.pendingFees(token), 0);
         assertEq(usdg.balanceOf(protocolRecipient), toProtocol);
         assertEq(usdg.balanceOf(address(vault)), fee - toProtocol);
+    }
+
+    // ------------------------------------------------------------------ start price
+
+    /// @dev 300_000 Meme per 1 USDG regardless of USDG having 6 decimals: a 1 USDG buy returns
+    /// close to 300_000 Meme, less the 1.25% fee and the price impact of a one-sided position.
+    function test_DeployToken_StartPrice_300kMemePerWholeUsdg() external {
+        (address token,) = _deployMeme();
+        _buyMeme(token, 1 * PAIR_UNIT);
+
+        uint256 got = IERC20(token).balanceOf(trader);
+        assertLt(got, 300_000e18, "never more than the start price");
+        assertGt(got, 290_000e18, "fee and impact on 1 USDG stay below 3.3%");
+    }
+
+    function test_DeployToken_PoolInitializedAtPriceForPairDecimals() external {
+        (address token,) = _deployMeme();
+        PoolKey memory key = _poolKey(token);
+        (uint160 sqrtPriceX96,,,) = IPoolManager(address(poolManager)).getSlot0(key.toId());
+        uint160 expected = PriceMath.getSqrtPriceX96(
+            Currency.unwrap(key.currency0) == token ? INITIAL_PRICE : PAIR_UNIT,
+            Currency.unwrap(key.currency1) == token ? INITIAL_PRICE : PAIR_UNIT
+        );
+        assertEq(sqrtPriceX96, expected, "slot0 price");
+    }
+
+    // ------------------------------------------------------------------ MemeSwapped
+
+    function test_Swap_BuyExactIn_EmitsMemeSwapped() external {
+        (address token,) = _deployMeme();
+        uint256 usdgIn = 1_000 * PAIR_UNIT;
+        usdg.mint(trader, usdgIn);
+
+        vm.recordLogs();
+        _swap(token, true, -int256(usdgIn), bytes(""));
+        Trade memory t = _memeSwapped();
+
+        assertEq(t.meme, token);
+        assertEq(t.router, address(swapRouter), "router is the PoolManager caller");
+        assertEq(t.trader, address(0), "no hookData, no trader");
+        assertTrue(t.isBuy);
+        assertEq(t.fee, _fee(usdgIn), "fee on the specified input");
+        assertEq(t.pairAmount + t.fee, usdgIn, "pool priced the input net of fee");
+        assertEq(t.memeAmount, IERC20(token).balanceOf(trader), "meme received");
+        assertEq(usdg.balanceOf(trader), 0);
+    }
+
+    function test_Swap_BuyExactOut_EmitsMemeSwapped() external {
+        (address token,) = _deployMeme();
+        uint256 memeOut = 1_000_000e18; // ~3.3 USDG at the start price
+        usdg.mint(trader, 100_000 * PAIR_UNIT);
+        uint256 usdgBefore = usdg.balanceOf(trader);
+
+        vm.recordLogs();
+        _swap(token, true, int256(memeOut), bytes(""));
+        Trade memory t = _memeSwapped();
+
+        assertTrue(t.isBuy);
+        assertEq(t.memeAmount, memeOut);
+        assertEq(IERC20(token).balanceOf(trader), memeOut);
+        assertEq(t.fee, _fee(t.pairAmount), "fee on the pool-priced pair amount");
+        assertEq(usdgBefore - usdg.balanceOf(trader), t.pairAmount + t.fee, "buyer pays pair + fee");
+    }
+
+    function test_Swap_SellExactIn_EmitsMemeSwapped() external {
+        (address token,) = _deployMeme();
+        _buyMeme(token, 1_000 * PAIR_UNIT);
+        uint256 memeIn = IERC20(token).balanceOf(trader) / 2;
+        uint256 usdgBefore = usdg.balanceOf(trader);
+
+        vm.recordLogs();
+        _swap(token, false, -int256(memeIn), bytes(""));
+        Trade memory t = _memeSwapped();
+
+        assertFalse(t.isBuy);
+        assertEq(t.memeAmount, memeIn);
+        assertEq(t.fee, _fee(t.pairAmount), "fee on the pool-priced pair amount");
+        assertEq(usdg.balanceOf(trader) - usdgBefore, t.pairAmount - t.fee, "seller gets pair - fee");
+    }
+
+    function test_Swap_SellExactOut_EmitsMemeSwapped() external {
+        (address token,) = _deployMeme();
+        _buyMeme(token, 1_000 * PAIR_UNIT);
+        uint256 usdgOut = 100 * PAIR_UNIT;
+        uint256 usdgBefore = usdg.balanceOf(trader);
+        uint256 memeBefore = IERC20(token).balanceOf(trader);
+
+        vm.recordLogs();
+        _swap(token, false, int256(usdgOut), bytes(""));
+        Trade memory t = _memeSwapped();
+
+        assertFalse(t.isBuy);
+        assertEq(t.fee, _fee(usdgOut), "fee on the specified output");
+        assertEq(t.pairAmount, usdgOut + t.fee, "pool produced output plus fee");
+        assertEq(usdg.balanceOf(trader) - usdgBefore, usdgOut, "seller gets exactly the output");
+        assertEq(memeBefore - IERC20(token).balanceOf(trader), t.memeAmount);
+    }
+
+    function test_Swap_HookDataAddress_ReportedAsTrader() external {
+        (address token,) = _deployMeme();
+        address alice = makeAddr("alice");
+        usdg.mint(trader, 10 * PAIR_UNIT);
+
+        vm.recordLogs();
+        _swap(token, true, -int256(10 * PAIR_UNIT), abi.encode(alice));
+        assertEq(_memeSwapped().trader, alice);
+    }
+
+    function test_Swap_HookDataWrongLength_TraderZero() external {
+        (address token,) = _deployMeme();
+        usdg.mint(trader, 10 * PAIR_UNIT);
+
+        vm.recordLogs();
+        _swap(token, true, -int256(10 * PAIR_UNIT), hex"0102");
+        assertEq(_memeSwapped().trader, address(0));
     }
 
     /// @dev Invariant: protocol + vault + accrued == 1.25% of everything swapped in.
