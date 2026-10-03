@@ -26,13 +26,7 @@ import {
 } from "permit2/src/interfaces/IAllowanceTransfer.sol";
 import "./utils/Ticks.sol";
 import {IVault} from "./interfaces/IVault.sol";
-
-/// @dev Minimal view of HookManager, kept separate to avoid importing uniswap-hooks paths here.
-interface IGemoonHook {
-    function pairToken() external view returns (address);
-
-    function vault() external view returns (address);
-}
+import {IHookManager} from "./interfaces/IHookManager.sol";
 
 contract GemoonController is
     Initializable,
@@ -117,7 +111,7 @@ contract GemoonController is
     /// @param hook_ HookManager proxy.
     function setHook(address hook_) external onlyOwner {
         if (hook_ == address(0)) revert InvalidAddress();
-        address hookPairToken = IGemoonHook(hook_).pairToken();
+        address hookPairToken = Currency.unwrap(IHookManager(hook_).pairToken());
         if (hookPairToken != _weth)
             revert HookPairTokenMismatch(hookPairToken, _weth);
         hook = hook_;
@@ -167,7 +161,7 @@ contract GemoonController is
         if (address(vault_) == address(0)) revert VaultNotSet();
         if (address(positionManager) == address(0))
             revert PositionManagerNotSet();
-        address hookVault = IGemoonHook(hook_).vault();
+        address hookVault = IHookManager(hook_).vault();
         if (hookVault != address(vault_))
             revert HookVaultMismatch(hookVault, address(vault_));
 

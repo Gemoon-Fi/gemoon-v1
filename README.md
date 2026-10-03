@@ -9,7 +9,7 @@
 | Контракт | Файл | Роль |
 |---|---|---|
 | GemoonController | `src/contracts/Gemoon.sol` | Точка входа: деплой токена, пула и позиции. Прокси, OwnableUpgradeable. |
-| HookManager | `src/contracts/hooks/HookManager.sol` | Хук Uniswap V4: комиссия 1.25% в USDG на каждом свопе, выплата протоколу и волту. Прокси, Ownable2Step, адрес майнится под биты разрешений. |
+| HookManager | `src/contracts/hooks/HookManager.sol`, интерфейс `IHookManager.sol` | Хук Uniswap V4: комиссия 1.25% в USDG на каждом свопе, выплата протоколу и волту. Прокси, Ownable2Step, адрес майнится под биты разрешений. |
 | Vault | `src/contracts/vault/Vault.sol` | Один контракт, логический волт на каждый мем: приём комиссий, стейкинг, конвертация, выплаты. Прокси, Ownable2Step. |
 | UniswapV3SwapAdapter | `src/contracts/adapters/UniswapV3SwapAdapter.sol` | Меняет USDG волта на наградные активы в пулах Uniswap V3, минимальный выход считает сам по TWAP пула. Ownable2Step, не прокси: волт меняет адаптер через `setSwapAdapter`. |
 | GemoonToken | `src/contracts/Token.sol` | ERC20 мема с метаданными и админами. Не обновляемый. |

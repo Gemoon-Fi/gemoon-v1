@@ -26,6 +26,7 @@ import {
     Ownable2StepUpgradeable
 } from "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
 import {IVault} from "../interfaces/IVault.sol";
+import {IHookManager} from "../interfaces/IHookManager.sol";
 import {SignedMath} from "@openzeppelin/contracts/utils/math/SignedMath.sol";
 
 /// @title Gemoon UniswapV4 hook manager.
@@ -45,6 +46,7 @@ import {SignedMath} from "@openzeppelin/contracts/utils/math/SignedMath.sol";
 ///    fails, the swap still succeeds and the fee stays accrued until the next successful payout.
 ///  - `distribute(meme)`: manual fallback that pays out whatever is accrued for `meme`.
 contract HookManager is
+    IHookManager,
     BaseHook,
     IUnlockCallback,
     Initializable,
@@ -54,52 +56,7 @@ contract HookManager is
     using PoolIdLibrary for PoolKey;
     using SignedMath for int256;
 
-    // ---------------------------------------------------------------------------------------------
-    // Errors / events
-    // ---------------------------------------------------------------------------------------------
-
-    error ZeroAddress();
-    error InvalidPoolPair();
-    error InvalidPoolFee();
-    error InvalidFeeBips();
-    error VaultNotRegistered(address meme);
-    error NotSelf();
-
-    /// @notice One swap in a Meme pool, emitted at the end of every swap.
-    /// @param meme       Meme of the pool.
-    /// @param router     Caller of `PoolManager.swap`, usually a router, not the trader.
-    /// @param trader     Address the swapper passed in `hookData` as an abi-encoded address, zero
-    ///                   if none. Self-reported: for display only, never for authorization.
-    /// @param isBuy      True if the swapper paid pair token and received Meme.
-    /// @param pairAmount Pair-token side of the swap as priced by the pool, hook fee excluded.
-    /// @param memeAmount Meme side of the swap.
-    /// @param fee        Hook fee charged on this swap, in pair token. The swapper pays
-    ///                   `pairAmount + fee` on a buy and receives `pairAmount - fee` on a sell.
-    event MemeSwapped(
-        address indexed meme,
-        address indexed router,
-        address indexed trader,
-        bool isBuy,
-        uint256 pairAmount,
-        uint256 memeAmount,
-        uint256 fee
-    );
-
-    event FeeCharged(
-        PoolId indexed poolId,
-        address indexed sender,
-        uint256 amount
-    );
-    event FeesDistributed(
-        address indexed meme,
-        address indexed protocolRecipient,
-        address indexed vault,
-        uint256 toProtocol,
-        uint256 toVault
-    );
-    event PayoutFailed(bytes reason);
-    event ProtocolRecipientUpdated(address indexed recipient);
-    event VaultUpdated(address indexed vault);
+    // Errors and events are declared in `IHookManager`.
 
     // ---------------------------------------------------------------------------------------------
     // Constants / immutables

@@ -18,10 +18,10 @@
 | Контракт | События | View-функции |
 |---|---|---|
 | `GemoonController` | `TokenCreated`, `PoolCreated`, `PositionCreated` | |
-| `HookManager` | `MemeSwapped`, `FeeCharged`, `FeesDistributed` | |
+| `HookManager` (`IHookManager.json`) | `MemeSwapped`, `FeeCharged`, `FeesDistributed`, `PayoutFailed` | `pendingFees` |
 | `Vault` | `VaultRegistered`, `FeesNotified`, `FeesConverted`, `ConversionFailed`, `Staked`, `Unstaked`, `EmergencyUnstaked`, `RewardPaid`, `CreatorRewardPaid`, `CreatorTransferred` | `earned`, `pendingCreditOf`, `pendingUSDG`, `totalStaked`, `stakedOf`, `getAssets`, `creatorAccrued` |
 | `UniswapV3SwapAdapter` | `Swapped` | `quote` |
-| `PoolManager` (Uniswap V4) | `Swap` | |
+| `PoolManager` (Uniswap V4, `IPoolManager.json`) | `Swap` | |
 | ERC20 мема | `Transfer`, `UpdateImage`, `UpdateDescription` | `imageAddress`, `description`, `getSocialMedia`, `balanceOf` |
 
 Сигнатуры:
@@ -39,6 +39,8 @@ HookManager
   FeeCharged(PoolId indexed poolId, address indexed sender, uint256 amount)
   FeesDistributed(address indexed meme, address indexed protocolRecipient,
                   address indexed vault, uint256 toProtocol, uint256 toVault)
+  PayoutFailed(bytes reason)                                // автовыплата после свопа не прошла,
+                                                            // комиссия осталась в pendingFees
 
 Vault
   VaultRegistered(address indexed meme, address indexed creator, AssetConfig[] assets)

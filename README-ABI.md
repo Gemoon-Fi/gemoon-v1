@@ -9,7 +9,8 @@
 |---|---|---|
 | GemoonController | `IGemoonController.json` | |
 | Vault | `IVault.json` | |
-| HookManager | см. ниже, две функции | |
+| HookManager | `IHookManager.json` | |
+| PoolManager (Uniswap V4) | `IPoolManager.json` | |
 | USDG (pair-токен) | стандартный ERC20 | |
 | Токен мема | `IGemoonToken.json` | адрес из `TokenCreated` |
 
@@ -78,11 +79,15 @@ const config = {
 Комиссия 1.25% в USDG берётся хуком: при покупке за фиксированную сумму USDG из этой суммы,
 при продаже из полученного USDG. LP-комиссии у пула нет.
 
-HookManager для интеграций:
+HookManager для интеграций (`IHookManager.json`):
 
 - `pendingFees(meme) → uint256`: комиссия по мему, ещё не выплаченная волту и протоколу.
 - `distribute(meme)`: выплатить накопленное. Может вызвать любой. Нужна, если после сделок
   `pendingFees` не обнулился, такое бывает у пулов с малым оборотом.
+- `TOTAL_FEE_BIPS()`, `PROTOCOL_FEE_BIPS()`, `BIPS()`: текущая комиссия и доля протокола,
+  чтобы не хардкодить 1.25%.
+- События `MemeSwapped`, `FeeCharged`, `FeesDistributed`, `PayoutFailed`: сигнатуры в
+  `indexing.md`.
 
 ## Стейкинг
 

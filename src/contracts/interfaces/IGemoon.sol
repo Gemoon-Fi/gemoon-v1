@@ -30,7 +30,7 @@ int24 constant TICK_SPACING = 200;
 uint256 constant PRICE_PER_TOKEN = 300_000 * 1e18;
 
 // TODO: move to GemoonController interface
-uint256 constant INITIAL_LIQUIDITY = 100_000_000_000;
+uint256 constant INITIAL_LIQUIDITY = 1_000_000_000;
 uint256 constant INITIAL_SUPPLY_X18 = INITIAL_LIQUIDITY * 1e18;
 
 interface IGemoonController {
