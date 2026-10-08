@@ -30,8 +30,10 @@ import {IHookManager} from "../interfaces/IHookManager.sol";
 import {SignedMath} from "@openzeppelin/contracts/utils/math/SignedMath.sol";
 
 /// @title Gemoon UniswapV4 hook manager.
-/// @notice Charges a fixed 1.25% swap fee, always denominated in `i_pairToken`:
-///         0.25% goes to the protocol recipient, 1% goes to the vault.
+/// @notice Charges a swap fee, always denominated in `i_pairToken`, split between the protocol
+///         recipient and the vault in the ratio `PROTOCOL_FEE_BIPS : TOTAL_FEE_BIPS - PROTOCOL_FEE_BIPS`.
+///         Anti-snipe: the fee starts at `MAX_FEE_BIPS` (80%) when the pool is created and falls
+///         linearly to `TOTAL_FEE_BIPS` (1.25% by default) over `DYNAMIC_FEE_THRESHOLD` (1 minute).
 /// @dev Deployed behind a TransparentUpgradeableProxy. Both the proxy and every implementation
 /// must be CREATE2-mined to carry the bit pattern of `getHookPermissions`.
 ///
@@ -67,6 +69,11 @@ contract HookManager is
     uint256 public constant BIPS = 10_000;
     uint256 public TOTAL_FEE_BIPS = 125; // 1.25%
     uint256 public PROTOCOL_FEE_BIPS = 50; // 0.5%, vault gets the remaining 1%
+    /// @notice Time after pool creation during which the fee falls from `MAX_FEE_BIPS` to
+    ///         `TOTAL_FEE_BIPS`.
+    uint256 public constant DYNAMIC_FEE_THRESHOLD = 1 minutes;
+    /// @notice Fee right at pool creation, 80%.
+    uint256 public constant MAX_FEE_BIPS = 8_000;
 
     Currency private immutable i_pairToken;
 
@@ -79,6 +86,18 @@ contract HookManager is
     /// @notice Fees charged and not yet paid out, per Meme, in `i_pairToken`.
     /// @dev Sum over all memes equals the ERC6909 claims of this hook.
     mapping(address meme => uint256) public accrued;
+    mapping(address meme => uint256) public poolTimestamps;
+    /// @notice GemoonController, the only caller allowed into `onlyController` functions.
+    address public controller;
+
+    // ---------------------------------------------------------------------------------------------
+    // Modifiers
+    // ---------------------------------------------------------------------------------------------
+
+    modifier onlyController() {
+        if (msg.sender != controller) revert NotController();
+        _;
+    }
 
     // ---------------------------------------------------------------------------------------------
     // Construction / initialization
@@ -101,31 +120,48 @@ contract HookManager is
         address owner_,
         address protocolRecipient_,
         address vault_,
+        address controller_,
         uint256 feeBips,
         uint256 protocolFeeBips
     ) public initializer {
-        _init(owner_, protocolRecipient_, vault_, feeBips, protocolFeeBips);
+        _init(
+            owner_,
+            protocolRecipient_,
+            vault_,
+            controller_,
+            feeBips,
+            protocolFeeBips
+        );
     }
 
     function reinitialize(
         address owner_,
         address protocolRecipient_,
         address vault_,
+        address controller_,
         uint256 feeBips,
         uint256 protocolFeeBips
     ) external reinitializer(getVersion()) {
-        _init(owner_, protocolRecipient_, vault_, feeBips, protocolFeeBips);
+        _init(
+            owner_,
+            protocolRecipient_,
+            vault_,
+            controller_,
+            feeBips,
+            protocolFeeBips
+        );
     }
 
     function _init(
         address owner_,
         address protocolRecipient_,
         address vault_,
+        address controller_,
         uint256 feeBips,
         uint256 protocolFeeBips
     ) internal {
         if (owner_ == address(0)) revert ZeroAddress();
-        if (feeBips >= BIPS || protocolFeeBips > feeBips)
+        if (feeBips > MAX_FEE_BIPS || protocolFeeBips > feeBips)
             revert InvalidFeeBips();
 
         TOTAL_FEE_BIPS = feeBips;
@@ -136,6 +172,7 @@ contract HookManager is
 
         _setProtocolRecipient(protocolRecipient_);
         _setVault(vault_);
+        _setController(controller_);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -150,6 +187,10 @@ contract HookManager is
         _setVault(vault_);
     }
 
+    function setController(address controller_) external onlyOwner {
+        _setController(controller_);
+    }
+
     function _setProtocolRecipient(address recipient) internal {
         if (recipient == address(0)) revert ZeroAddress();
         protocolRecipient = recipient;
@@ -160,6 +201,12 @@ contract HookManager is
         if (vault_ == address(0)) revert ZeroAddress();
         vault = vault_;
         emit VaultUpdated(vault_);
+    }
+
+    function _setController(address controller_) internal {
+        if (controller_ == address(0)) revert ZeroAddress();
+        controller = controller_;
+        emit ControllerUpdated(controller_);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -252,14 +299,16 @@ contract HookManager is
         bytes calldata hookData
     ) internal override returns (bytes4, int128) {
         bool pairIs0 = key.currency0 == i_pairToken;
-        uint256 pairAmount = int256(pairIs0 ? delta.amount0() : delta.amount1()).abs();
-        uint256 memeAmount = int256(pairIs0 ? delta.amount1() : delta.amount0()).abs();
+        uint256 pairAmount = int256(pairIs0 ? delta.amount0() : delta.amount1())
+            .abs();
+        uint256 memeAmount = int256(pairIs0 ? delta.amount1() : delta.amount0())
+            .abs();
 
         int128 fee;
         uint256 feeAmount;
         if (_pairTokenIsSpecified(key, params)) {
             // Already charged in `_beforeSwap` on the amount the swapper specified.
-            feeAmount = _feeOf(params.amountSpecified.abs());
+            feeAmount = _feeOf(_meme(key), params.amountSpecified.abs());
         } else {
             fee = _chargeFee(key, sender, pairAmount);
             feeAmount = uint256(uint128(fee));
@@ -304,10 +353,11 @@ contract HookManager is
         address sender,
         uint256 amount
     ) internal returns (int128) {
-        uint256 fee = _feeOf(amount);
+        address meme = _meme(key);
+        uint256 fee = _feeOf(meme, amount);
         if (fee == 0) return 0;
 
-        accrued[_meme(key)] += fee;
+        accrued[meme] += fee;
         poolManager.mint(address(this), i_pairToken.toId(), fee);
         emit FeeCharged(key.toId(), sender, fee);
 
@@ -322,8 +372,8 @@ contract HookManager is
             );
     }
 
-    function _feeOf(uint256 amount) internal view returns (uint256) {
-        return (amount * TOTAL_FEE_BIPS) / BIPS;
+    function _feeOf(address meme, uint256 amount) internal view returns (uint256) {
+        return (amount * feeBipsAt(meme, block.timestamp)) / BIPS;
     }
 
     /// @dev Trader address self-reported by the swapper through `hookData`, zero if absent or
@@ -393,5 +443,49 @@ contract HookManager is
         if (toVault != 0) IVault(vault_).notifyFees(meme, toVault);
 
         emit FeesDistributed(meme, protocol_, vault_, toProtocol, toVault);
+    }
+
+    // ---- Utils ----
+
+    /// @notice Records when the pool of `meme` was created.
+    /// @dev Only controller.
+    /// @param meme      Meme whose pool was created.
+    /// @param timestamp Creation time of the pool.
+    function notifyPoolCreated(
+        address meme,
+        uint256 timestamp
+    ) external onlyController {
+        poolTimestamps[meme] = timestamp;
+    }
+
+    /// @notice Fee of a swap in the pool of `meme` at `timestamp`, in bips.
+    /// @dev Linear from `MAX_FEE_BIPS` at pool creation down to `TOTAL_FEE_BIPS` after
+    /// `DYNAMIC_FEE_THRESHOLD`. The decay rounds down, so the fee rounds up. A pool the controller
+    /// never reported (timestamp 0) pays the base fee; a timestamp at or before creation pays the
+    /// max fee.
+    /// @param meme      Meme of the pool.
+    /// @param timestamp Time of the swap, normally `block.timestamp`.
+    /// @return Fee in bips, between `TOTAL_FEE_BIPS` and `MAX_FEE_BIPS`.
+    function feeBipsAt(
+        address meme,
+        uint256 timestamp
+    ) public view returns (uint256) {
+        uint256 createdAt = poolTimestamps[meme];
+        uint256 baseFee = TOTAL_FEE_BIPS;
+        if (createdAt == 0) return baseFee;
+        if (timestamp <= createdAt) return MAX_FEE_BIPS;
+
+        uint256 elapsed = timestamp - createdAt;
+        if (elapsed >= DYNAMIC_FEE_THRESHOLD) return baseFee;
+
+        uint256 decay = ((MAX_FEE_BIPS - baseFee) * elapsed) /
+            DYNAMIC_FEE_THRESHOLD;
+        return MAX_FEE_BIPS - decay;
+    }
+
+    /// @notice Fee of a swap in the pool of `meme` right now, in bips.
+    /// @param meme Meme of the pool.
+    function currentFeeBips(address meme) external view returns (uint256) {
+        return feeBipsAt(meme, block.timestamp);
     }
 }

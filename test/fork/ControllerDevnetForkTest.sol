@@ -247,6 +247,8 @@ contract ControllerDevnetForkTest is Test {
 
     function test_Fork_DeployToken_Buy_TraderReceivesMemeAndHookChargesFee() external whenForked {
         (address token,) = _deployMeme("MEME");
+        // past the anti-snipe window: the swap pays the base fee
+        vm.warp(block.timestamp + hook.DYNAMIC_FEE_THRESHOLD());
 
         uint256 usdgIn = 1_000 * PAIR_UNIT;
         _buyMeme(token, usdgIn);

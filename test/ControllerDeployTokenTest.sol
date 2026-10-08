@@ -19,6 +19,7 @@ import {DeployPermit2} from "permit2/test/utils/DeployPermit2.sol";
 import {DeployGemoon, GemoonDeployBase} from "../script/GemoonDeploy.sol";
 import {GemoonController} from "../src/contracts/Gemoon.sol";
 import {HookManager} from "../src/contracts/hooks/HookManager.sol";
+import {IHookManager} from "../src/contracts/interfaces/IHookManager.sol";
 import {Vault} from "../src/contracts/vault/Vault.sol";
 import {AssetConfig} from "../src/contracts/interfaces/IVault.sol";
 import {
@@ -114,7 +115,14 @@ contract ControllerDeployTokenTest is Test {
         });
     }
 
+    /// @dev Deploys a Meme and moves past the anti-snipe window, so swaps pay the base fee.
     function _deployMeme() internal returns (address token, uint256 positionId) {
+        (token, positionId) = _launchMeme();
+        vm.warp(block.timestamp + hook.DYNAMIC_FEE_THRESHOLD());
+    }
+
+    /// @dev Deploys a Meme and stays at its creation time: swaps pay the anti-snipe fee.
+    function _launchMeme() internal returns (address token, uint256 positionId) {
         positionId = positionManager.nextTokenId();
         vm.prank(creator);
         token = controller.deployToken(_config());
@@ -246,6 +254,39 @@ contract ControllerDeployTokenTest is Test {
         assertEq(idB, idA + 1);
         assertEq(positionManager.ownerOf(idA), address(controller));
         assertEq(positionManager.ownerOf(idB), address(controller));
+    }
+
+    function test_DeployToken_NotifiesHook_PoolTimestampIsBlockTimestamp() external {
+        vm.warp(1_700_000_000);
+        (address token,) = _deployMeme();
+        assertEq(hook.poolTimestamps(token), 1_700_000_000);
+    }
+
+    function testFuzz_DeployToken_TwoMemes_EachKeepsOwnPoolTimestamp(uint256 t1, uint256 gap)
+        external
+    {
+        // Realistic timestamps: Permit2 expirations are uint48, far-future warps expire them.
+        t1 = bound(t1, 1, type(uint32).max);
+        gap = bound(gap, 1, 365 days);
+
+        vm.warp(t1);
+        (address a,) = _deployMeme();
+        vm.warp(t1 + gap);
+        (address b,) = _deployMeme();
+
+        assertEq(hook.poolTimestamps(a), t1, "first meme");
+        assertEq(hook.poolTimestamps(b), t1 + gap, "second meme");
+    }
+
+    /// @dev The hook accepts the notification only from its controller, so a hook wired to
+    /// another controller blocks `deployToken` entirely instead of silently skipping it.
+    function test_DeployToken_HookControllerIsOther_Revert() external {
+        vm.prank(address(script));
+        hook.setController(makeAddr("otherController"));
+
+        vm.prank(creator);
+        vm.expectRevert(IHookManager.NotController.selector);
+        controller.deployToken(_config());
     }
 
     function test_DeployToken_PositionManagerNotSet_Revert() external {
@@ -464,5 +505,84 @@ contract ControllerDeployTokenTest is Test {
             usdg.balanceOf(protocolRecipient) + usdg.balanceOf(address(vault)), fee, "total fee"
         );
         assertGt(IERC20(token).balanceOf(trader), 0);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Anti-snipe fee: 80% at pool creation, linear down to the base fee over one minute
+    // ---------------------------------------------------------------------------------------------
+
+    function test_Swap_BuyAtLaunch_ChargesMaxFee() external {
+        (address token,) = _launchMeme();
+        uint256 usdgIn = 1_000 * PAIR_UNIT;
+
+        vm.recordLogs();
+        _buyMeme(token, usdgIn);
+        Trade memory t = _memeSwapped();
+
+        assertEq(t.fee, (usdgIn * 8_000) / 10_000, "80% of the input");
+        assertEq(hook.pendingFees(token), t.fee, "accrued");
+    }
+
+    function test_Swap_BuyHalfMinuteAfterLaunch_ChargesMidpointFee() external {
+        (address token,) = _launchMeme();
+        vm.warp(block.timestamp + 30);
+        uint256 usdgIn = 1_000 * PAIR_UNIT;
+
+        vm.recordLogs();
+        _buyMeme(token, usdgIn);
+
+        assertEq(_memeSwapped().fee, (usdgIn * 4_063) / 10_000, "40.63% of the input");
+    }
+
+    function test_Swap_SellAtLaunch_ChargesMaxFeeOnOutput() external {
+        (address token,) = _launchMeme();
+        _buyMeme(token, 1_000 * PAIR_UNIT);
+        uint256 memeIn = IERC20(token).balanceOf(trader) / 2;
+
+        vm.recordLogs();
+        _swap(token, false, -int256(memeIn), bytes(""));
+        Trade memory t = _memeSwapped();
+
+        assertEq(t.fee, (t.pairAmount * 8_000) / 10_000, "80% of the pool-priced output");
+    }
+
+    function test_Swap_BuyOneMinuteAfterLaunch_ChargesBaseFee() external {
+        (address token,) = _launchMeme();
+        vm.warp(block.timestamp + 60);
+        uint256 usdgIn = 1_000 * PAIR_UNIT;
+
+        vm.recordLogs();
+        _buyMeme(token, usdgIn);
+
+        assertEq(_memeSwapped().fee, _fee(usdgIn), "base fee");
+    }
+
+    /// @dev Invariant: whatever the fee rate, every charged fee ends up either paid to the
+    /// protocol and the vault or still accrued, and the protocol gets 25/125 of every payout.
+    function testFuzz_Swap_DynamicFee_ProtocolPlusVaultPlusAccruedEqualsCharged(
+        uint256 e1,
+        uint256 e2
+    ) external {
+        e1 = bound(e1, 0, 90);
+        e2 = bound(e2, e1, 90);
+        (address token,) = _launchMeme();
+        uint256 createdAt = block.timestamp;
+        uint256 first = 1_000 * PAIR_UNIT;
+        uint256 second = 400 * PAIR_UNIT;
+
+        vm.warp(createdAt + e1);
+        uint256 bips1 = hook.currentFeeBips(token);
+        uint256 fee1 = (first * bips1) / 10_000;
+        _buyMeme(token, first);
+        vm.warp(createdAt + e2);
+        uint256 bips2 = hook.currentFeeBips(token);
+        uint256 fee2 = (second * bips2) / 10_000;
+        _buyMeme(token, second);
+
+        uint256 toProtocol = usdg.balanceOf(protocolRecipient);
+        uint256 toVault = usdg.balanceOf(address(vault));
+        assertEq(toProtocol + toVault + hook.pendingFees(token), fee1 + fee2, "fee conserved");
+        assertEq(toProtocol, ((toProtocol + toVault) * 25) / 125, "protocol share");
+        assertGe(bips1, bips2, "fee rate never grows over time");
     }
 }

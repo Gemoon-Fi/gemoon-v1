@@ -9,7 +9,7 @@
 | Контракт | Файл | Роль |
 |---|---|---|
 | GemoonController | `src/contracts/Gemoon.sol` | Точка входа: деплой токена, пула и позиции. Прокси, OwnableUpgradeable. |
-| HookManager | `src/contracts/hooks/HookManager.sol`, интерфейс `IHookManager.sol` | Хук Uniswap V4: комиссия 1.25% в USDG на каждом свопе, выплата протоколу и волту. Прокси, Ownable2Step, адрес майнится под биты разрешений. |
+| HookManager | `src/contracts/hooks/HookManager.sol`, интерфейс `IHookManager.sol` | Хук Uniswap V4: комиссия в USDG на каждом свопе (1.25%, в первую минуту пула от 80% линейно вниз), выплата протоколу и волту. Прокси, Ownable2Step, адрес майнится под биты разрешений. |
 | Vault | `src/contracts/vault/Vault.sol` | Один контракт, логический волт на каждый мем: приём комиссий, стейкинг, конвертация, выплаты. Прокси, Ownable2Step. |
 | UniswapV3SwapAdapter | `src/contracts/adapters/UniswapV3SwapAdapter.sol` | Меняет USDG волта на наградные активы в пулах Uniswap V3, минимальный выход считает сам по TWAP пула. Ownable2Step, не прокси: волт меняет адаптер через `setSwapAdapter`. |
 | GemoonToken | `src/contracts/Token.sol` | ERC20 мема с метаданными и админами. Не обновляемый. |
@@ -23,8 +23,10 @@ Pair-токен один на весь протокол: контроллер, �
 
 ### Развёртывание, один раз
 
-`DeployGemoon` поднимает три прокси в одном прогоне: Vault, HookManager, GemoonController.
-Хук получает адрес волта в `initialize`, контроллер получает хук, волт и PositionManager сеттерами,
+`DeployGemoon` поднимает три прокси в одном прогоне в порядке Vault, GemoonController, HookManager.
+Хук получает адреса волта и контроллера в `initialize`. Контроллер — единственный, кто может звать
+`onlyController`-функции хука (`notifyPoolCreated`), владелец хука меняет его через `setController`.
+Контроллер получает хук, волт и PositionManager сеттерами,
 волт получает хук и контроллер. В конце владение уходит на `GEMOON_OWNER`, волту нужен отдельный
 `acceptOwnership`. Владелец волта затем настраивает allowlist наградных активов, порог конверсии
 и swap adapter, а владелец адаптера задаёт маршрут на каждый актив.
@@ -42,8 +44,11 @@ PositionManager, хук не пускает пулы незарегистрир�
    NFT позиции остаётся у контроллера. События: `TokenCreated`, `PoolCreated`, `PositionCreated`.
 
 2. **Торговля.** Трейдеры ходят через любой роутер Uniswap V4, например Universal Router.
-   На каждом свопе хук берёт 1.25% в USDG: в `beforeSwap`, если сумма USDG задана пользователем,
-   иначе в `afterSwap`. Комиссия копится в хуке как ERC6909-клеймы, отдельно по каждому мему.
+   На каждом свопе хук берёт комиссию в USDG: в `beforeSwap`, если сумма USDG задана
+   пользователем, иначе в `afterSwap`. Базовая ставка 1.25%, но в первую минуту после создания пула
+   она выше: 80% в момент создания и линейно вниз до базовой за 60 секунд (`feeBipsAt`). Время
+   создания хук получает от контроллера через `notifyPoolCreated`. Повышенная комиссия делится
+   между протоколом и волтом в той же пропорции, что и базовая. Комиссия копится в хуке как ERC6909-клеймы, отдельно по каждому мему.
 
 3. **Выплата комиссии.** В конце каждого свопа хук пытается выплатить всё накопленное по этому
    мему: 0.25% протоколу на `protocolRecipient`, 1% волту, и сразу зовёт `Vault.notifyFees`.
@@ -117,7 +122,8 @@ PositionManager, хук не пускает пулы незарегистрир�
 | Стартовая цена | 100 000 целых мемов за 1 целый USDG; decimals обоих токенов читаются при создании пула, порядок token0/token1 на цену не влияет | `PRICE_PER_TOKEN`, `IGemoon.sol`; `_configurePool`, `Gemoon.sol` |
 | Tick spacing | 200 | `TICK_SPACING`, `IGemoon.sol` |
 | LP fee пула | 0, комиссию берёт хук | `Gemoon.sol` |
-| Комиссия хука | 1.25% (125 bips), из них 0.25% протоколу | `HookManager.initialize`, настраивается |
+| Комиссия хука | 1.25% (125 bips), из них 0.25% протоколу | `HookManager.initialize`, настраивается, не выше `MAX_FEE_BIPS` |
+| Анти-снайп комиссия | 80% в момент создания пула, линейно до базовой за 60 секунд | `MAX_FEE_BIPS`, `DYNAMIC_FEE_THRESHOLD`, `HookManager.sol` |
 | Доля создателя | 10% от каждой комиссии | `CREATOR_SHARE_BPS`, `Vault.sol` |
 | Наградных активов на волт | до 5 | `MAX_ASSETS`, `Vault.sol` |
 | Порог конверсии эпохи | задаётся владельцем в единицах USDG, 0 выключает автоматику | `setConversionThreshold`, `Vault.sol` |
@@ -172,10 +178,12 @@ forge test          # всё вместе; если DEVNET_RPC задан в .en
 - `test/UniswapV3SwapAdapterTest.sol`: адаптер против мок-пула с настраиваемыми TWAP и спотом,
   fuzz на границу допуска, интеграция с настоящим волтом.
 - `test/DeployGemoonTest.sol`: логика скрипта деплоя, связка, владение, биты адреса хука,
-  чтение параметров из окружения.
+  чтение параметров из окружения, доступ `onlyController` к хуку.
 - `test/ControllerDeployTokenTest.sol`: end-to-end в процессе теста. Настоящие PoolManager,
   PositionManager и Permit2 из `lib/`, деплой через скрипт, `deployToken`, свопы, путь комиссии
-  до протокола и волта, fuzz на инвариант «протокол + волт + начислено = 1.25% оборота».
+  до протокола и волта, fuzz на инвариант «протокол + волт + начислено = вся взятая комиссия»,
+  свопы в окне повышенной комиссии.
+- `test/HookFeeMath.sol`: кривая комиссии хука, границы окна, fuzz на диапазон и монотонность.
 - `test/fork/ControllerDevnetForkTest.sol`: то же против девнета, Sepolia-форк на anvil с
   Uniswap V4, chain id 1337. Ничего не бродкастит, форк живёт внутри прогона. `DEVNET_BLOCK`
   фиксирует блок, `OPERATOR_ADDRESS` задаёт профинансированный аккаунт девнета. Подробности в
@@ -206,5 +214,9 @@ forge test          # всё вместе; если DEVNET_RPC задан в .en
 - **`ProxyGemoonControllerUpgrade` зовёт `reinitialize`** под `reinitializer(GEMOON_VERSION)`, а
   версия равна 1, которую уже занял `initialize`. Апгрейд с вызовом упадёт, пока версия не
   поднята. Апгрейд хука и волта пропускает вызов, если версия не изменилась.
+- **`HookManager.initialize`/`reinitialize` изменили ABI в 2.0:** добавлен параметр
+  `controller_` после `vault_`. `ProxyHookUpgrade` читает `controller()` с прокси до апгрейда,
+  поэтому апгрейд хука, задеплоенного до 2.0, с поднятой версией упадёт: у старой имплементации
+  нет `controller()`.
 - **`deployToken` изменил ABI в 2.0:** параметр имени стратегии убран, интеграции нужно обновить.
 - **Мёртвый слот `_deployStrategies`** в контроллере сохранён ради storage layout прокси.

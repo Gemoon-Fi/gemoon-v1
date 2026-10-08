@@ -67,6 +67,7 @@ abstract contract GemoonDeployBase is Script {
         address pairToken;
         address protocolRecipient;
         address vault;
+        address controller;
         uint256 feeBips;
         uint256 protocolFeeBips;
     }
@@ -126,7 +127,7 @@ abstract contract GemoonDeployBase is Script {
     /// @dev Everything the hook needs is passed to `initialize`, so `params.owner` is set as the
     /// owner right away (Ownable2Step init sets it directly, no acceptOwnership).
     /// @param create2Deployer Account CREATE2 is executed from, see the contract docs.
-    /// @param params          Hook configuration; `vault` must already be deployed.
+    /// @param params          Hook configuration; `vault` and `controller` must already be deployed.
     /// @return hook           HookManager proxy.
     function deployHook(address create2Deployer, HookDeployParams memory params)
         public
@@ -141,6 +142,7 @@ abstract contract GemoonDeployBase is Script {
                 params.owner,
                 params.protocolRecipient,
                 params.vault,
+                params.controller,
                 params.feeBips,
                 params.protocolFeeBips
             )
@@ -258,6 +260,7 @@ abstract contract GemoonDeployBase is Script {
         if (vault.hook() != address(hook)) revert WiringMismatch("vault.hook");
         if (vault.controller() != address(controller)) revert WiringMismatch("vault.controller");
         if (hook.vault() != address(vault)) revert WiringMismatch("hook.vault");
+        if (hook.controller() != address(controller)) revert WiringMismatch("hook.controller");
         if (Currency.unwrap(hook.pairToken()) != vault.usdg()) {
             revert WiringMismatch("hook.pairToken != vault.usdg");
         }
@@ -308,8 +311,7 @@ abstract contract GemoonDeployBase is Script {
 }
 
 /// @notice Deploys Vault, HookManager and GemoonController and wires them in one run.
-/// @dev Order: vault -> hook (needs the vault in `initialize`) -> controller -> setters ->
-/// ownership. A half-finished run is safe: the controller reverts on `deployToken` until both hook
+/// @dev Order: vault -> controller -> hook (needs both in `initialize`) -> setters -> ownership. A half-finished run is safe: the controller reverts on `deployToken` until both hook
 /// and vault are set, the hook rejects pools of unregistered Memes and the vault accepts fees only
 /// from its hook.
 /// Env:
@@ -426,7 +428,17 @@ contract DeployGemoon is GemoonDeployBase {
             })
         );
 
-        // 2. Hook, fully configured by `initialize`, owned by the final owner right away.
+        // 2. Controller, same pair token as the vault and the hook.
+        d.controller = deployController(
+            deployer,
+            ControllerDeployParams({
+                proxyAdminOwner: params.proxyAdminOwner,
+                poolManager: params.poolManager,
+                pairToken: params.usdg
+            })
+        );
+
+        // 3. Hook, fully configured by `initialize`, owned by the final owner right away.
         d.hook = deployHook(
             create2Deployer,
             HookDeployParams({
@@ -436,18 +448,9 @@ contract DeployGemoon is GemoonDeployBase {
                 pairToken: params.usdg,
                 protocolRecipient: params.protocolRecipient,
                 vault: address(d.vault),
+                controller: address(d.controller),
                 feeBips: params.feeBips,
                 protocolFeeBips: params.protocolFeeBips
-            })
-        );
-
-        // 3. Controller, same pair token as the vault and the hook.
-        d.controller = deployController(
-            deployer,
-            ControllerDeployParams({
-                proxyAdminOwner: params.proxyAdminOwner,
-                poolManager: params.poolManager,
-                pairToken: params.usdg
             })
         );
 
@@ -582,7 +585,7 @@ contract ProxyVaultUpgrade is GemoonDeployBase {
 ///  - HOOK_PROXY_ADMIN_ADDRESS     ProxyAdmin of the hook proxy (required)
 /// PoolManager and pair token are read from the proxy. The broadcaster must own the ProxyAdmin.
 /// If the new implementation bumps `HOOK_MANAGER_VERSION`, `reinitialize` runs atomically with
-/// the upgrade, re-passing the current owner, recipient, vault and fees; otherwise the upgrade
+/// the upgrade, re-passing the current owner, recipient, vault, controller and fees; otherwise the upgrade
 /// carries no call. Storage must stay append-only, see `ProxyVaultUpgrade`.
 contract ProxyHookUpgrade is GemoonDeployBase {
     using Hooks for IHooks;
@@ -623,6 +626,7 @@ contract ProxyHookUpgrade is GemoonDeployBase {
         HookManager hook = HookManager(payable(proxy));
         address ownerBefore = hook.owner();
         address vaultBefore = hook.vault();
+        address controllerBefore = hook.controller();
         address pairTokenBefore = Currency.unwrap(hook.pairToken());
 
         uint64 current = _initializedVersion(proxy);
@@ -635,6 +639,7 @@ contract ProxyHookUpgrade is GemoonDeployBase {
                     ownerBefore,
                     hook.protocolRecipient(),
                     vaultBefore,
+                    controllerBefore,
                     hook.TOTAL_FEE_BIPS(),
                     hook.PROTOCOL_FEE_BIPS()
                 )
@@ -648,6 +653,7 @@ contract ProxyHookUpgrade is GemoonDeployBase {
         if (
             Upgrades.getImplementationAddress(proxy) != newImplementation
                 || hook.owner() != ownerBefore || hook.vault() != vaultBefore
+                || hook.controller() != controllerBefore
                 || Currency.unwrap(hook.pairToken()) != pairTokenBefore
         ) revert StateChanged();
         IHooks(proxy).validateHookPermissions(hook.getHookPermissions());

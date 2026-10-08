@@ -111,7 +111,9 @@ contract GemoonController is
     /// @param hook_ HookManager proxy.
     function setHook(address hook_) external onlyOwner {
         if (hook_ == address(0)) revert InvalidAddress();
-        address hookPairToken = Currency.unwrap(IHookManager(hook_).pairToken());
+        address hookPairToken = Currency.unwrap(
+            IHookManager(hook_).pairToken()
+        );
         if (hookPairToken != _weth)
             revert HookPairTokenMismatch(hookPairToken, _weth);
         hook = hook_;
@@ -206,6 +208,8 @@ contract GemoonController is
             hook_
         );
 
+        IHookManager(hook_).notifyPoolCreated(deployedToken, block.timestamp);
+
         emit TokenCreated(
             deployedToken,
             config.rewardsConfig.creatorAddress,
@@ -257,7 +261,8 @@ contract GemoonController is
         // order only decides which amount is token0 and which is token1, the price is the same.
         // PRICE_PER_TOKEN * 1e18 is far below uint256, and the ratio stays below the 2^64 limit
         // of PriceMath for any pair token with 6..18 decimals.
-        uint256 memeAmount = PRICE_PER_TOKEN * 10 ** IERC20Metadata(deployedToken).decimals();
+        uint256 memeAmount = PRICE_PER_TOKEN *
+            10 ** IERC20Metadata(deployedToken).decimals();
         uint256 pairAmount = 10 ** IERC20Metadata(_weth).decimals();
         uint160 sqrtX96Price = PriceMath.getSqrtPriceX96(
             token0 == deployedToken ? memeAmount : pairAmount,

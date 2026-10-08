@@ -11,6 +11,9 @@ import {DeployGemoon, GemoonDeployBase} from "../script/GemoonDeploy.sol";
 import {GemoonController} from "../src/contracts/Gemoon.sol";
 import {HookManager} from "../src/contracts/hooks/HookManager.sol";
 import {Vault} from "../src/contracts/vault/Vault.sol";
+import {IHookManager} from "../src/contracts/interfaces/IHookManager.sol";
+import {OwnableUpgradeable} from
+    "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 
 contract DeployMockToken is ERC20 {
     constructor(string memory symbol_) ERC20(symbol_, symbol_) {}
@@ -72,6 +75,7 @@ contract DeployGemoonTest is Test {
         assertEq(d.vault.hook(), address(d.hook), "vault.hook");
         assertEq(d.vault.controller(), address(d.controller), "vault.controller");
         assertEq(d.hook.vault(), address(d.vault), "hook.vault");
+        assertEq(d.hook.controller(), address(d.controller), "hook.controller");
         assertEq(Currency.unwrap(d.hook.pairToken()), address(usdg), "hook.pairToken");
         assertEq(d.vault.usdg(), address(usdg), "vault.usdg");
     }
@@ -213,5 +217,128 @@ contract DeployGemoonTest is Test {
             abi.encodeWithSelector(GemoonDeployBase.WiringMismatch.selector, "controller.hook")
         );
         script.checkWiring(a.controller, b.hook, a.vault);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // HookManager controller
+    // ---------------------------------------------------------------------------------------------
+
+    function test_NotifyPoolCreated_FromController_StoresTimestamp() external {
+        DeployGemoon.Deployment memory d = _deploy(owner);
+        address meme = makeAddr("meme");
+
+        vm.prank(address(d.controller));
+        d.hook.notifyPoolCreated(meme, 1_700_000_000);
+
+        assertEq(d.hook.poolTimestamps(meme), 1_700_000_000);
+    }
+
+    function testFuzz_NotifyPoolCreated_FromController_StoresPerMeme(
+        address meme,
+        address other,
+        uint256 timestamp
+    ) external {
+        vm.assume(meme != other);
+        DeployGemoon.Deployment memory d = _deploy(owner);
+
+        vm.prank(address(d.controller));
+        d.hook.notifyPoolCreated(meme, timestamp);
+
+        assertEq(d.hook.poolTimestamps(meme), timestamp);
+        assertEq(d.hook.poolTimestamps(other), 0, "other meme untouched");
+    }
+
+    function test_NotifyPoolCreated_CalledTwice_OverwritesTimestamp() external {
+        DeployGemoon.Deployment memory d = _deploy(owner);
+        address meme = makeAddr("meme");
+
+        vm.startPrank(address(d.controller));
+        d.hook.notifyPoolCreated(meme, 100);
+        d.hook.notifyPoolCreated(meme, 200);
+        vm.stopPrank();
+
+        assertEq(d.hook.poolTimestamps(meme), 200);
+    }
+
+    function test_NotifyPoolCreated_FromOwner_Revert() external {
+        DeployGemoon.Deployment memory d = _deploy(owner);
+
+        vm.prank(owner);
+        vm.expectRevert(IHookManager.NotController.selector);
+        d.hook.notifyPoolCreated(makeAddr("meme"), 1);
+    }
+
+    function test_NotifyPoolCreated_FromVault_Revert() external {
+        DeployGemoon.Deployment memory d = _deploy(owner);
+
+        vm.prank(address(d.vault));
+        vm.expectRevert(IHookManager.NotController.selector);
+        d.hook.notifyPoolCreated(makeAddr("meme"), 1);
+    }
+
+    function test_NotifyPoolCreated_FromNewController_AfterSetController_Stores() external {
+        DeployGemoon.Deployment memory d = _deploy(owner);
+        address next = makeAddr("nextController");
+        address meme = makeAddr("meme");
+
+        vm.prank(owner);
+        d.hook.setController(next);
+
+        vm.prank(next);
+        d.hook.notifyPoolCreated(meme, 42);
+
+        assertEq(d.hook.poolTimestamps(meme), 42);
+    }
+
+    function testFuzz_NotifyPoolCreated_NotController_Revert(address caller, uint256 timestamp)
+        external
+    {
+        DeployGemoon.Deployment memory d = _deploy(owner);
+        vm.assume(caller != address(d.controller));
+        // The ProxyAdmin is denied the fallback by the transparent proxy itself.
+        vm.assume(caller != Upgrades.getAdminAddress(address(d.hook)));
+        address meme = makeAddr("meme");
+
+        vm.prank(caller);
+        vm.expectRevert(IHookManager.NotController.selector);
+        d.hook.notifyPoolCreated(meme, timestamp);
+
+        assertEq(d.hook.poolTimestamps(meme), 0);
+    }
+
+    function test_SetController_ByOwner_UpdatesAndEmits() external {
+        DeployGemoon.Deployment memory d = _deploy(owner);
+        address next = makeAddr("nextController");
+
+        vm.expectEmit(address(d.hook));
+        emit IHookManager.ControllerUpdated(next);
+        vm.prank(owner);
+        d.hook.setController(next);
+
+        assertEq(d.hook.controller(), next);
+
+        // The old controller loses access right away.
+        vm.prank(address(d.controller));
+        vm.expectRevert(IHookManager.NotController.selector);
+        d.hook.notifyPoolCreated(makeAddr("meme"), 1);
+    }
+
+    function test_SetController_NotOwner_Revert() external {
+        DeployGemoon.Deployment memory d = _deploy(owner);
+        address stranger = makeAddr("stranger");
+
+        vm.prank(stranger);
+        vm.expectRevert(
+            abi.encodeWithSelector(OwnableUpgradeable.OwnableUnauthorizedAccount.selector, stranger)
+        );
+        d.hook.setController(stranger);
+    }
+
+    function test_SetController_ZeroAddress_Revert() external {
+        DeployGemoon.Deployment memory d = _deploy(owner);
+
+        vm.prank(owner);
+        vm.expectRevert(IHookManager.ZeroAddress.selector);
+        d.hook.setController(address(0));
     }
 }

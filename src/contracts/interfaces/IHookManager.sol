@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity ^0.8.21;
 
 import {PoolId} from "@uniswap-v4-core/types/PoolId.sol";
 import {Currency} from "@uniswap-v4-core/types/Currency.sol";
 import {IGemoonable} from "./IGemoonable.sol";
 
 /// @title Gemoon UniswapV4 hook manager.
-/// @notice Charges a fixed swap fee (1.25% by default), always denominated in the pair token:
-///         `PROTOCOL_FEE_BIPS` goes to the protocol recipient, the rest goes to the vault.
+/// @notice Charges a swap fee, always denominated in the pair token: 80% right at pool creation,
+///         falling linearly to `TOTAL_FEE_BIPS` (1.25% by default) within one minute. Every fee
+///         is split `PROTOCOL_FEE_BIPS : TOTAL_FEE_BIPS - PROTOCOL_FEE_BIPS` between the protocol
+///         recipient and the vault.
 ///         Every swap ends with a payout of everything accrued for the Meme of the pool.
 interface IHookManager is IGemoonable {
     // ---------------------------------------------------------------------------------------------
@@ -19,12 +21,14 @@ interface IHookManager is IGemoonable {
     error InvalidPoolPair();
     /// @dev LP fee of the pool is not 0.
     error InvalidPoolFee();
-    /// @dev `feeBips >= BIPS` or `protocolFeeBips > feeBips`.
+    /// @dev `feeBips > MAX_FEE_BIPS` or `protocolFeeBips > feeBips`.
     error InvalidFeeBips();
     /// @dev Pool initialized for a Meme without a registered vault.
     error VaultNotRegistered(address meme);
     /// @dev `payout` called by anyone but the hook itself.
     error NotSelf();
+    /// @dev `onlyController` function called by anyone but the controller.
+    error NotController();
 
     // ---------------------------------------------------------------------------------------------
     // Events
@@ -85,6 +89,9 @@ interface IHookManager is IGemoonable {
     /// @notice Vault changed.
     event VaultUpdated(address indexed vault);
 
+    /// @notice Controller changed.
+    event ControllerUpdated(address indexed controller);
+
     // ---------------------------------------------------------------------------------------------
     // Initialization (proxy)
     // ---------------------------------------------------------------------------------------------
@@ -93,12 +100,14 @@ interface IHookManager is IGemoonable {
     /// @param owner_             Owner (Ownable2Step).
     /// @param protocolRecipient_ Receiver of the protocol share of every fee.
     /// @param vault_             Vault that receives the rest and holds Meme stakes.
+    /// @param controller_        GemoonController allowed into `onlyController` functions.
     /// @param feeBips            Total hook fee, in bips of the pair-token side of a swap.
     /// @param protocolFeeBips    Protocol share of `feeBips`, in bips of the swap.
     function initialize(
         address owner_,
         address protocolRecipient_,
         address vault_,
+        address controller_,
         uint256 feeBips,
         uint256 protocolFeeBips
     ) external;
@@ -108,6 +117,7 @@ interface IHookManager is IGemoonable {
         address owner_,
         address protocolRecipient_,
         address vault_,
+        address controller_,
         uint256 feeBips,
         uint256 protocolFeeBips
     ) external;
@@ -121,6 +131,9 @@ interface IHookManager is IGemoonable {
 
     /// @notice Sets the vault that receives the vault share of every fee.
     function setVault(address vault_) external;
+
+    /// @notice Sets the GemoonController allowed into `onlyController` functions.
+    function setController(address controller_) external;
 
     // ---------------------------------------------------------------------------------------------
     // Payout
@@ -156,13 +169,42 @@ interface IHookManager is IGemoonable {
     /// @notice Vault that receives the vault share of every fee.
     function vault() external view returns (address);
 
+    /// @notice GemoonController allowed into `onlyController` functions.
+    function controller() external view returns (address);
+
     /// @notice Bips denominator, 10 000.
     function BIPS() external view returns (uint256);
 
-    /// @notice Total hook fee, in bips of the pair-token side of a swap.
+    /// @notice Base hook fee, in bips of the pair-token side of a swap. Charged from
+    ///         `DYNAMIC_FEE_THRESHOLD` after pool creation on; before that the fee is higher, see
+    ///         `feeBipsAt`.
     function TOTAL_FEE_BIPS() external view returns (uint256);
 
-    /// @notice Protocol share of the fee, in bips of the swap. The vault gets
-    ///         `TOTAL_FEE_BIPS - PROTOCOL_FEE_BIPS`.
+    /// @notice Protocol share of the base fee, in bips of the swap. Every fee, the higher
+    ///         early one included, is split in the same ratio: protocol gets
+    ///         `PROTOCOL_FEE_BIPS / TOTAL_FEE_BIPS` of it, the vault the rest.
     function PROTOCOL_FEE_BIPS() external view returns (uint256);
+
+    /// @notice Fee right at pool creation, in bips (8 000 = 80%).
+    function MAX_FEE_BIPS() external view returns (uint256);
+
+    /// @notice Seconds after pool creation during which the fee falls from `MAX_FEE_BIPS` to
+    ///         `TOTAL_FEE_BIPS`.
+    function DYNAMIC_FEE_THRESHOLD() external view returns (uint256);
+
+    /// @notice Creation time of the pool of `meme`, zero if the controller never reported it.
+    function poolTimestamps(address meme) external view returns (uint256);
+
+    /// @notice Fee of a swap in the pool of `meme` at `timestamp`, in bips. Linear from
+    ///         `MAX_FEE_BIPS` at pool creation to `TOTAL_FEE_BIPS` after `DYNAMIC_FEE_THRESHOLD`.
+    function feeBipsAt(address meme, uint256 timestamp) external view returns (uint256);
+
+    /// @notice Fee of a swap in the pool of `meme` right now, in bips.
+    function currentFeeBips(address meme) external view returns (uint256);
+
+    // ------
+    // Utils
+    // ------
+    /// @notice Records when the pool of `meme` was created. Only controller.
+    function notifyPoolCreated(address meme, uint256 timestamp) external;
 }
