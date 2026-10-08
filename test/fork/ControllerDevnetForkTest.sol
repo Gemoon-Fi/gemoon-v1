@@ -3,6 +3,7 @@ pragma solidity ^0.8.21;
 
 import "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IERC721} from "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import {IPoolManager} from "@uniswap-v4-core/interfaces/IPoolManager.sol";
 import {StateLibrary} from "@uniswap-v4-core/libraries/StateLibrary.sol";
@@ -230,10 +231,11 @@ contract ControllerDevnetForkTest is Test {
         assertEq(Currency.unwrap(key.currency1), token1, "currency1");
 
         (uint160 sqrtPriceX96, int24 tick,, uint24 lpFee) = poolManager.getSlot0(key.toId());
+        uint256 memeAmount = PRICE_PER_TOKEN * 10 ** IERC20Metadata(token).decimals();
         uint256 pairUnit = 10 ** usdg.decimals();
         uint160 expected = PriceMath.getSqrtPriceX96(
-            token0 == token ? PRICE_PER_TOKEN : pairUnit,
-            token1 == token ? PRICE_PER_TOKEN : pairUnit
+            token0 == token ? memeAmount : pairUnit,
+            token1 == token ? memeAmount : pairUnit
         );
         assertEq(sqrtPriceX96, expected, "initial price");
         assertEq(lpFee, 0, "pool lp fee");

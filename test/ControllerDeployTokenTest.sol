@@ -332,15 +332,18 @@ contract ControllerDeployTokenTest is Test {
 
     // ------------------------------------------------------------------ start price
 
-    /// @dev 300_000 Meme per 1 USDG regardless of USDG having 6 decimals: a 1 USDG buy returns
-    /// close to 300_000 Meme, less the 1.25% fee and the price impact of a one-sided position.
-    function test_DeployToken_StartPrice_300kMemePerWholeUsdg() external {
+    /// @dev INITIAL_PRICE whole Meme per 1 USDG regardless of USDG having 6 decimals: a 1 USDG
+    /// buy returns close to INITIAL_PRICE Meme, less the 1.25% fee and the price impact of a
+    /// one-sided position.
+    function test_DeployToken_StartPrice_InitialPriceMemePerWholePairToken() external {
         (address token,) = _deployMeme();
         _buyMeme(token, 1 * PAIR_UNIT);
 
         uint256 got = IERC20(token).balanceOf(trader);
-        assertLt(got, 300_000e18, "never more than the start price");
-        assertGt(got, 290_000e18, "fee and impact on 1 USDG stay below 3.3%");
+        uint256 startPrice = INITIAL_PRICE * 1e18; // whole Meme for one whole pair token
+        assertLt(got, startPrice, "never more than the start price");
+        // the hook fee plus price impact of a single pair-token buy stay below 3.3%
+        assertGt(got, startPrice * 967 / 1000, "fee and impact on 1 pair token stay below 3.3%");
     }
 
     function test_DeployToken_PoolInitializedAtPriceForPairDecimals() external {
@@ -348,8 +351,8 @@ contract ControllerDeployTokenTest is Test {
         PoolKey memory key = _poolKey(token);
         (uint160 sqrtPriceX96,,,) = IPoolManager(address(poolManager)).getSlot0(key.toId());
         uint160 expected = PriceMath.getSqrtPriceX96(
-            Currency.unwrap(key.currency0) == token ? INITIAL_PRICE : PAIR_UNIT,
-            Currency.unwrap(key.currency1) == token ? INITIAL_PRICE : PAIR_UNIT
+            Currency.unwrap(key.currency0) == token ? INITIAL_PRICE * 1e18 : PAIR_UNIT,
+            Currency.unwrap(key.currency1) == token ? INITIAL_PRICE * 1e18 : PAIR_UNIT
         );
         assertEq(sqrtPriceX96, expected, "slot0 price");
     }

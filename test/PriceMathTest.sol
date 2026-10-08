@@ -77,4 +77,47 @@ contract PriceMathTest is Test {
         uint256 expected = Math.mulDiv(token1Amount, 1e36, token0Amount);
         assertApproxEqRel(_priceX36(sqrtPriceX96), expected, 1e9, "round trip");
     }
+
+    /// @dev The start price of a pool is PRICE_PER_TOKEN whole Meme per one whole pair token,
+    /// expressed in raw units of each side. Swapping the token order must give the inverse
+    /// price, i.e. the same price in human terms: sqrtA * sqrtB == 2^192.
+    function test_GetSqrtPriceX96_StartPrice_SameForEitherTokenOrder() public pure {
+        uint256 memeAmount = 300_000 * 1e6; // 300_000 whole Meme, 6 decimals
+        uint256 pairAmount = 1e18; // 1 whole pair token, 18 decimals
+
+        uint160 memeIsToken0 = PriceMath.getSqrtPriceX96(memeAmount, pairAmount);
+        uint160 memeIsToken1 = PriceMath.getSqrtPriceX96(pairAmount, memeAmount);
+
+        assertEq(memeIsToken0, 144650172662492649647717392874717, "meme as token0");
+        assertEq(memeIsToken1, 43395051798747794894315217, "meme as token1");
+        // pair per raw Meme = 1e18 / 3e11 = 3.33e6; Meme per raw pair = 3e11 / 1e18 = 3e-7
+        assertApproxEqRel(_priceX36(memeIsToken0), 3_333_333_333_333_333_333_333_333_333_333_333_333_333_333, 1e12, "t0 price");
+        assertApproxEqRel(_priceX36(memeIsToken1), 3e29, 1e12, "t1 price");
+        assertApproxEqRel(
+            Math.mulDiv(memeIsToken0, memeIsToken1, 1 << 96), 1 << 96, 1e9, "inverse prices"
+        );
+    }
+
+    /// @dev For any Meme/pair decimals in 6..18 the start price must land inside the Uniswap tick
+    /// range in both token orders and the two orders must be inverses of each other.
+    function testFuzz_GetSqrtPriceX96_StartPrice_AnyDecimals_InverseAndInRange(
+        uint8 memeDecimals,
+        uint8 pairDecimals
+    ) public pure {
+        memeDecimals = uint8(bound(memeDecimals, 6, 18));
+        pairDecimals = uint8(bound(pairDecimals, 6, 18));
+        uint256 memeAmount = 300_000 * 10 ** memeDecimals;
+        uint256 pairAmount = 10 ** pairDecimals;
+
+        uint160 memeIsToken0 = PriceMath.getSqrtPriceX96(memeAmount, pairAmount);
+        uint160 memeIsToken1 = PriceMath.getSqrtPriceX96(pairAmount, memeAmount);
+
+        assertGe(memeIsToken0, TickMath.MIN_SQRT_PRICE, "t0 below range");
+        assertLt(memeIsToken0, TickMath.MAX_SQRT_PRICE, "t0 above range");
+        assertGe(memeIsToken1, TickMath.MIN_SQRT_PRICE, "t1 below range");
+        assertLt(memeIsToken1, TickMath.MAX_SQRT_PRICE, "t1 above range");
+        assertApproxEqRel(
+            Math.mulDiv(memeIsToken0, memeIsToken1, 1 << 96), 1 << 96, 1e9, "inverse prices"
+        );
+    }
 }

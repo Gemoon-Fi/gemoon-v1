@@ -113,8 +113,8 @@ PositionManager, хук не пускает пулы незарегистрир�
 
 | Параметр | Значение | Где |
 |---|---|---|
-| Эмиссия мема | 100 000 000 000 токенов, 18 знаков | `INITIAL_SUPPLY_X18`, `IGemoon.sol` |
-| Стартовая цена | 300 000 мемов за 1 целый USDG, decimals pair-токена читаются при создании пула | `PRICE_PER_TOKEN`, `IGemoon.sol`; `_configurePool`, `Gemoon.sol` |
+| Эмиссия мема | 1 000 000 000 токенов, 18 знаков | `INITIAL_SUPPLY_X18`, `IGemoon.sol` |
+| Стартовая цена | 100 000 целых мемов за 1 целый USDG; decimals обоих токенов читаются при создании пула, порядок token0/token1 на цену не влияет | `PRICE_PER_TOKEN`, `IGemoon.sol`; `_configurePool`, `Gemoon.sol` |
 | Tick spacing | 200 | `TICK_SPACING`, `IGemoon.sol` |
 | LP fee пула | 0, комиссию берёт хук | `Gemoon.sol` |
 | Комиссия хука | 1.25% (125 bips), из них 0.25% протоколу | `HookManager.initialize`, настраивается |

@@ -29,7 +29,7 @@ contract GemoonToken is IGemoonToken, ERC20, ERC20Permit, ERC20Burnable, Admin {
         _socialMedia = config.socialMedia;
 
         /// @notice Minting the maximum supply of tokens to the deployer.
-        _mint(msg.sender, 100_000_000_000 * 10 ** uint256(_decimals));
+        _mint(msg.sender, 1_000_000_000 * 10 ** uint256(_decimals));
     }
 
     function creator() external view override returns (address) {

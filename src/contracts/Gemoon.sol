@@ -252,11 +252,16 @@ contract GemoonController is
             tickSpacing: TICK_SPACING,
             hooks: IHooks(hook_)
         });
-        // PRICE_PER_TOKEN Meme units per one whole pair token, whatever its decimals.
-        uint256 pairUnit = 10 ** IERC20Metadata(_weth).decimals();
+        // Start price: PRICE_PER_TOKEN whole Meme for one whole pair token. PriceMath takes both
+        // amounts in raw units, so each side is scaled by its own token's decimals; the token
+        // order only decides which amount is token0 and which is token1, the price is the same.
+        // PRICE_PER_TOKEN * 1e18 is far below uint256, and the ratio stays below the 2^64 limit
+        // of PriceMath for any pair token with 6..18 decimals.
+        uint256 memeAmount = PRICE_PER_TOKEN * 10 ** IERC20Metadata(deployedToken).decimals();
+        uint256 pairAmount = 10 ** IERC20Metadata(_weth).decimals();
         uint160 sqrtX96Price = PriceMath.getSqrtPriceX96(
-            token0 == deployedToken ? PRICE_PER_TOKEN : pairUnit,
-            token1 == deployedToken ? PRICE_PER_TOKEN : pairUnit
+            token0 == deployedToken ? memeAmount : pairAmount,
+            token1 == deployedToken ? memeAmount : pairAmount
         );
 
         (int24 tickLower, int24 tickUpper, int24 tick) = Ticks.getTicks(
