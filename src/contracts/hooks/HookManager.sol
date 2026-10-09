@@ -30,10 +30,14 @@ import {IHookManager} from "../interfaces/IHookManager.sol";
 import {SignedMath} from "@openzeppelin/contracts/utils/math/SignedMath.sol";
 
 /// @title Gemoon UniswapV4 hook manager.
-/// @notice Charges a swap fee, always denominated in `i_pairToken`, split between the protocol
-///         recipient and the vault in the ratio `PROTOCOL_FEE_BIPS : TOTAL_FEE_BIPS - PROTOCOL_FEE_BIPS`.
+/// @notice Charges a swap fee, always denominated in `i_pairToken`.
+///         Base fee of a Meme is chosen by its creator at deployment (1%..10%). Out of every fee
+///         the protocol recipient gets `PROTOCOL_SHARE_BIPS` (30%) of the fee, the vault the rest:
+///         a 10% fee is 3% of the swap to the protocol and 7% to the vault, a 1% fee is 0.3% and
+///         0.7%. The share applies to the whole fee, the anti-snipe excess included.
 ///         Anti-snipe: the fee starts at `MAX_FEE_BIPS` (80%) when the pool is created and falls
-///         linearly to `TOTAL_FEE_BIPS` (1.25% by default) over `DYNAMIC_FEE_THRESHOLD` (1 minute).
+///         linearly to the base fee over `DYNAMIC_FEE_THRESHOLD`. Swaps of the controller (the
+///         dev buy inside `deployToken`) always pay the base fee.
 /// @dev Deployed behind a TransparentUpgradeableProxy. Both the proxy and every implementation
 /// must be CREATE2-mined to carry the bit pattern of `getHookPermissions`.
 ///
@@ -41,9 +45,10 @@ import {SignedMath} from "@openzeppelin/contracts/utils/math/SignedMath.sol";
 ///  - pools: only Meme/pairToken pools with LP fee 0 whose Meme has a registered vault.
 ///  - every swap: the fee is taken from the swapper via a hook delta and recorded inside the
 ///    PoolManager as ERC6909 claims owned by this hook (`poolManager.mint`), and per Meme in
-///    `accrued`.
+///    `accrued` (protocol part of it in `accruedProtocol`).
 ///  - end of every swap (`_afterSwap`): the claims accrued for the Meme of the pool are paid out as
-///    real tokens, 1/5 to the protocol recipient and 4/5 to the vault, and the vault is notified
+///    real tokens, `accruedProtocol` to the protocol recipient and the rest to the vault, and the
+///    vault is notified
 ///    (`IVault.notifyFees`). The swapper pays the gas. The payout runs inside try/catch: if it
 ///    fails, the swap still succeeds and the fee stays accrued until the next successful payout.
 ///  - `distribute(meme)`: manual fallback that pays out whatever is accrued for `meme`.
@@ -67,13 +72,20 @@ contract HookManager is
     uint64 public constant HOOK_MANAGER_VERSION = 1;
 
     uint256 public constant BIPS = 10_000;
+    /// @notice Fallback base fee for a Meme the controller never reported, see `baseFeeBips`.
     uint256 public TOTAL_FEE_BIPS = 125; // 1.25%
-    uint256 public PROTOCOL_FEE_BIPS = 50; // 0.5%, vault gets the remaining 1%
+    /// @notice Protocol share of every fee, in bips of the fee. The vault gets the rest.
+    /// @dev Same storage slot as the former `PROTOCOL_FEE_BIPS` (bips of the swap): a proxy
+    /// upgraded from it must be re-initialized with a share.
+    uint256 public PROTOCOL_SHARE_BIPS = 3_000; // 30%
     /// @notice Time after pool creation during which the fee falls from `MAX_FEE_BIPS` to
-    ///         `TOTAL_FEE_BIPS`.
-    uint256 public constant DYNAMIC_FEE_THRESHOLD = 1 minutes;
+    ///         `baseFeeBips`.
+    uint256 public constant DYNAMIC_FEE_THRESHOLD = 30 seconds;
     /// @notice Fee right at pool creation, 80%.
     uint256 public constant MAX_FEE_BIPS = 8_000;
+    /// @notice Bounds of the Meme fee its creator chooses at deployment: 1%..10%.
+    uint256 public constant MIN_MEME_FEE_BIPS = 100;
+    uint256 public constant MAX_MEME_FEE_BIPS = 1_000;
 
     Currency private immutable i_pairToken;
 
@@ -89,6 +101,11 @@ contract HookManager is
     mapping(address meme => uint256) public poolTimestamps;
     /// @notice GemoonController, the only caller allowed into `onlyController` functions.
     address public controller;
+    /// @notice Base fee of a Meme chosen by its creator, in bips of the swap, zero if the
+    ///         controller never reported it. Protocol part included.
+    mapping(address meme => uint256) public memeFeeBips;
+    /// @notice Protocol part of `accrued`, per Meme. Always `<= accrued[meme]`.
+    mapping(address meme => uint256) public accruedProtocol;
 
     // ---------------------------------------------------------------------------------------------
     // Modifiers
@@ -122,7 +139,7 @@ contract HookManager is
         address vault_,
         address controller_,
         uint256 feeBips,
-        uint256 protocolFeeBips
+        uint256 protocolShareBips
     ) public initializer {
         _init(
             owner_,
@@ -130,7 +147,7 @@ contract HookManager is
             vault_,
             controller_,
             feeBips,
-            protocolFeeBips
+            protocolShareBips
         );
     }
 
@@ -140,7 +157,7 @@ contract HookManager is
         address vault_,
         address controller_,
         uint256 feeBips,
-        uint256 protocolFeeBips
+        uint256 protocolShareBips
     ) external reinitializer(getVersion()) {
         _init(
             owner_,
@@ -148,7 +165,7 @@ contract HookManager is
             vault_,
             controller_,
             feeBips,
-            protocolFeeBips
+            protocolShareBips
         );
     }
 
@@ -158,14 +175,14 @@ contract HookManager is
         address vault_,
         address controller_,
         uint256 feeBips,
-        uint256 protocolFeeBips
+        uint256 protocolShareBips
     ) internal {
         if (owner_ == address(0)) revert ZeroAddress();
-        if (feeBips > MAX_FEE_BIPS || protocolFeeBips > feeBips)
+        if (feeBips > MAX_FEE_BIPS || protocolShareBips > BIPS)
             revert InvalidFeeBips();
 
         TOTAL_FEE_BIPS = feeBips;
-        PROTOCOL_FEE_BIPS = protocolFeeBips;
+        PROTOCOL_SHARE_BIPS = protocolShareBips;
 
         __Ownable_init(owner_);
         __Ownable2Step_init();
@@ -308,7 +325,11 @@ contract HookManager is
         uint256 feeAmount;
         if (_pairTokenIsSpecified(key, params)) {
             // Already charged in `_beforeSwap` on the amount the swapper specified.
-            feeAmount = _feeOf(_meme(key), params.amountSpecified.abs());
+            feeAmount = _feeOf(
+                _meme(key),
+                sender,
+                params.amountSpecified.abs()
+            );
         } else {
             fee = _chargeFee(key, sender, pairAmount);
             feeAmount = uint256(uint128(fee));
@@ -354,10 +375,12 @@ contract HookManager is
         uint256 amount
     ) internal returns (int128) {
         address meme = _meme(key);
-        uint256 fee = _feeOf(meme, amount);
+        uint256 fee = _feeOf(meme, sender, amount);
         if (fee == 0) return 0;
 
+        // protocol part <= fee: PROTOCOL_SHARE_BIPS <= BIPS. Rounds down, the dust goes to the vault.
         accrued[meme] += fee;
+        accruedProtocol[meme] += (fee * PROTOCOL_SHARE_BIPS) / BIPS;
         poolManager.mint(address(this), i_pairToken.toId(), fee);
         emit FeeCharged(key.toId(), sender, fee);
 
@@ -372,8 +395,17 @@ contract HookManager is
             );
     }
 
-    function _feeOf(address meme, uint256 amount) internal view returns (uint256) {
-        return (amount * feeBipsAt(meme, block.timestamp)) / BIPS;
+    /// @dev The controller swaps only for the dev buy inside `deployToken`, right at pool creation:
+    /// it pays the base fee, everyone else the time-based fee of `feeBipsAt`.
+    function _feeOf(
+        address meme,
+        address sender,
+        uint256 amount
+    ) internal view returns (uint256) {
+        uint256 bips = sender == controller
+            ? baseFeeBips(meme)
+            : feeBipsAt(meme, block.timestamp);
+        return (amount * bips) / BIPS;
     }
 
     /// @dev Trader address self-reported by the swapper through `hookData`, zero if absent or
@@ -429,13 +461,14 @@ contract HookManager is
         uint256 total = accrued[meme];
         if (total == 0) return;
 
-        uint256 toProtocol = (total * PROTOCOL_FEE_BIPS) / TOTAL_FEE_BIPS; // 1/5
-        uint256 toVault = total - toProtocol; // 4/5, no rounding loss
+        uint256 toProtocol = accruedProtocol[meme];
+        uint256 toVault = total - toProtocol;
 
         address protocol_ = protocolRecipient;
         address vault_ = vault;
 
         accrued[meme] = 0;
+        accruedProtocol[meme] = 0;
 
         poolManager.burn(address(this), i_pairToken.toId(), total);
         poolManager.take(i_pairToken, protocol_, toProtocol);
@@ -447,31 +480,47 @@ contract HookManager is
 
     // ---- Utils ----
 
-    /// @notice Records when the pool of `meme` was created.
-    /// @dev Only controller.
+    /// @notice Records when the pool of `meme` was created and the fee its creator chose.
+    /// @dev Only controller. Reverts unless `feeBips` is within
+    /// `MIN_MEME_FEE_BIPS..MAX_MEME_FEE_BIPS`.
     /// @param meme      Meme whose pool was created.
     /// @param timestamp Creation time of the pool.
+    /// @param feeBips   Base fee of the Meme in bips of the swap, protocol part included.
     function notifyPoolCreated(
         address meme,
-        uint256 timestamp
+        uint256 timestamp,
+        uint256 feeBips
     ) external onlyController {
+        if (feeBips < MIN_MEME_FEE_BIPS || feeBips > MAX_MEME_FEE_BIPS)
+            revert InvalidMemeFeeBips(feeBips);
         poolTimestamps[meme] = timestamp;
+        memeFeeBips[meme] = feeBips;
+        emit MemeFeeConfigured(meme, feeBips, timestamp);
+    }
+
+    /// @notice Fee of a swap in the pool of `meme` once the anti-snipe window is over, in bips.
+    /// @dev The fee chosen by the creator; `TOTAL_FEE_BIPS` for a Meme the controller never
+    /// reported.
+    /// @param meme Meme of the pool.
+    function baseFeeBips(address meme) public view returns (uint256) {
+        uint256 memeFee = memeFeeBips[meme];
+        return memeFee == 0 ? TOTAL_FEE_BIPS : memeFee;
     }
 
     /// @notice Fee of a swap in the pool of `meme` at `timestamp`, in bips.
-    /// @dev Linear from `MAX_FEE_BIPS` at pool creation down to `TOTAL_FEE_BIPS` after
+    /// @dev Linear from `MAX_FEE_BIPS` at pool creation down to `baseFeeBips` after
     /// `DYNAMIC_FEE_THRESHOLD`. The decay rounds down, so the fee rounds up. A pool the controller
     /// never reported (timestamp 0) pays the base fee; a timestamp at or before creation pays the
     /// max fee.
     /// @param meme      Meme of the pool.
     /// @param timestamp Time of the swap, normally `block.timestamp`.
-    /// @return Fee in bips, between `TOTAL_FEE_BIPS` and `MAX_FEE_BIPS`.
+    /// @return Fee in bips, between `baseFeeBips(meme)` and `MAX_FEE_BIPS`.
     function feeBipsAt(
         address meme,
         uint256 timestamp
     ) public view returns (uint256) {
         uint256 createdAt = poolTimestamps[meme];
-        uint256 baseFee = TOTAL_FEE_BIPS;
+        uint256 baseFee = baseFeeBips(meme);
         if (createdAt == 0) return baseFee;
         if (timestamp <= createdAt) return MAX_FEE_BIPS;
 

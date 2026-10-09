@@ -17,7 +17,7 @@
 | `VAULT_CONVERSION_THRESHOLD` | да | порог конверсии эпохи в единицах USDG (например `5000000` для 5 USDG с 6 знаками). 0 выключает автоматическую конверсию |
 | `GEMOON_OWNER` | нет | итоговый владелец трёх контрактов, по умолчанию деплоер |
 | `GEMOON_PROXY_ADMIN_OWNER` | нет | владелец трёх ProxyAdmin, то есть кто может апгрейдить, по умолчанию `GEMOON_OWNER` |
-| `HOOK_TOTAL_FEE_BIPS`, `HOOK_PROTOCOL_FEE_BIPS` | нет | комиссия хука, по умолчанию 125 и 25 |
+| `HOOK_TOTAL_FEE_BIPS`, `HOOK_PROTOCOL_SHARE_BIPS` | нет | резервная комиссия хука в bips сделки (по умолчанию 125) и доля протокола в bips комиссии (по умолчанию 3000 = 30%) |
 | `VAULT_SWAP_ADAPTER` | нет | адаптер USDG в наградные активы, можно задать позже |
 | `VAULT_ALLOWED_ASSETS` | нет | allowlist наградных активов через запятую, можно задать позже |
 | `UNISWAP_V3_FACTORY` | для адаптера | фабрика Uniswap V3, в которой есть пулы USDG/актив |

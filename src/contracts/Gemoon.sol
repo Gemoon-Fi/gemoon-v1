@@ -27,12 +27,24 @@ import {
 import "./utils/Ticks.sol";
 import {IVault} from "./interfaces/IVault.sol";
 import {IHookManager} from "./interfaces/IHookManager.sol";
+import {
+    IUnlockCallback
+} from "@uniswap-v4-core/interfaces/callback/IUnlockCallback.sol";
+import {SwapParams} from "@uniswap-v4-core/types/PoolOperation.sol";
+import {BalanceDelta} from "@uniswap-v4-core/types/BalanceDelta.sol";
+import {TickMath} from "@uniswap-v4-core/libraries/TickMath.sol";
+import {
+    SafeERC20
+} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 contract GemoonController is
     Initializable,
     OwnableUpgradeable,
-    IGemoonController
+    IGemoonController,
+    IUnlockCallback
 {
+    using SafeERC20 for IERC20;
+
     error UserNotFound();
     error InvalidAddress();
     error HookNotSet();
@@ -41,6 +53,8 @@ contract GemoonController is
     error HookVaultMismatch(address hookVault, address vault);
     error VaultPairTokenMismatch(address vaultUsdg, address pairToken);
     error PositionManagerNotSet();
+    /// @dev `unlockCallback` called by anyone but the PoolManager.
+    error NotPoolManager();
 
     event HookUpdated(address indexed hook);
     event VaultUpdated(address indexed vault);
@@ -152,7 +166,9 @@ contract GemoonController is
     ///         initial one-sided position holding the whole supply, owned by this contract.
     /// @dev If `rewardRecipient` is not set in `rewardsConfig`, it defaults to `creatorAddress`.
     /// Admins of the token are the given ones plus this contract and the caller.
-    /// @param config Token, rewards and vault configuration.
+    /// A non-zero `config.devBuy.memeAmount` makes the caller the first buyer of the pool, in this
+    /// same transaction: see `_devBuy`.
+    /// @param config Token, rewards, vault and dev buy configuration.
     /// @return Address of the new Meme token.
     function deployToken(
         DeployConfig memory config
@@ -169,6 +185,8 @@ contract GemoonController is
 
         TokenConfig memory tokenConfig = config.tokenConfig;
         _validateTokenConfig(config.tokenConfig);
+        if (config.devBuy.memeAmount > MAX_DEV_BUY_X18)
+            revert DevBuyTooLarge(config.devBuy.memeAmount, MAX_DEV_BUY_X18);
 
         AdminConfig[] memory newAdmins = new AdminConfig[](
             tokenConfig.admins.length + 2
@@ -202,13 +220,20 @@ contract GemoonController is
             config.vaultAssets
         );
 
-        uint256 positionId = _configurePool(
+        (uint256 positionId, PoolKey memory poolKey) = _configurePool(
             config.rewardsConfig,
             deployedToken,
             hook_
         );
 
-        IHookManager(hook_).notifyPoolCreated(deployedToken, block.timestamp);
+        IHookManager(hook_).notifyPoolCreated(
+            deployedToken,
+            block.timestamp,
+            config.rewardsConfig.swapFeeBips
+        );
+
+        if (config.devBuy.memeAmount != 0)
+            _devBuy(poolKey, deployedToken, config.devBuy);
 
         emit TokenCreated(
             deployedToken,
@@ -225,11 +250,12 @@ contract GemoonController is
     /// @dev Initializes the Meme/pair pool with the hook and mints the whole Meme supply into a
     /// one-sided position above the initial price. The position NFT is owned by this contract.
     /// @return positionId NFT id of the minted position.
+    /// @return poolKey    Key of the Meme/pair pool.
     function _configurePool(
         RewardsConfig memory rewardsConfig_,
         address deployedToken,
         address hook_
-    ) private returns (uint256 positionId) {
+    ) private returns (uint256 positionId, PoolKey memory poolKey) {
         require(
             deployedToken != address(0),
             "Deployed token address cannot be zero"
@@ -248,7 +274,7 @@ contract GemoonController is
         (address token0, address token1) = tokenA < tokenB
             ? (tokenA, tokenB)
             : (tokenB, tokenA);
-        PoolKey memory poolKey = PoolKey({
+        poolKey = PoolKey({
             currency0: Currency.wrap(token0),
             currency1: Currency.wrap(token1),
             // LP fee is 0: the whole swap fee is charged by the hook in the pair token.
@@ -307,7 +333,73 @@ contract GemoonController is
             position.liquidity
         );
 
-        return position.tokenId;
+        return (position.tokenId, poolKey);
+    }
+
+    /// @dev Buys `devBuy.memeAmount` (exact output) from the fresh pool for `msg.sender`. Runs
+    /// right after the pool is created, in the same transaction, so no one trades before it.
+    /// The hook charges this contract the base fee of the Meme instead of the anti-snipe fee.
+    function _devBuy(
+        PoolKey memory poolKey,
+        address meme,
+        DevBuyConfig memory devBuy
+    ) private {
+        poolManager.unlock(abi.encode(poolKey, meme, msg.sender, devBuy));
+    }
+
+    /// @notice Settles the dev buy of `deployToken`. Not callable directly.
+    /// @dev Only the PoolManager, and the PoolManager only calls back the contract that unlocked
+    /// it: reached only through `_devBuy`. Swaps pair token -> Meme, pulls the owed pair token
+    /// from the buyer straight into the PoolManager and sends the Meme to the buyer. Every delta
+    /// ends at zero, otherwise the PoolManager reverts the whole `deployToken`.
+    /// @param data abi-encoded (PoolKey, meme, buyer, DevBuyConfig).
+    /// @return Empty.
+    function unlockCallback(
+        bytes calldata data
+    ) external returns (bytes memory) {
+        if (msg.sender != address(poolManager)) revert NotPoolManager();
+        (
+            PoolKey memory poolKey,
+            address meme,
+            address buyer,
+            DevBuyConfig memory devBuy
+        ) = abi.decode(data, (PoolKey, address, address, DevBuyConfig));
+
+        bool memeIs0 = Currency.unwrap(poolKey.currency0) == meme;
+        // Buy: pair token in, Meme out. Positive amountSpecified = exact output.
+        BalanceDelta delta = poolManager.swap(
+            poolKey,
+            SwapParams({
+                zeroForOne: !memeIs0,
+                amountSpecified: int256(devBuy.memeAmount),
+                sqrtPriceLimitX96: memeIs0
+                    ? TickMath.MAX_SQRT_PRICE - 1
+                    : TickMath.MIN_SQRT_PRICE + 1
+            }),
+            // reported as the trader in `MemeSwapped`
+            abi.encode(buyer)
+        );
+
+        // Caller deltas: negative = owed to the pool, positive = owed to the caller.
+        int128 pairDelta = memeIs0 ? delta.amount1() : delta.amount0();
+        int128 memeDelta = memeIs0 ? delta.amount0() : delta.amount1();
+        uint256 pairIn = uint256(uint128(-pairDelta));
+        uint256 memeOut = uint256(uint128(memeDelta));
+        if (pairIn > devBuy.maxPairIn)
+            revert DevBuySlippage(pairIn, devBuy.maxPairIn);
+
+        Currency pair = memeIs0 ? poolKey.currency1 : poolKey.currency0;
+        poolManager.sync(pair);
+        IERC20(Currency.unwrap(pair)).safeTransferFrom(
+            buyer,
+            address(poolManager),
+            pairIn
+        );
+        poolManager.settle();
+        poolManager.take(Currency.wrap(meme), buyer, memeOut);
+
+        emit DevBuy(meme, buyer, pairIn, memeOut);
+        return "";
     }
 
     function changeAdmin(

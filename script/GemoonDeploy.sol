@@ -69,7 +69,7 @@ abstract contract GemoonDeployBase is Script {
         address vault;
         address controller;
         uint256 feeBips;
-        uint256 protocolFeeBips;
+        uint256 protocolShareBips;
     }
 
     struct ControllerDeployParams {
@@ -144,7 +144,7 @@ abstract contract GemoonDeployBase is Script {
                 params.vault,
                 params.controller,
                 params.feeBips,
-                params.protocolFeeBips
+                params.protocolShareBips
             )
         );
         bytes32 initCodeHash = keccak256(
@@ -325,8 +325,9 @@ abstract contract GemoonDeployBase is Script {
 ///  - GEMOON_OWNER               final owner of the three contracts (default: broadcaster)
 ///  - GEMOON_PROXY_ADMIN_OWNER   owner of the three ProxyAdmins, i.e. who can upgrade
 ///                               (default: GEMOON_OWNER)
-///  - HOOK_TOTAL_FEE_BIPS        swap fee in bips (default: 125)
-///  - HOOK_PROTOCOL_FEE_BIPS     protocol share of it in bips (default: 25)
+///  - HOOK_TOTAL_FEE_BIPS        fallback swap fee in bips for Memes without their own fee
+///                               (default: 125); every Meme gets its fee from `deployToken`
+///  - HOOK_PROTOCOL_SHARE_BIPS   protocol share of every fee, in bips of the fee (default: 3000)
 ///  - VAULT_SWAP_ADAPTER         USDG -> asset adapter (optional)
 ///  - VAULT_ALLOWED_ASSETS       comma-separated reward asset allowlist (optional)
 /// After the run: GEMOON_OWNER calls `Vault.acceptOwnership` if it differs from the broadcaster.
@@ -342,7 +343,7 @@ contract DeployGemoon is GemoonDeployBase {
         address usdg;
         address protocolRecipient;
         uint256 feeBips;
-        uint256 protocolFeeBips;
+        uint256 protocolShareBips;
         uint256 conversionThreshold;
         address swapAdapter;
         address[] allowedAssets;
@@ -373,7 +374,7 @@ contract DeployGemoon is GemoonDeployBase {
         console.log("USDG / PAIR TOKEN: ", params.usdg);
         console.log("PROTOCOL FEE RECIPIENT: ", params.protocolRecipient);
         console.log("HOOK TOTAL FEE BIPS: ", params.feeBips);
-        console.log("HOOK PROTOCOL FEE BIPS: ", params.protocolFeeBips);
+        console.log("HOOK PROTOCOL SHARE BIPS: ", params.protocolShareBips);
         console.log("VAULT CONVERSION THRESHOLD: ", params.conversionThreshold);
         console.log("VAULT SWAP ADAPTER: ", params.swapAdapter);
         for (uint256 i; i < params.allowedAssets.length; ++i) {
@@ -397,7 +398,7 @@ contract DeployGemoon is GemoonDeployBase {
             usdg: vm.envAddress("USDG_ADDRESS"),
             protocolRecipient: vm.envAddress("PROTOCOL_FEE_RECIPIENT"),
             feeBips: _envUintOr("HOOK_TOTAL_FEE_BIPS", 125),
-            protocolFeeBips: _envUintOr("HOOK_PROTOCOL_FEE_BIPS", 25),
+            protocolShareBips: _envUintOr("HOOK_PROTOCOL_SHARE_BIPS", 3_000),
             conversionThreshold: vm.envUint("VAULT_CONVERSION_THRESHOLD"),
             swapAdapter: _envAddressOr("VAULT_SWAP_ADAPTER", address(0)),
             allowedAssets: _envAddressList("VAULT_ALLOWED_ASSETS")
@@ -450,7 +451,7 @@ contract DeployGemoon is GemoonDeployBase {
                 vault: address(d.vault),
                 controller: address(d.controller),
                 feeBips: params.feeBips,
-                protocolFeeBips: params.protocolFeeBips
+                protocolShareBips: params.protocolShareBips
             })
         );
 
@@ -641,7 +642,7 @@ contract ProxyHookUpgrade is GemoonDeployBase {
                     vaultBefore,
                     controllerBefore,
                     hook.TOTAL_FEE_BIPS(),
-                    hook.PROTOCOL_FEE_BIPS()
+                    hook.PROTOCOL_SHARE_BIPS()
                 )
             )
             : bytes("");

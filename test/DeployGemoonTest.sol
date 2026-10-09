@@ -57,7 +57,7 @@ contract DeployGemoonTest is Test {
             usdg: address(usdg),
             protocolRecipient: protocolRecipient,
             feeBips: 125,
-            protocolFeeBips: 25,
+            protocolShareBips: 2_000,
             conversionThreshold: 5e6,
             swapAdapter: address(0),
             allowedAssets: assets
@@ -93,7 +93,7 @@ contract DeployGemoonTest is Test {
         assertFalse(d.vault.isAssetAllowed(address(usdg)));
         assertEq(d.hook.protocolRecipient(), protocolRecipient);
         assertEq(d.hook.TOTAL_FEE_BIPS(), 125);
-        assertEq(d.hook.PROTOCOL_FEE_BIPS(), 25);
+        assertEq(d.hook.PROTOCOL_SHARE_BIPS(), 2_000);
         assertEq(address(d.hook.poolManager()), poolManager);
         assertEq(address(d.controller.poolManager()), poolManager);
         assertEq(address(d.controller.positionManager()), positionManager);
@@ -156,7 +156,7 @@ contract DeployGemoonTest is Test {
         vm.setEnv("GEMOON_OWNER", vm.toString(owner));
         vm.setEnv("GEMOON_PROXY_ADMIN_OWNER", "");
         vm.setEnv("HOOK_TOTAL_FEE_BIPS", "300");
-        vm.setEnv("HOOK_PROTOCOL_FEE_BIPS", "");
+        vm.setEnv("HOOK_PROTOCOL_SHARE_BIPS", "");
         vm.setEnv("VAULT_SWAP_ADAPTER", "");
         vm.setEnv("VAULT_ALLOWED_ASSETS", vm.toString(address(aapl)));
 
@@ -172,7 +172,8 @@ contract DeployGemoonTest is Test {
         // empty GEMOON_PROXY_ADMIN_OWNER falls back to GEMOON_OWNER
         assertEq(ProxyAdmin(Upgrades.getAdminAddress(address(hook))).owner(), owner);
         assertEq(hook.TOTAL_FEE_BIPS(), 300);
-        assertEq(hook.PROTOCOL_FEE_BIPS(), 25);
+        // empty HOOK_PROTOCOL_SHARE_BIPS falls back to 30% of the fee
+        assertEq(hook.PROTOCOL_SHARE_BIPS(), 3_000);
         assertTrue(vault.isAssetAllowed(address(aapl)));
         assertEq(vault.conversionThreshold(), 5e6);
         assertEq(uint160(address(hook)) & Hooks.ALL_HOOK_MASK, HOOK_FLAGS);
@@ -228,7 +229,7 @@ contract DeployGemoonTest is Test {
         address meme = makeAddr("meme");
 
         vm.prank(address(d.controller));
-        d.hook.notifyPoolCreated(meme, 1_700_000_000);
+        d.hook.notifyPoolCreated(meme, 1_700_000_000, 100);
 
         assertEq(d.hook.poolTimestamps(meme), 1_700_000_000);
     }
@@ -242,7 +243,7 @@ contract DeployGemoonTest is Test {
         DeployGemoon.Deployment memory d = _deploy(owner);
 
         vm.prank(address(d.controller));
-        d.hook.notifyPoolCreated(meme, timestamp);
+        d.hook.notifyPoolCreated(meme, timestamp, 100);
 
         assertEq(d.hook.poolTimestamps(meme), timestamp);
         assertEq(d.hook.poolTimestamps(other), 0, "other meme untouched");
@@ -253,8 +254,8 @@ contract DeployGemoonTest is Test {
         address meme = makeAddr("meme");
 
         vm.startPrank(address(d.controller));
-        d.hook.notifyPoolCreated(meme, 100);
-        d.hook.notifyPoolCreated(meme, 200);
+        d.hook.notifyPoolCreated(meme, 100, 100);
+        d.hook.notifyPoolCreated(meme, 200, 100);
         vm.stopPrank();
 
         assertEq(d.hook.poolTimestamps(meme), 200);
@@ -265,7 +266,7 @@ contract DeployGemoonTest is Test {
 
         vm.prank(owner);
         vm.expectRevert(IHookManager.NotController.selector);
-        d.hook.notifyPoolCreated(makeAddr("meme"), 1);
+        d.hook.notifyPoolCreated(makeAddr("meme"), 1, 100);
     }
 
     function test_NotifyPoolCreated_FromVault_Revert() external {
@@ -273,7 +274,7 @@ contract DeployGemoonTest is Test {
 
         vm.prank(address(d.vault));
         vm.expectRevert(IHookManager.NotController.selector);
-        d.hook.notifyPoolCreated(makeAddr("meme"), 1);
+        d.hook.notifyPoolCreated(makeAddr("meme"), 1, 100);
     }
 
     function test_NotifyPoolCreated_FromNewController_AfterSetController_Stores() external {
@@ -285,7 +286,7 @@ contract DeployGemoonTest is Test {
         d.hook.setController(next);
 
         vm.prank(next);
-        d.hook.notifyPoolCreated(meme, 42);
+        d.hook.notifyPoolCreated(meme, 42, 100);
 
         assertEq(d.hook.poolTimestamps(meme), 42);
     }
@@ -301,7 +302,7 @@ contract DeployGemoonTest is Test {
 
         vm.prank(caller);
         vm.expectRevert(IHookManager.NotController.selector);
-        d.hook.notifyPoolCreated(meme, timestamp);
+        d.hook.notifyPoolCreated(meme, timestamp, 100);
 
         assertEq(d.hook.poolTimestamps(meme), 0);
     }
@@ -320,7 +321,7 @@ contract DeployGemoonTest is Test {
         // The old controller loses access right away.
         vm.prank(address(d.controller));
         vm.expectRevert(IHookManager.NotController.selector);
-        d.hook.notifyPoolCreated(makeAddr("meme"), 1);
+        d.hook.notifyPoolCreated(makeAddr("meme"), 1, 100);
     }
 
     function test_SetController_NotOwner_Revert() external {

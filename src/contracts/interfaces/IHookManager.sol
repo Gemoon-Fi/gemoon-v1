@@ -7,9 +7,9 @@ import {IGemoonable} from "./IGemoonable.sol";
 
 /// @title Gemoon UniswapV4 hook manager.
 /// @notice Charges a swap fee, always denominated in the pair token: 80% right at pool creation,
-///         falling linearly to `TOTAL_FEE_BIPS` (1.25% by default) within one minute. Every fee
-///         is split `PROTOCOL_FEE_BIPS : TOTAL_FEE_BIPS - PROTOCOL_FEE_BIPS` between the protocol
-///         recipient and the vault.
+///         falling linearly within `DYNAMIC_FEE_THRESHOLD` to the base fee its creator chose at
+///         deployment (1%..10%). Out of every fee the protocol recipient gets `PROTOCOL_SHARE_BIPS`
+///         (30%) of the fee, the vault the rest.
 ///         Every swap ends with a payout of everything accrued for the Meme of the pool.
 interface IHookManager is IGemoonable {
     // ---------------------------------------------------------------------------------------------
@@ -21,7 +21,7 @@ interface IHookManager is IGemoonable {
     error InvalidPoolPair();
     /// @dev LP fee of the pool is not 0.
     error InvalidPoolFee();
-    /// @dev `feeBips > MAX_FEE_BIPS` or `protocolFeeBips > feeBips`.
+    /// @dev `feeBips > MAX_FEE_BIPS` or `protocolShareBips > BIPS`.
     error InvalidFeeBips();
     /// @dev Pool initialized for a Meme without a registered vault.
     error VaultNotRegistered(address meme);
@@ -29,6 +29,8 @@ interface IHookManager is IGemoonable {
     error NotSelf();
     /// @dev `onlyController` function called by anyone but the controller.
     error NotController();
+    /// @dev Meme fee outside `MIN_MEME_FEE_BIPS..MAX_MEME_FEE_BIPS`.
+    error InvalidMemeFeeBips(uint256 feeBips);
 
     // ---------------------------------------------------------------------------------------------
     // Events
@@ -89,6 +91,13 @@ interface IHookManager is IGemoonable {
     /// @notice Vault changed.
     event VaultUpdated(address indexed vault);
 
+    /// @notice Pool of `meme` created: its anti-snipe window starts at `createdAt`, after it every
+    ///         swap pays `feeBips`.
+    /// @param meme      Meme of the pool.
+    /// @param feeBips   Base fee chosen by the creator, in bips of the swap, protocol part included.
+    /// @param createdAt Creation time of the pool.
+    event MemeFeeConfigured(address indexed meme, uint256 feeBips, uint256 createdAt);
+
     /// @notice Controller changed.
     event ControllerUpdated(address indexed controller);
 
@@ -102,14 +111,14 @@ interface IHookManager is IGemoonable {
     /// @param vault_             Vault that receives the rest and holds Meme stakes.
     /// @param controller_        GemoonController allowed into `onlyController` functions.
     /// @param feeBips            Total hook fee, in bips of the pair-token side of a swap.
-    /// @param protocolFeeBips    Protocol share of `feeBips`, in bips of the swap.
+    /// @param protocolShareBips  Protocol share of every fee, in bips of the fee (3 000 = 30%).
     function initialize(
         address owner_,
         address protocolRecipient_,
         address vault_,
         address controller_,
         uint256 feeBips,
-        uint256 protocolFeeBips
+        uint256 protocolShareBips
     ) external;
 
     /// @notice Re-initializes the proxy after an upgrade. Same parameters as `initialize`.
@@ -119,7 +128,7 @@ interface IHookManager is IGemoonable {
         address vault_,
         address controller_,
         uint256 feeBips,
-        uint256 protocolFeeBips
+        uint256 protocolShareBips
     ) external;
 
     // ---------------------------------------------------------------------------------------------
@@ -175,28 +184,43 @@ interface IHookManager is IGemoonable {
     /// @notice Bips denominator, 10 000.
     function BIPS() external view returns (uint256);
 
-    /// @notice Base hook fee, in bips of the pair-token side of a swap. Charged from
-    ///         `DYNAMIC_FEE_THRESHOLD` after pool creation on; before that the fee is higher, see
-    ///         `feeBipsAt`.
+    /// @notice Fallback base fee, in bips of the pair-token side of a swap, for a Meme the
+    ///         controller never reported. See `baseFeeBips`.
     function TOTAL_FEE_BIPS() external view returns (uint256);
 
-    /// @notice Protocol share of the base fee, in bips of the swap. Every fee, the higher
-    ///         early one included, is split in the same ratio: protocol gets
-    ///         `PROTOCOL_FEE_BIPS / TOTAL_FEE_BIPS` of it, the vault the rest.
-    function PROTOCOL_FEE_BIPS() external view returns (uint256);
+    /// @notice Protocol share of every fee, in bips of the fee (3 000 = 30%), the anti-snipe
+    ///         excess included. The vault gets the rest of the fee.
+    function PROTOCOL_SHARE_BIPS() external view returns (uint256);
+
+    /// @notice Lower bound of the Meme fee, in bips (100 = 1%).
+    function MIN_MEME_FEE_BIPS() external view returns (uint256);
+
+    /// @notice Upper bound of the Meme fee, in bips (1 000 = 10%).
+    function MAX_MEME_FEE_BIPS() external view returns (uint256);
+
+    /// @notice Base fee of `meme` chosen by its creator, in bips of the swap, zero if never
+    ///         reported.
+    function memeFeeBips(address meme) external view returns (uint256);
+
+    /// @notice Protocol part of `accrued(meme)`.
+    function accruedProtocol(address meme) external view returns (uint256);
+
+    /// @notice Fee of `meme` after the anti-snipe window: `memeFeeBips(meme)`, or
+    ///         `TOTAL_FEE_BIPS` for a Meme never reported.
+    function baseFeeBips(address meme) external view returns (uint256);
 
     /// @notice Fee right at pool creation, in bips (8 000 = 80%).
     function MAX_FEE_BIPS() external view returns (uint256);
 
     /// @notice Seconds after pool creation during which the fee falls from `MAX_FEE_BIPS` to
-    ///         `TOTAL_FEE_BIPS`.
+    ///         `baseFeeBips(meme)`.
     function DYNAMIC_FEE_THRESHOLD() external view returns (uint256);
 
     /// @notice Creation time of the pool of `meme`, zero if the controller never reported it.
     function poolTimestamps(address meme) external view returns (uint256);
 
     /// @notice Fee of a swap in the pool of `meme` at `timestamp`, in bips. Linear from
-    ///         `MAX_FEE_BIPS` at pool creation to `TOTAL_FEE_BIPS` after `DYNAMIC_FEE_THRESHOLD`.
+    ///         `MAX_FEE_BIPS` at pool creation to `baseFeeBips(meme)` after `DYNAMIC_FEE_THRESHOLD`.
     function feeBipsAt(address meme, uint256 timestamp) external view returns (uint256);
 
     /// @notice Fee of a swap in the pool of `meme` right now, in bips.
@@ -205,6 +229,7 @@ interface IHookManager is IGemoonable {
     // ------
     // Utils
     // ------
-    /// @notice Records when the pool of `meme` was created. Only controller.
-    function notifyPoolCreated(address meme, uint256 timestamp) external;
+    /// @notice Records when the pool of `meme` was created and the fee its creator chose.
+    ///         Only controller. Reverts with `InvalidMemeFeeBips` outside 1%..10%.
+    function notifyPoolCreated(address meme, uint256 timestamp, uint256 feeBips) external;
 }

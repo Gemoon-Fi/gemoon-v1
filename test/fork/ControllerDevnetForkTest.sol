@@ -26,6 +26,7 @@ import {Vault} from "../../src/contracts/vault/Vault.sol";
 import {AssetConfig} from "../../src/contracts/interfaces/IVault.sol";
 import {
     DeployConfig,
+    DevBuyConfig,
     RewardsConfig,
     INITIAL_SUPPLY_X18,
     TICK_SPACING,
@@ -112,7 +113,7 @@ contract ControllerDevnetForkTest is Test {
                 usdg: address(usdg),
                 protocolRecipient: protocolRecipient,
                 feeBips: 125,
-                protocolFeeBips: 25,
+                protocolShareBips: 3_000,
                 conversionThreshold: 0,
                 swapAdapter: address(0),
                 allowedAssets: assets
@@ -138,9 +139,10 @@ contract ControllerDevnetForkTest is Test {
                 admins: admins
             }),
             rewardsConfig: RewardsConfig({
-                creatorRewards: 0, creatorAddress: creator, rewardRecipient: address(0)
+                swapFeeBips: 125, creatorAddress: creator, rewardRecipient: address(0)
             }),
-            vaultAssets: assets
+            vaultAssets: assets,
+            devBuy: DevBuyConfig({memeAmount: 0, maxPairIn: 0})
         });
     }
 

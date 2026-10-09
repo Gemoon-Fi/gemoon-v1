@@ -17,7 +17,7 @@
 
 | Контракт | События | View-функции |
 |---|---|---|
-| `GemoonController` | `TokenCreated`, `PoolCreated`, `PositionCreated` | |
+| `GemoonController` | `TokenCreated`, `PoolCreated`, `PositionCreated`, `DevBuy` | |
 | `HookManager` (`IHookManager.json`) | `MemeSwapped`, `FeeCharged`, `FeesDistributed`, `PayoutFailed` | `pendingFees` |
 | `Vault` | `VaultRegistered`, `FeesNotified`, `FeesConverted`, `ConversionFailed`, `Staked`, `Unstaked`, `EmergencyUnstaked`, `RewardPaid`, `CreatorRewardPaid`, `CreatorTransferred` | `earned`, `pendingCreditOf`, `pendingUSDG`, `totalStaked`, `stakedOf`, `getAssets`, `creatorAccrued` |
 | `UniswapV3SwapAdapter` | `Swapped` | `quote` |
@@ -32,6 +32,9 @@ GemoonController
                address creatorRewardRecipient, string name, string symbol)
   PoolCreated(PoolId indexed pool, address indexed token0, address indexed token1,
               uint256 initialPrice, int24 tick)            // initialPrice это sqrtPriceX96
+  DevBuy(address indexed token, address indexed buyer,
+         uint256 pairIn, uint256 memeOut)                   // первая покупка создателем в
+                                                            // deployToken; pairIn с комиссией
 
 HookManager
   MemeSwapped(address indexed meme, address indexed router, address indexed trader,
@@ -144,6 +147,9 @@ PoolManager
 - `PoolManager.Swap.sender` это роутер, трейдера там нет. Трейдер только в `MemeSwapped.trader`
   или `tx.from`.
 - `MemeSwapped.pairAmount` это сумма по цене пула. Комиссия хука в ней не учтена и лежит в `fee`.
+- Dev buy это обычная сделка: хук эмитит `MemeSwapped` с `router` = контроллер и `trader` =
+  покупатель, в той же транзакции, что `TokenCreated`. В объём он входит, дублировать его из
+  `DevBuy` не нужно.
 - Эпохи у каждого мема свои, `epoch` в `FeesConverted` растёт независимо по мемам.
 - `Unclaimed` и `pendingCreditOf` только через view. Если фронту нужен список мемов для
   multicall, собирать его из `Staked` по адресу пользователя.
