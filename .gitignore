@@ -30,3 +30,5 @@ broadcast/*
 .idea
 .vimrc
 internal_docs/
+
+lib/*
