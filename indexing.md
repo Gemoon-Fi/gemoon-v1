@@ -19,8 +19,8 @@
 |---|---|---|
 | `GemoonController` | `TokenCreated`, `PoolCreated`, `PositionCreated`, `DevBuy` | |
 | `HookManager` (`IHookManager.json`) | `MemeSwapped`, `FeeCharged`, `FeesDistributed`, `PayoutFailed` | `pendingFees` |
-| `Vault` | `VaultRegistered`, `FeesNotified`, `FeesConverted`, `ConversionFailed`, `Staked`, `Unstaked`, `EmergencyUnstaked`, `RewardPaid`, `CreatorRewardPaid`, `CreatorTransferred` | `earned`, `pendingCreditOf`, `pendingUSDG`, `totalStaked`, `stakedOf`, `getAssets`, `creatorAccrued` |
-| `UniswapV3SwapAdapter` | `Swapped` | `quote` |
+| `Vault` | `AssetAllowedUpdated`, `VaultRegistered`, `FeesNotified`, `FeesConverted`, `ConversionFailed`, `Staked`, `Unstaked`, `EmergencyUnstaked`, `RewardPaid`, `CreatorRewardPaid`, `CreatorTransferred` | `earned`, `pendingCreditOf`, `pendingUSDG`, `totalStaked`, `stakedOf`, `getAssets`, `creatorAccrued`, `isAssetAllowed`, `allowedAssets`, `swapAdapter` |
+| `UniswapV3SwapAdapter` | `Swapped`, `RouteSet`, `RouteRemoved` | `quote`, `routeOf` |
 | `PoolManager` (Uniswap V4, `IPoolManager.json`) | `Swap` | |
 | ERC20 мема | `Transfer`, `UpdateImage`, `UpdateDescription` | `imageAddress`, `description`, `getSocialMedia`, `balanceOf` |
 
@@ -46,6 +46,7 @@ HookManager
                                                             // комиссия осталась в pendingFees
 
 Vault
+  AssetAllowedUpdated(address indexed asset, bool allowed)  // allowlist наградных активов
   VaultRegistered(address indexed meme, address indexed creator, AssetConfig[] assets)
   FeesNotified(address indexed meme, uint256 toStakers, uint256 toCreator)
   FeesConverted(address indexed meme, uint64 indexed epoch, uint256 usdgIn,
@@ -57,6 +58,8 @@ Vault
   CreatorTransferred(address indexed meme, address indexed from, address indexed to)
 
 UniswapV3SwapAdapter
+  RouteSet(address indexed asset, address indexed pool, uint24 fee, uint16 maxSlippageBps)
+  RouteRemoved(address indexed asset)
   Swapped(address indexed asset, uint256 amountIn, uint256 amountOut, uint256 twapOut, uint256 minAmountOut)
 
 PoolManager
@@ -81,6 +84,47 @@ PoolManager
 | Staked_Amount | `Staked`, `Unstaked`, `EmergencyUnstaked` | По мему: Σ Staked − Σ Unstaked − Σ EmergencyUnstaked. Сверка: `Vault.totalStaked(meme)` |
 | Эпохи и награды | `FeesConverted` | Награды в активах существуют только после этого события. До него комиссии лежат в USDG и видны в `FeesNotified` и `pendingUSDG(meme)` |
 
+## 2a. Разрешённые наградные активы (allowlist)
+
+Создатель мема выбирает наградные активы в `deployToken` (`config.vaultAssets`), и каждый из них
+должен быть в allowlist волта, иначе `deployToken` откатится с `AssetNotAllowed(asset)`.
+
+**Добавлять и убирать может только владелец Vault** (`GEMOON_OWNER`, multisig/админка), не
+пользователь:
+
+```
+Vault.setAssetAllowed(asset, true)    // добавить
+Vault.setAssetAllowed(asset, false)   // убрать: новые мемы не смогут его выбрать,
+                                      // уже созданные волты с этим активом не меняются
+```
+
+Каждый вызов эмитит `AssetAllowedUpdated(asset, allowed)`. В UI это экран администратора,
+кнопка доступна, только если подключённый кошелёк равен `Vault.owner()`.
+
+**Список читается одним вызовом**: `Vault.allowedAssets() → address[]` возвращает все активы, для
+которых `isAssetAllowed` = true. Порядок не значим и может меняться после удаления актива.
+
+1. `Vault.allowedAssets()` — текущий список.
+2. Метаданные: `symbol()`, `decimals()`, `name()` с ERC20 каждого актива (multicall), логотип из
+   офчейн-словаря.
+3. Для живого обновления без поллинга подписаться на `AssetAllowedUpdated(asset, allowed)`. Историю
+   изменений (кто и когда разрешил) даёт только это событие.
+
+**Показывать в форме создания только активы, которые реально конвертируются.** Разрешённый актив
+без маршрута в адаптере примет `deployToken`, но конверсии эпох по такому мему будут падать
+(`ConversionFailed`), и начисления останутся в USDG. Поэтому в выборе показывать актив, если:
+
+- `Vault.isAssetAllowed(asset)` == true, и
+- `asset` == USDG (меняется без свопа, адаптер не нужен), либо
+  `UniswapV3SwapAdapter(Vault.swapAdapter()).routeOf(asset).pool` != 0.
+
+Маршруты меняются событиями `RouteSet` / `RouteRemoved` адаптера. При смене адаптера
+(`SwapAdapterUpdated` волта) маршруты читать с нового адреса.
+
+Ограничения формы, которые проверяет контракт: от 1 до `MAX_ASSETS` (5) активов, без повторов,
+сумма `weightBps` ровно 10 000. Сам мем выбрать нельзя. USDG можно, если он в allowlist.
+Набор активов мема после создания не меняется.
+
 ## 3. Main Page
 
 | Метрика | Откуда | Как считать |
@@ -90,7 +134,7 @@ PoolManager
 | Name, Ticker | `TokenCreated.name`, `.symbol` | |
 | Vault Assets, Vault Assets Weight | `VaultRegistered.assets[]` | `token` и `weightBps`, сумма весов 10 000 |
 | Vault Assets Logo | офчейн-словарь по адресу актива | Топ-4 по `weightBps`. В контрактах логотипов нет |
-| Market Cap | Price_now, `Transfer` мема | `Price_now × (100_000_000_000e18 − balance(0x…dEaD))`. Эмиссия фиксированная, 100 млрд, константа `INITIAL_SUPPLY_X18`. Функции burn у токена нет, перевод на нулевой адрес ревертит, сожжённым считать только баланс `0xdEaD` |
+| Market Cap | Price_now, `Transfer` мема | `Price_now × (1_000_000_000e18 − balance(0x…dEaD))`. Эмиссия фиксированная, 1 млрд, константа `INITIAL_SUPPLY_X18`. Функции burn у токена нет, перевод на нулевой адрес ревертит, сожжённым считать только баланс `0xdEaD` |
 | MC Change 24h | Price_now, Price_24h | `(Price_now / Price_24h − 1) × 100` |
 | Volume 24h | `MemeSwapped` за 24h | `Σ pairAmount`. Это объём по цене пула. Если нужен объём «как заплатил пользователь», прибавлять `fee` |
 | Age | `TokenCreated` | `now − timestamp` |

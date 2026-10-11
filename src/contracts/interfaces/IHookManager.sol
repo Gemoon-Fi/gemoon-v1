@@ -9,7 +9,7 @@ import {IGemoonable} from "./IGemoonable.sol";
 /// @notice Charges a swap fee, always denominated in the pair token: 80% right at pool creation,
 ///         falling linearly within `DYNAMIC_FEE_THRESHOLD` to the base fee its creator chose at
 ///         deployment (1%..10%). Out of every fee the protocol recipient gets `PROTOCOL_SHARE_BIPS`
-///         (30%) of the fee, the vault the rest.
+///         (a third, 33.33%) of the fee, the vault the rest.
 ///         Every swap ends with a payout of everything accrued for the Meme of the pool.
 interface IHookManager is IGemoonable {
     // ---------------------------------------------------------------------------------------------
@@ -111,7 +111,7 @@ interface IHookManager is IGemoonable {
     /// @param vault_             Vault that receives the rest and holds Meme stakes.
     /// @param controller_        GemoonController allowed into `onlyController` functions.
     /// @param feeBips            Total hook fee, in bips of the pair-token side of a swap.
-    /// @param protocolShareBips  Protocol share of every fee, in bips of the fee (3 000 = 30%).
+    /// @param protocolShareBips  Protocol share of every fee, in bips of the fee (3 333 = a third).
     function initialize(
         address owner_,
         address protocolRecipient_,
@@ -188,7 +188,7 @@ interface IHookManager is IGemoonable {
     ///         controller never reported. See `baseFeeBips`.
     function TOTAL_FEE_BIPS() external view returns (uint256);
 
-    /// @notice Protocol share of every fee, in bips of the fee (3 000 = 30%), the anti-snipe
+    /// @notice Protocol share of every fee, in bips of the fee (3 333 = a third), the anti-snipe
     ///         excess included. The vault gets the rest of the fee.
     function PROTOCOL_SHARE_BIPS() external view returns (uint256);
 

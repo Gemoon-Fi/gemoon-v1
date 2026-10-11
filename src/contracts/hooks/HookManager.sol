@@ -32,9 +32,10 @@ import {SignedMath} from "@openzeppelin/contracts/utils/math/SignedMath.sol";
 /// @title Gemoon UniswapV4 hook manager.
 /// @notice Charges a swap fee, always denominated in `i_pairToken`.
 ///         Base fee of a Meme is chosen by its creator at deployment (1%..10%). Out of every fee
-///         the protocol recipient gets `PROTOCOL_SHARE_BIPS` (30%) of the fee, the vault the rest:
-///         a 10% fee is 3% of the swap to the protocol and 7% to the vault, a 1% fee is 0.3% and
-///         0.7%. The share applies to the whole fee, the anti-snipe excess included.
+///         the protocol recipient gets `PROTOCOL_SHARE_BIPS` (a third, 33.33%) of the fee, the
+///         vault the rest: a 3% fee is ~1% of the swap to the protocol and ~2% to the vault, a 10%
+///         fee is ~3.33% and ~6.67%. The share applies to the whole fee, the anti-snipe excess
+///         included.
 ///         Anti-snipe: the fee starts at `MAX_FEE_BIPS` (80%) when the pool is created and falls
 ///         linearly to the base fee over `DYNAMIC_FEE_THRESHOLD`. Swaps of the controller (the
 ///         dev buy inside `deployToken`) always pay the base fee.
@@ -77,7 +78,7 @@ contract HookManager is
     /// @notice Protocol share of every fee, in bips of the fee. The vault gets the rest.
     /// @dev Same storage slot as the former `PROTOCOL_FEE_BIPS` (bips of the swap): a proxy
     /// upgraded from it must be re-initialized with a share.
-    uint256 public PROTOCOL_SHARE_BIPS = 3_000; // 30%
+    uint256 public PROTOCOL_SHARE_BIPS = 3_333; // a third, 33.33%
     /// @notice Time after pool creation during which the fee falls from `MAX_FEE_BIPS` to
     ///         `baseFeeBips`.
     uint256 public constant DYNAMIC_FEE_THRESHOLD = 30 seconds;

@@ -37,7 +37,7 @@ contract HookFeeMathTest is Test {
                 vault: makeAddr("vault"),
                 controller: controller,
                 feeBips: FALLBACK_FEE,
-                protocolShareBips: 3_000
+                protocolShareBips: 3_333
             })
         );
         window = hook.DYNAMIC_FEE_THRESHOLD();
@@ -198,7 +198,7 @@ contract HookFeeMathTest is Test {
     }
 
     function test_Initialize_ProtocolShare_StoredInBipsOfFee() external view {
-        assertEq(hook.PROTOCOL_SHARE_BIPS(), 3_000);
+        assertEq(hook.PROTOCOL_SHARE_BIPS(), 3_333);
     }
 
     function test_Initialize_ProtocolShareAboveHundredPercent_Revert() external {

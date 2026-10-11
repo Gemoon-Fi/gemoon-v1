@@ -172,8 +172,8 @@ contract DeployGemoonTest is Test {
         // empty GEMOON_PROXY_ADMIN_OWNER falls back to GEMOON_OWNER
         assertEq(ProxyAdmin(Upgrades.getAdminAddress(address(hook))).owner(), owner);
         assertEq(hook.TOTAL_FEE_BIPS(), 300);
-        // empty HOOK_PROTOCOL_SHARE_BIPS falls back to 30% of the fee
-        assertEq(hook.PROTOCOL_SHARE_BIPS(), 3_000);
+        // empty HOOK_PROTOCOL_SHARE_BIPS falls back to a third of the fee
+        assertEq(hook.PROTOCOL_SHARE_BIPS(), 3_333);
         assertTrue(vault.isAssetAllowed(address(aapl)));
         assertEq(vault.conversionThreshold(), 5e6);
         assertEq(uint160(address(hook)) & Hooks.ALL_HOOK_MASK, HOOK_FLAGS);

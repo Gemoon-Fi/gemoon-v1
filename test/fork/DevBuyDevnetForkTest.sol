@@ -44,8 +44,8 @@ contract DevBuyDevnetForkTest is Test {
 
     uint256 constant BIPS = 10_000;
     uint256 constant PAIR_UNIT = 1e6; // mock USDG has 6 decimals
-    /// @dev Production protocol share of every fee, in bips of the fee: 30%.
-    uint256 constant PROTOCOL_SHARE_BIPS = 3_000;
+    /// @dev Production protocol share of every fee, in bips of the fee: a third.
+    uint256 constant PROTOCOL_SHARE_BIPS = 3_333;
     /// @dev Swap fee the creator chooses for the Meme.
     uint256 constant MEME_FEE_BIPS = 300;
     /// @dev Pending USDG at which the vault closes an epoch.
@@ -288,7 +288,7 @@ contract DevBuyDevnetForkTest is Test {
     /// @dev Full flow: dev buy, the creator stakes half of it, two trades after the anti-snipe
     /// window. Each trade pays out everything accrued so far and closes an epoch, so two epochs
     /// close. Invariants at the end:
-    ///  - protocol recipient got exactly 30% of every fee, dev buy included;
+    ///  - protocol recipient got exactly a third (3 333 bips) of every fee, dev buy included;
     ///  - vault got the rest of every fee and owes all of it to the creator and the stakers;
     ///  - the creator collects it as staker and as creator, the vault keeps rounding dust only.
     function test_DeployToken_DevBuyThenTrading_FeesConvertedOverSeveralEpochs()

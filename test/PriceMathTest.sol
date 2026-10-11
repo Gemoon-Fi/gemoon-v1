@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import "../src/contracts/utils/Price.sol";
 import "@openzeppelin/contracts/utils/math/Math.sol";
 import {TickMath} from "@uniswap-v4-core/libraries/TickMath.sol";
+import {PRICE_PER_TOKEN} from "../src/contracts/interfaces/IGemoon.sol";
 
 contract PriceMathTest is Test {
     function testRoundPriceMath() public pure {
@@ -78,9 +79,9 @@ contract PriceMathTest is Test {
         assertApproxEqRel(_priceX36(sqrtPriceX96), expected, 1e9, "round trip");
     }
 
-    /// @dev The start price of a pool is PRICE_PER_TOKEN whole Meme per one whole pair token,
-    /// expressed in raw units of each side. Swapping the token order must give the inverse
-    /// price, i.e. the same price in human terms: sqrtA * sqrtB == 2^192.
+    /// @dev A start price of 300 000 whole Meme per one whole pair token (fixed example, not the
+    /// protocol constant), expressed in raw units of each side. Swapping the token order must
+    /// give the inverse price, i.e. the same price in human terms: sqrtA * sqrtB == 2^192.
     function test_GetSqrtPriceX96_StartPrice_SameForEitherTokenOrder() public pure {
         uint256 memeAmount = 300_000 * 1e6; // 300_000 whole Meme, 6 decimals
         uint256 pairAmount = 1e18; // 1 whole pair token, 18 decimals
@@ -98,15 +99,16 @@ contract PriceMathTest is Test {
         );
     }
 
-    /// @dev For any Meme/pair decimals in 6..18 the start price must land inside the Uniswap tick
-    /// range in both token orders and the two orders must be inverses of each other.
+    /// @dev For any Meme/pair decimals in 6..18 the protocol start price (`PRICE_PER_TOKEN`) must
+    /// land inside the Uniswap tick range in both token orders and the two orders must be
+    /// inverses of each other.
     function testFuzz_GetSqrtPriceX96_StartPrice_AnyDecimals_InverseAndInRange(
         uint8 memeDecimals,
         uint8 pairDecimals
     ) public pure {
         memeDecimals = uint8(bound(memeDecimals, 6, 18));
         pairDecimals = uint8(bound(pairDecimals, 6, 18));
-        uint256 memeAmount = 300_000 * 10 ** memeDecimals;
+        uint256 memeAmount = PRICE_PER_TOKEN * 10 ** memeDecimals;
         uint256 pairAmount = 10 ** pairDecimals;
 
         uint160 memeIsToken0 = PriceMath.getSqrtPriceX96(memeAmount, pairAmount);

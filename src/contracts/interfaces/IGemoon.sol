@@ -11,8 +11,8 @@ struct DeployedToken {
 }
 
 struct RewardsConfig {
-    /// @dev Swap fee of the Meme in bips: 100..1000 (1%..10%). The protocol gets 0.5% of the
-    /// swap out of it, the vault of the Meme the rest.
+    /// @dev Swap fee of the Meme in bips: 100..1000 (1%..10%). The protocol gets a third of it,
+    /// the vault of the Meme the rest (`HookManager.PROTOCOL_SHARE_BIPS`).
     uint256 swapFeeBips;
     address creatorAddress;
     address rewardRecipient; // now is only
@@ -40,21 +40,26 @@ struct DeployConfig {
 
 int24 constant TICK_SPACING = 200;
 
-/// @dev Start price of every Meme pool: this many whole Meme for one whole pair token. A
-/// human-readable count, not raw units: `_configurePool` scales it by the decimals of both tokens.
-uint256 constant PRICE_PER_TOKEN = 100_000;
-
 // TODO: move to GemoonController interface
 uint256 constant INITIAL_LIQUIDITY = 1_000_000_000;
 uint256 constant INITIAL_SUPPLY_X18 = INITIAL_LIQUIDITY * 1e18;
 
-/// @dev Largest dev buy, in bips of the supply: 10%.
-uint256 constant MAX_DEV_BUY_BIPS = 1_000;
+/// @dev Market cap of every Meme at the start price, in whole pair tokens: 20 000 USDG.
+/// Must divide `INITIAL_LIQUIDITY`, so that the start price below is exact.
+uint256 constant INITIAL_MARKET_CAP = 20_000;
+
+/// @dev Start price of every Meme pool: this many whole Meme for one whole pair token, the
+/// supply over the start market cap (1 000 000 000 / 20 000 = 50 000). A human-readable count, not
+/// raw units: `_configurePool` scales it by the decimals of both tokens.
+uint256 constant PRICE_PER_TOKEN = INITIAL_LIQUIDITY / INITIAL_MARKET_CAP;
+
+/// @dev Largest dev buy, in bips of the supply: 80%.
+uint256 constant MAX_DEV_BUY_BIPS = 8_000;
 /// @dev Largest dev buy in raw Meme units.
 uint256 constant MAX_DEV_BUY_X18 = (INITIAL_SUPPLY_X18 * MAX_DEV_BUY_BIPS) / 10_000;
 
 interface IGemoonController {
-    /// @dev Dev buy above `MAX_DEV_BUY_X18` (10% of the supply).
+    /// @dev Dev buy above `MAX_DEV_BUY_X18` (80% of the supply).
     error DevBuyTooLarge(uint256 memeAmount, uint256 maxMemeAmount);
     /// @dev Dev buy costs more pair token than `DevBuyConfig.maxPairIn`.
     error DevBuySlippage(uint256 pairIn, uint256 maxPairIn);

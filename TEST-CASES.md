@@ -9,7 +9,7 @@
 
 ## test/ControllerDeployTokenTest.sol
 
-End-to-end в процессе теста: настоящие PoolManager, PositionManager и Permit2, деплой через скрипт. Базовая ставка мема 1.25%, доля протокола 30% комиссии (если не сказано иное).
+End-to-end в процессе теста: настоящие PoolManager, PositionManager и Permit2, деплой через скрипт. Базовая ставка мема 1.25%, доля протокола треть комиссии, 3333 bips (если не сказано иное).
 
 ### Создание мема и позиция
 
@@ -31,14 +31,15 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
 | `test_Swap_FirstBuy_FeeStaysAccruedUntilPoolManagerHoldsPairToken` | Первая покупка в пустом PoolManager | Неудачная выплата не ломает своп, комиссия не теряется | Трейдер получил мем, комиссия в `pendingFees`, протокол и волт пока 0 |
-| `test_Swap_SecondBuy_PaysOutBothFeesSplitBetweenProtocolAndVault` | Вторая покупка выплачивает обе комиссии | Протокол + волт = вся взятая комиссия, протоколу 30% каждой комиссии | `pendingFees` = 0, протокол 30% комиссии, волт остальное, `vault.accounted` = доля волта |
+| `test_Swap_SecondBuy_PaysOutBothFeesSplitBetweenProtocolAndVault` | Вторая покупка выплачивает обе комиссии | Протокол + волт = вся взятая комиссия, протоколу треть каждой комиссии | `pendingFees` = 0, протокол треть комиссии, волт остальное, `vault.accounted` = доля волта |
 | `test_Distribute_AfterFirstBuy_PaysAccruedFee` | Ручная выплата `distribute` | Начисленное выплачивается полностью и с тем же делением | `pendingFees` = 0, деление протокол/волт как у автоматической выплаты |
 
 ### Стартовая цена
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
-| `test_DeployToken_StartPrice_InitialPriceMemePerWholePairToken` | Покупка на 1 USDG | Стартовая цена 100 000 мемов за 1 USDG при 6 знаках USDG | Получено меньше 100 000 мемов, но потери на комиссию и импакт < 3.3% |
+| `test_DeployToken_StartPrice_InitialPriceMemePerWholePairToken` | Покупка на 1 USDG | Стартовая цена 50 000 мемов за 1 USDG при 6 знаках USDG | Получено меньше 50 000 мемов, но потери на комиссию и импакт < 3.3% |
+| `test_DeployToken_StartMarketCap_TwentyThousandPairTokens` | Константы стартовой цены | Стартовая капитализация 20 000 USDG, цена точная | `INITIAL_MARKET_CAP` = 20 000, `PRICE_PER_TOKEN` = 50 000, эмиссия / цена = 20 000 |
 | `test_DeployToken_PoolInitializedAtPriceForPairDecimals` | `sqrtPriceX96` пула | Цена учитывает decimals обоих токенов | slot0 равен расчёту `PriceMath` |
 
 ### Событие `MemeSwapped`
@@ -61,7 +62,7 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | `test_Swap_BuyHalfWindowAfterLaunch_ChargesMidpointFee` | Покупка в середине окна | Ставка падает линейно | `fee` = линейная середина между 80% и базовой |
 | `test_Swap_SellAtLaunch_ChargesMaxFeeOnOutput` | Продажа в момент создания | Анти-снайп и на продажу | `fee` = 80% от выхода пула |
 | `test_Swap_BuyOneMinuteAfterLaunch_ChargesBaseFee` | Покупка после окна | После окна только базовая ставка | `fee` = 1.25% |
-| `testFuzz_Swap_DynamicFee_ProtocolPlusVaultPlusAccruedEqualsCharged` (fuzz) | Две покупки в любые моменты окна | Протокол + волт + начислено = вся комиссия; протокол получает 30% каждой комиссии, включая анти-снайп надбавку; ставка не растёт со временем | Равенства сохраняются, `accruedProtocol <= pendingFees` |
+| `testFuzz_Swap_DynamicFee_ProtocolPlusVaultPlusAccruedEqualsCharged` (fuzz) | Две покупки в любые моменты окна | Протокол + волт + начислено = вся комиссия; протокол получает треть каждой комиссии, включая анти-снайп надбавку; ставка не растёт со временем | Равенства сохраняются, `accruedProtocol <= pendingFees` |
 
 ### Ставка, выбранная создателем
 
@@ -70,9 +71,9 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | `test_DeployToken_SwapFee_StoredInHook` | Ставка 10% | Ставка создателя доходит до хука | `memeFeeBips` и `currentFeeBips` после окна = 1000 |
 | `test_DeployToken_SwapFeeBelowOnePercent_Revert` | Ставка 0.99% | Нижняя граница 1% | revert `InvalidMemeFeeBips(99)` |
 | `test_DeployToken_SwapFeeAboveTenPercent_Revert` | Ставка 10.01% | Верхняя граница 10% | revert `InvalidMemeFeeBips(1001)` |
-| `test_Swap_TenPercentFee_ProtocolGetsThirtyPercentVaultRest` | Две покупки при 10% | Протокол получает 30% комиссии, волт 70% | Протокол 3% объёма, волт 7% объёма, сумма = 10% объёма |
-| `test_Swap_ProtocolShare_ThirtyPercentOfAnyMemeFee` | Покупка на 1000 USDG при ставках 1%, 2%, 10% | Примеры продукта: 30% комиссии протоколу при любой ставке | Протокол/волт: 0.3%/0.7%, 0.6%/1.4%, 3%/7% объёма |
-| `testFuzz_Swap_AnySwapFee_ProtocolGetsThirtyPercentFeeConserved` (fuzz) | Любая ставка 1%..10% | Комиссия сохраняется; протокол получает 30% каждой комиссии с округлением вниз, не больше | Протокол + волт + начислено = вся комиссия; протокол = Σ floor(fee × 30%) |
+| `test_Swap_TenPercentFee_ProtocolGetsOneThirdVaultRest` | Две покупки при 10% | Протокол получает треть комиссии, волт остальное | Протокол ~3.33% объёма, волт остальное, сумма = 10% объёма |
+| `test_Swap_ProtocolShare_OneThirdOfAnyMemeFee` | Покупка на 1000 USDG при ставках 1%, 3%, 10% | Треть комиссии протоколу при любой ставке | Протокол/волт ≈ 1/3 и 2/3 комиссии: при 3% ~1%/~2% объёма |
+| `testFuzz_Swap_AnySwapFee_ProtocolGetsOneThirdFeeConserved` (fuzz) | Любая ставка 1%..10% | Комиссия сохраняется; протокол получает 3333 bips каждой комиссии с округлением вниз, не больше трети | Протокол + волт + начислено = вся комиссия; протокол = Σ floor(fee × 3333 / 10000) |
 
 ### Dev buy
 
@@ -82,9 +83,9 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | `test_DeployToken_DevBuy_ChargesBaseFeeNotSnipeFee` | Ставка dev buy при 10% | Dev buy платит базовую ставку, остальные анти-снайп | `fee` = 10% от `pairAmount`, `router` = контроллер, `trader` = покупатель; `currentFeeBips` = 80% |
 | `test_DeployToken_DevBuy_FeeAccruedThenPaidByNextSwap` | Судьба комиссии dev buy | Комиссия dev buy не теряется | После деплоя в `pendingFees`, следующий своп выплачивает её вместе со своей |
 | `test_DeployToken_DevBuy_SameBlockBuyPaysMaxFee` | Снайпер в том же блоке | Исключение работает только для контроллера | Покупка трейдера после dev buy платит 80% |
-| `test_DeployToken_DevBuy_MovesPriceForLaterBuyers` | Цена после dev buy 10% | Dev buy двигает цену как обычная покупка | Следующий покупатель получает меньше мема за 1 USDG, чем dev в среднем |
-| `test_DeployToken_DevBuyAtCap_Succeeds` | Dev buy ровно 10% | Лимит включительно, равен 10% эмиссии | Создатель получил `MAX_DEV_BUY_X18` |
-| `test_DeployToken_DevBuyAboveCap_Revert` | Dev buy 10% + 1 wei | Лимит 10% эмиссии | revert `DevBuyTooLarge(amount, max)` |
+| `test_DeployToken_DevBuy_MovesPriceForLaterBuyers` | Цена после dev buy 80% | Dev buy двигает цену как обычная покупка | Следующий покупатель получает меньше мема за 1 USDG, чем dev в среднем |
+| `test_DeployToken_DevBuyAtCap_Succeeds` | Dev buy ровно 80% | Лимит включительно, равен 80% эмиссии; стоимость ≈ 4× стартовой капитализации | Создатель получил `MAX_DEV_BUY_X18`; цена пула 80 000..85 000 USDG |
+| `test_DeployToken_DevBuyAboveCap_Revert` | Dev buy 80% + 1 wei | Лимит 80% эмиссии | revert `DevBuyTooLarge(amount, max)` |
 | `test_DeployToken_DevBuySlippage_Revert` | `maxPairIn` на 1 меньше стоимости, затем ровно стоимость | Слиппедж-защита покупателя | Сначала revert `DevBuySlippage(pairIn, pairIn-1)`, затем успех с ровно `pairIn` |
 | `test_DeployToken_DevBuyWithoutApproval_Revert` | Нет апрува USDG | Без апрува покупка невозможна | revert, деплой откатывается целиком |
 | `test_DeployToken_DevBuy_PaidByCallerNotByOtherApprover` | Чужой апрув на контроллер | Платит только `msg.sender` | revert, баланс чужого адреса не тронут |
@@ -108,13 +109,13 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 
 ## test/fork/DevBuyDevnetForkTest.sol
 
-Сквозной dev buy на девнете. Ставка мема 3%, доля протокола 30% комиссии, наградный актив сам USDG (на форке нет V3-пулов для mock USDG), порог конверсии 1 USDG.
+Сквозной dev buy на девнете. Ставка мема 3%, доля протокола треть комиссии (3333 bips), наградный актив сам USDG (на форке нет V3-пулов для mock USDG), порог конверсии 1 USDG.
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
 | `test_DeployToken_DevBuyThreePercent_CreatorHoldsThreePercentAndFeeAccrued` | Деплой с dev buy 3% эмиссии | Создатель получает ровно 3%; платит цену пула + базовую ставку, не 80%; комиссия не теряется | Баланс = 3% эмиссии, списано `pairIn` = `pairAmount + fee`, комиссия в `pendingFees`, у контроллера 0 USDG |
-| `test_Distribute_AfterDevBuy_FeeReachesVaultAndProtocolAndClosesEpoch` | `distribute` после dev buy | Протокол получает 30% комиссии, волт остальное; порог закрывает эпоху | Протоколу 30% комиссии dev buy, волту остальное, эпоха 0 закрыта, всё создателю (стейкеров нет) |
-| `test_DeployToken_DevBuyThenTrading_FeesConvertedOverSeveralEpochs` | Dev buy, стейк половины, две покупки после окна | Протокол получил ровно 30% каждой комиссии, dev buy включительно; волт остальное и должен всё создателю и стейкерам; каждая выплата закрывает эпоху | Закрыты 2 эпохи, суммы протокола и волта точные, создатель забирает всё через `claim` и `claimCreatorRewards`, в волте ≤ 2 wei пыли |
+| `test_Distribute_AfterDevBuy_FeeReachesVaultAndProtocolAndClosesEpoch` | `distribute` после dev buy | Протокол получает треть комиссии, волт остальное; порог закрывает эпоху | Протоколу треть комиссии dev buy, волту остальное, эпоха 0 закрыта, всё создателю (стейкеров нет) |
+| `test_DeployToken_DevBuyThenTrading_FeesConvertedOverSeveralEpochs` | Dev buy, стейк половины, две покупки после окна | Протокол получил ровно треть (3333 bips) каждой комиссии, dev buy включительно; волт остальное и должен всё создателю и стейкерам; каждая выплата закрывает эпоху | Закрыты 2 эпохи, суммы протокола и волта точные, создатель забирает всё через `claim` и `claimCreatorRewards`, в волте ≤ 2 wei пыли |
 
 ## test/VaultTest.sol
 
@@ -191,6 +192,17 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | `test_AcceptCreator_NotPending_Reverts` | Accept не от ожидающего адреса. | Принять может только pending-создатель | Revert `NotPendingCreator` |
 | `test_RescueERC20_OnlySurplus` | Rescue случайно присланного MEME при наличии стейков. | Rescue не трогает учтённые средства | 6e18 → revert `RescueExceedsSurplus(meme, 5e18, 6e18)`; 5e18 → успешно выводится owner |
 | `test_Setters_NotOwner_Reverts` | `setHook` не владельцем. | Доступ только владельцу | Revert `OwnableUnauthorizedAccount(alice)` |
+
+### Перечисление allowlist
+
+| Тест | Что проверяет | Инварианты | Ожидаемый результат |
+|---|---|---|---|
+| `test_AllowedAssets_AfterSetup_ListsEveryAllowedAsset` | `allowedAssets()` после настройки фикстуры | Список = все разрешённые активы | 3 адреса: AAPL, WBTC, USDG |
+| `test_SetAssetAllowed_Remove_DropsFromList` | Удаление WBTC из allowlist | Удалённый актив пропадает из списка и mapping | 2 адреса, WBTC нет, `isAssetAllowed(wbtc)` = false |
+| `test_SetAssetAllowed_AddTwice_NoDuplicate` | Повторное добавление AAPL | Актив в списке не дублируется | Длина списка по-прежнему 3 |
+| `test_SetAssetAllowed_RemoveNotListed_NoOp` | Удаление актива, которого нет в списке | Удаление отсутствующего ничего не ломает | Длина 3, `isAssetAllowed(meme)` = false |
+| `test_SetAssetAllowed_NotOwner_Reverts` | `setAssetAllowed` не владельцем | Allowlist меняет только владелец | Revert `OwnableUnauthorizedAccount(alice)` |
+| `testFuzz_SetAssetAllowed_ListMatchesMapping` (fuzz) | Случайная последовательность до 40 добавлений и удалений 4 активов | Список ровно совпадает с mapping, без дублей | Актив в списке ⇔ `isAssetAllowed` = true; длина = числу разрешённых |
 
 ### Фаззинг
 
@@ -324,7 +336,7 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | `test_DeployAll_OwnerIsDeployer_NoTransfer` | Owner совпадает с деплоером. | — | Все контракты принадлежат скрипту, pending у vault = 0 |
 | `test_DeployAll_HookAddresses_CarryPermissionBits` | Биты разрешений в адресах прокси и реализации hook. | Адреса hook несут ровно нужные флаги Uniswap v4 | `addr & ALL_HOOK_MASK == HOOK_FLAGS` для прокси и реализации |
 | `test_DeployAll_Twice_FreshAddresses` | Повторный деплой. | Повторный деплой не сталкивается по CREATE2 | Новые адреса hook и его реализации; второй деплой корректно связан |
-| `test_Run_FromEnv_DeploysAndWires` | `run()` с конфигом из переменных окружения, часть пустая. | Пустые env берут значения по умолчанию | Связи корректны; владелец owner, vault pending = owner; ProxyAdmin = owner (fallback); fee 300, доля протокола по умолчанию 3000 (30%); AAPL разрешён; порог 5e6; биты hook верны |
+| `test_Run_FromEnv_DeploysAndWires` | `run()` с конфигом из переменных окружения, часть пустая. | Пустые env берут значения по умолчанию | Связи корректны; владелец owner, vault pending = owner; ProxyAdmin = owner (fallback); fee 300, доля протокола по умолчанию 3333 (треть); AAPL разрешён; порог 5e6; биты hook верны |
 | `test_SetVault_UsdgMismatch_Revert` | Подключение к контроллеру vault с другим USDG. | Пара-токен контроллера и USDG vault совпадают | Откат `VaultPairTokenMismatch(aapl, usdg)` |
 | `test_CheckWiring_VaultOfOtherHook_Revert` | `checkWiring` с hook из другого деплоя. | Проверка связей ловит чужой hook | Откат `WiringMismatch("controller.hook")` |
 
@@ -365,7 +377,7 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | `test_NotifyPoolCreated_FeeAboveTenPercent_Revert` | Регистрация с комиссией 10,01% | Комиссия мема ≤ 10% | Revert `InvalidMemeFeeBips(1001)` |
 | `testFuzz_NotifyPoolCreated_FeeInBounds_BecomesBaseFee` (fuzz) | Любая допустимая комиссия 100–1000 | После окна действует ровно выбранная создателем комиссия | `feeBipsAt(createdAt+window)` = feeBips |
 | `testFuzz_NotifyPoolCreated_FeeOutOfBounds_Revert` (fuzz) | Любая комиссия вне 100–1000 | Нельзя задать комиссию вне границ | Revert `InvalidMemeFeeBips(feeBips)` |
-| `test_Initialize_ProtocolShare_StoredInBipsOfFee` | Доля протокола после инициализации | Доля хранится в bips комиссии | `PROTOCOL_SHARE_BIPS` = 3000 |
+| `test_Initialize_ProtocolShare_StoredInBipsOfFee` | Доля протокола после инициализации | Доля хранится в bips комиссии | `PROTOCOL_SHARE_BIPS` = 3333 |
 | `test_Initialize_ProtocolShareAboveHundredPercent_Revert` | Инициализация с долей 100.01% | Протокол не может получить больше всей комиссии | Revert `InvalidFeeBips` |
 | `testFuzz_Initialize_ProtocolShareUpToHundredPercent_Accepted` (fuzz) | Любая доля 0..100% | Допустимая доля принимается как есть | `PROTOCOL_SHARE_BIPS` = переданной доле |
 
@@ -416,8 +428,8 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | `test_GetSqrtPriceX96_SixDecimalPairAsToken1_KeepsPrecision` | Цена 300_000 мемов (18 dec) за 1 USDG (6 dec), мем token0 | Точность не теряется на малых отношениях | Цена ≈ 3.333e18 (×1e-36), отклонение ≤ 1e-6 |
 | `test_GetSqrtPriceX96_SixDecimalPairAsToken0_KeepsPrecision` | То же, но USDG token0 | Точность сохраняется в обратном порядке | Цена ≈ 3e53 (×1e-36), отклонение ≤ 1e-6 |
 | `testFuzz_GetSqrtPriceX96_RoundTrip` (fuzz) | Количества 1e6–1e30 → sqrtPrice → цена | Обратное преобразование даёт исходное отношение | Цена ≈ `token1*1e36/token0`, отклонение ≤ 1e-9 |
-| `test_GetSqrtPriceX96_StartPrice_SameForEitherTokenOrder` | Стартовая цена при мем token0 и token1 | Смена порядка токенов даёт обратную цену (sqrtA·sqrtB = 2^192) | sqrt = 144650172662492649647717392874717 и 43395051798747794894315217; цены ≈ 3.33e45 и 3e29; произведение ≈ 2^192 |
-| `testFuzz_GetSqrtPriceX96_StartPrice_AnyDecimals_InverseAndInRange` (fuzz) | Стартовая цена для decimals 6–18 у мема и пары | Цена в диапазоне тиков Uniswap в обоих порядках, порядки взаимно обратны | `MIN_SQRT_PRICE` ≤ sqrt < `MAX_SQRT_PRICE` для обоих; произведение ≈ 2^192 (≤ 1e-9) |
+| `test_GetSqrtPriceX96_StartPrice_SameForEitherTokenOrder` | Пример цены 300 000 мемов за 1 пару при мем token0 и token1 (не константа протокола) | Смена порядка токенов даёт обратную цену (sqrtA·sqrtB = 2^192) | sqrt = 144650172662492649647717392874717 и 43395051798747794894315217; цены ≈ 3.33e45 и 3e29; произведение ≈ 2^192 |
+| `testFuzz_GetSqrtPriceX96_StartPrice_AnyDecimals_InverseAndInRange` (fuzz) | Стартовая цена протокола `PRICE_PER_TOKEN` для decimals 6–18 у мема и пары | Цена в диапазоне тиков Uniswap в обоих порядках, порядки взаимно обратны | `MIN_SQRT_PRICE` ≤ sqrt < `MAX_SQRT_PRICE` для обоих; произведение ≈ 2^192 (≤ 1e-9) |
 
 ## test/TimeMath.sol
 

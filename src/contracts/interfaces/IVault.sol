@@ -328,6 +328,11 @@ interface IVault {
 
     function isAssetAllowed(address asset) external view returns (bool);
 
+    /// @notice Every asset currently in the allowlist, i.e. every `asset` with
+    ///         `isAssetAllowed(asset) == true`. Order is not meaningful and may change on removal.
+    /// @dev The owner curates the list, so it stays small; meant for off-chain reads.
+    function allowedAssets() external view returns (address[] memory);
+
     /// @notice Balance of `token` owned by stakers, creators or pending conversion.
     function accounted(address token) external view returns (uint256);
 

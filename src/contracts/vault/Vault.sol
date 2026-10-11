@@ -21,6 +21,9 @@ import {
     Ownable2StepUpgradeable
 } from "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {
+    EnumerableSet
+} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 import {IVault, AssetConfig, VaultInfo} from "../interfaces/IVault.sol";
 import {ISwapAdapter} from "../interfaces/ISwapAdapter.sol";
@@ -61,6 +64,7 @@ contract Vault is
     ReentrancyGuardUpgradeable
 {
     using SafeERC20 for IERC20;
+    using EnumerableSet for EnumerableSet.AddressSet;
 
     // ---------------------------------------------------------------------------------------------
     // Types
@@ -125,6 +129,10 @@ contract Vault is
 
     /// @dev Pending USDG a vault needs before its epoch is converted. Zero: automatic off.
     uint256 private s_conversionThreshold;
+    /// @dev Enumerable copy of `s_assetAllowed`: exactly the assets mapped to true. Kept in sync
+    /// by `setAssetAllowed`. A proxy upgraded from a version without it starts empty; re-calling
+    /// `setAssetAllowed(asset, true)` for the already allowed assets fills it.
+    EnumerableSet.AddressSet private s_allowedAssetList;
 
     // ---------------------------------------------------------------------------------------------
     // Modifiers
@@ -482,6 +490,8 @@ contract Vault is
     function setAssetAllowed(address asset, bool allowed) external onlyOwner {
         if (asset == address(0)) revert ZeroAddress();
         s_assetAllowed[asset] = allowed;
+        if (allowed) s_allowedAssetList.add(asset);
+        else s_allowedAssetList.remove(asset);
         emit AssetAllowedUpdated(asset, allowed);
     }
 
@@ -540,6 +550,11 @@ contract Vault is
     /// @inheritdoc IVault
     function isAssetAllowed(address asset) external view returns (bool) {
         return s_assetAllowed[asset];
+    }
+
+    /// @inheritdoc IVault
+    function allowedAssets() external view returns (address[] memory) {
+        return s_allowedAssetList.values();
     }
 
     /// @inheritdoc IVault

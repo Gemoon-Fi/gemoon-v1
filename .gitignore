@@ -11,8 +11,12 @@ out/
 docs/*
 !docs/DEPLOY.md
 
-# Dotenv file
+# Dotenv file and its backups made by deploy.sh (contain PRIVATE_KEY)
 .env
+.env.bak.*
+
+# deploy.sh logs
+deploy-logs/
 
 # Node modules
 node_modules/
@@ -32,3 +36,5 @@ broadcast/*
 internal_docs/
 
 lib/*
+
+.tmp.deploy*

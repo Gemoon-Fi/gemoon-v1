@@ -597,6 +597,76 @@ contract VaultTest is VaultFixture {
         vault.setHook(alice);
     }
 
+    // ------------------------------------------------------------------ allowlist enumeration
+
+    function _contains(address[] memory list, address asset) internal pure returns (bool) {
+        for (uint256 i; i < list.length; ++i) {
+            if (list[i] == asset) return true;
+        }
+        return false;
+    }
+
+    function test_AllowedAssets_AfterSetup_ListsEveryAllowedAsset() external view {
+        address[] memory list = vault.allowedAssets();
+        assertEq(list.length, 3);
+        assertTrue(_contains(list, address(aapl)), "aapl");
+        assertTrue(_contains(list, address(wbtc)), "wbtc");
+        assertTrue(_contains(list, address(usdg)), "usdg");
+    }
+
+    function test_SetAssetAllowed_Remove_DropsFromList() external {
+        vm.prank(owner);
+        vault.setAssetAllowed(address(wbtc), false);
+
+        address[] memory list = vault.allowedAssets();
+        assertEq(list.length, 2);
+        assertFalse(_contains(list, address(wbtc)), "wbtc removed");
+        assertFalse(vault.isAssetAllowed(address(wbtc)));
+    }
+
+    function test_SetAssetAllowed_AddTwice_NoDuplicate() external {
+        vm.prank(owner);
+        vault.setAssetAllowed(address(aapl), true);
+        assertEq(vault.allowedAssets().length, 3);
+    }
+
+    function test_SetAssetAllowed_RemoveNotListed_NoOp() external {
+        vm.prank(owner);
+        vault.setAssetAllowed(address(meme), false);
+        assertEq(vault.allowedAssets().length, 3);
+        assertFalse(vault.isAssetAllowed(address(meme)));
+    }
+
+    function test_SetAssetAllowed_NotOwner_Reverts() external {
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", alice));
+        vault.setAssetAllowed(address(meme), true);
+    }
+
+    /// @dev Invariant: after any sequence of allow / disallow calls the list holds exactly the
+    /// assets for which `isAssetAllowed` is true, each once.
+    function testFuzz_SetAssetAllowed_ListMatchesMapping(uint256 seed, uint8 steps) external {
+        address[4] memory candidates =
+            [address(aapl), address(wbtc), address(usdg), makeAddr("tsla")];
+        steps = uint8(bound(steps, 1, 40));
+
+        vm.startPrank(owner);
+        for (uint256 i; i < steps; ++i) {
+            uint256 r = uint256(keccak256(abi.encode(seed, i)));
+            vault.setAssetAllowed(candidates[r % 4], (r >> 8) % 2 == 0);
+        }
+        vm.stopPrank();
+
+        address[] memory list = vault.allowedAssets();
+        uint256 allowedCount;
+        for (uint256 i; i < candidates.length; ++i) {
+            bool allowed = vault.isAssetAllowed(candidates[i]);
+            if (allowed) ++allowedCount;
+            assertEq(_contains(list, candidates[i]), allowed, "list == mapping");
+        }
+        assertEq(list.length, allowedCount, "no duplicates, nothing extra");
+    }
+
     // ------------------------------------------------------------------ fuzz
 
     /// @dev Rewards of both stakers plus the creator share never exceed what was converted,

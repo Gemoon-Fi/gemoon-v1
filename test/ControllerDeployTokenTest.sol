@@ -30,6 +30,7 @@ import {
     INITIAL_SUPPLY_X18,
     MAX_DEV_BUY_X18,
     TICK_SPACING,
+    INITIAL_MARKET_CAP,
     PRICE_PER_TOKEN as INITIAL_PRICE
 } from "../src/contracts/interfaces/IGemoon.sol";
 import {PriceMath} from "../src/contracts/utils/Price.sol";
@@ -46,8 +47,8 @@ contract ControllerDeployTokenTest is Test {
     using PoolIdLibrary for PoolKey;
 
     uint256 constant PAIR_UNIT = 1e6; // USDG has 6 decimals
-    /// @dev Protocol share of every fee, in bips of the fee: 30%.
-    uint256 constant PROTOCOL_SHARE = 3_000;
+    /// @dev Protocol share of every fee, in bips of the fee: a third.
+    uint256 constant PROTOCOL_SHARE = 3_333;
 
     MintableToken usdg;
     PoolManager poolManager;
@@ -366,7 +367,7 @@ contract ControllerDeployTokenTest is Test {
         _buyMeme(token, first);
         _buyMeme(token, second);
 
-        // 1.25% of every input: 30% of it (0.375%) to the protocol, 0.875% to the vault.
+        // 1.25% of every input: a third of it to the protocol, the rest to the vault.
         uint256 fee = _fee(first) + _fee(second);
         uint256 toProtocol = _protocol(_fee(first)) + _protocol(_fee(second));
         assertEq(hook.pendingFees(token), 0, "nothing left accrued");
@@ -405,6 +406,14 @@ contract ControllerDeployTokenTest is Test {
         assertGt(got, startPrice * 967 / 1000, "fee and impact on 1 pair token stay below 3.3%");
     }
 
+    /// @dev Supply 1 000 000 000 at 50 000 Meme per USDG: the start market cap is 20 000 USDG.
+    function test_DeployToken_StartMarketCap_TwentyThousandPairTokens() external pure {
+        assertEq(INITIAL_MARKET_CAP, 20_000);
+        assertEq(INITIAL_PRICE, 50_000, "Meme per one pair token");
+        assertEq((INITIAL_SUPPLY_X18 / 1e18) / INITIAL_PRICE, 20_000, "supply / price");
+        assertEq(INITIAL_PRICE * INITIAL_MARKET_CAP, INITIAL_SUPPLY_X18 / 1e18, "price is exact");
+    }
+
     function test_DeployToken_PoolInitializedAtPriceForPairDecimals() external {
         (address token,) = _deployMeme();
         PoolKey memory key = _poolKey(token);
@@ -439,7 +448,7 @@ contract ControllerDeployTokenTest is Test {
 
     function test_Swap_BuyExactOut_EmitsMemeSwapped() external {
         (address token,) = _deployMeme();
-        uint256 memeOut = 1_000_000e18; // ~3.3 USDG at the start price
+        uint256 memeOut = 1_000_000e18; // ~20 USDG at the start price
         usdg.mint(trader, 100_000 * PAIR_UNIT);
         uint256 usdgBefore = usdg.balanceOf(trader);
 
@@ -641,8 +650,8 @@ contract ControllerDeployTokenTest is Test {
         controller.deployToken(_config(1_001));
     }
 
-    /// @dev 10% fee: the protocol gets 30% of it (3% of the volume), the vault 7%.
-    function test_Swap_TenPercentFee_ProtocolGetsThirtyPercentVaultRest() external {
+    /// @dev 10% fee: the protocol gets a third of it (~3.33% of the volume), the vault the rest.
+    function test_Swap_TenPercentFee_ProtocolGetsOneThirdVaultRest() external {
         address token = _deployMemeWithFee(1_000);
         uint256 first = 1_000 * PAIR_UNIT;
         uint256 second = 400 * PAIR_UNIT;
@@ -652,8 +661,12 @@ contract ControllerDeployTokenTest is Test {
 
         uint256 total = first + second;
         assertEq(hook.pendingFees(token), 0, "paid out");
-        assertEq(usdg.balanceOf(protocolRecipient), (total * 300) / 10_000, "3% of the volume");
-        assertEq(usdg.balanceOf(address(vault)), (total * 700) / 10_000, "7% of the volume");
+        uint256 fee1 = (first * 1_000) / 10_000;
+        uint256 fee2 = (second * 1_000) / 10_000;
+        uint256 toProtocol = _protocol(fee1) + _protocol(fee2);
+        assertEq(usdg.balanceOf(protocolRecipient), toProtocol, "a third of the fee");
+        assertEq(usdg.balanceOf(address(vault)), fee1 + fee2 - toProtocol, "the rest");
+        assertApproxEqRel(toProtocol, (total * 1_000) / 10_000 / 3, 1e14, "~3.33% of the volume");
         assertApproxEqAbs(
             usdg.balanceOf(protocolRecipient) + usdg.balanceOf(address(vault)),
             (total * 1_000) / 10_000,
@@ -662,11 +675,11 @@ contract ControllerDeployTokenTest is Test {
         );
     }
 
-    /// @dev Product examples: of a 1% fee the protocol gets 0.3% of the volume and the vault 0.7%,
-    /// of 2% 0.6% and 1.4%, of 10% 3% and 7%.
-    function test_Swap_ProtocolShare_ThirtyPercentOfAnyMemeFee() external {
-        uint256[3] memory fees = [uint256(100), 200, 1_000];
-        uint256[3] memory toProtocolBips = [uint256(30), 60, 300];
+    /// @dev A third of any fee to the protocol: of 3% it is ~1% of the volume and ~2% to the vault,
+    /// of 1% ~0.33% and ~0.67%, of 10% ~3.33% and ~6.67%. 3 333 bips undershoot an exact third
+    /// by 0.01% of the fee, which goes to the vault.
+    function test_Swap_ProtocolShare_OneThirdOfAnyMemeFee() external {
+        uint256[3] memory fees = [uint256(100), 300, 1_000];
         uint256 volume = 1_000 * PAIR_UNIT;
         for (uint256 i; i < fees.length; ++i) {
             address token = _deployMemeWithFee(fees[i]);
@@ -678,16 +691,17 @@ contract ControllerDeployTokenTest is Test {
 
             uint256 toProtocol = usdg.balanceOf(protocolRecipient) - protocolBefore;
             uint256 toVault = usdg.balanceOf(address(vault)) - vaultBefore;
-            assertEq(toProtocol, (volume * toProtocolBips[i]) / 10_000, "protocol part");
-            assertEq(
-                toVault, (volume * (fees[i] - toProtocolBips[i])) / 10_000, "vault part"
-            );
+            uint256 fee = (volume * fees[i]) / 10_000;
+            assertEq(toProtocol, _protocol(fee), "protocol part");
+            assertEq(toVault, fee - toProtocol, "vault part");
+            assertApproxEqRel(toProtocol, fee / 3, 1e14, "a third of the fee");
+            assertApproxEqRel(toVault, (fee * 2) / 3, 1e14, "two thirds to the vault");
         }
     }
 
     /// @dev Invariant over any allowed fee: protocol + vault + accrued == every fee charged, and
-    /// the protocol part is always 30% of the fee, rounded down.
-    function testFuzz_Swap_AnySwapFee_ProtocolGetsThirtyPercentFeeConserved(uint256 swapFeeBips)
+    /// the protocol part is always a third (3 333 bips) of the fee, rounded down.
+    function testFuzz_Swap_AnySwapFee_ProtocolGetsOneThirdFeeConserved(uint256 swapFeeBips)
         external
     {
         swapFeeBips = bound(swapFeeBips, 100, 1_000);
@@ -704,8 +718,8 @@ contract ControllerDeployTokenTest is Test {
         uint256 toProtocol = usdg.balanceOf(protocolRecipient);
         uint256 toVault = usdg.balanceOf(address(vault));
         assertEq(toProtocol + toVault + hook.pendingFees(token), charged, "fee conserved");
-        assertEq(toProtocol + hook.accruedProtocol(token), protocolPart, "protocol part 30%");
-        assertLe(protocolPart * 10_000, charged * PROTOCOL_SHARE, "never above 30%");
+        assertEq(toProtocol + hook.accruedProtocol(token), protocolPart, "protocol part a third");
+        assertLe(protocolPart * 3, charged, "never above a third");
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -832,10 +846,15 @@ contract ControllerDeployTokenTest is Test {
         assertLt(traderMemePerPair, devMemePerPair, "later buyer gets less per pair token");
     }
 
+    /// @dev 80% of a one-sided position starting at the 20 000 USDG market cap costs about
+    /// cap * f / (1 - f) = 4 * 20 000 at the pool price; the position starts one or two tick
+    /// spacings above the start price, so slightly more.
     function test_DeployToken_DevBuyAtCap_Succeeds() external {
         DevBuyResult memory r = _deployWithDevBuy(125, MAX_DEV_BUY_X18);
         assertEq(IERC20(r.token).balanceOf(creator), MAX_DEV_BUY_X18);
-        assertEq(MAX_DEV_BUY_X18, INITIAL_SUPPLY_X18 / 10, "cap is 10% of the supply");
+        assertEq(MAX_DEV_BUY_X18, (INITIAL_SUPPLY_X18 * 8) / 10, "cap is 80% of the supply");
+        assertGe(r.trade.pairAmount, 80_000 * PAIR_UNIT, "at least 4x the start market cap");
+        assertLt(r.trade.pairAmount, 85_000 * PAIR_UNIT, "start range gap adds a few percent");
     }
 
     function test_DeployToken_DevBuyAboveCap_Revert() external {

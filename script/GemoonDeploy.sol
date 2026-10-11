@@ -327,7 +327,7 @@ abstract contract GemoonDeployBase is Script {
 ///                               (default: GEMOON_OWNER)
 ///  - HOOK_TOTAL_FEE_BIPS        fallback swap fee in bips for Memes without their own fee
 ///                               (default: 125); every Meme gets its fee from `deployToken`
-///  - HOOK_PROTOCOL_SHARE_BIPS   protocol share of every fee, in bips of the fee (default: 3000)
+///  - HOOK_PROTOCOL_SHARE_BIPS   protocol share of every fee, in bips of the fee (default: 3333, a third)
 ///  - VAULT_SWAP_ADAPTER         USDG -> asset adapter (optional)
 ///  - VAULT_ALLOWED_ASSETS       comma-separated reward asset allowlist (optional)
 /// After the run: GEMOON_OWNER calls `Vault.acceptOwnership` if it differs from the broadcaster.
@@ -398,7 +398,7 @@ contract DeployGemoon is GemoonDeployBase {
             usdg: vm.envAddress("USDG_ADDRESS"),
             protocolRecipient: vm.envAddress("PROTOCOL_FEE_RECIPIENT"),
             feeBips: _envUintOr("HOOK_TOTAL_FEE_BIPS", 125),
-            protocolShareBips: _envUintOr("HOOK_PROTOCOL_SHARE_BIPS", 3_000),
+            protocolShareBips: _envUintOr("HOOK_PROTOCOL_SHARE_BIPS", 3_333),
             conversionThreshold: vm.envUint("VAULT_CONVERSION_THRESHOLD"),
             swapAdapter: _envAddressOr("VAULT_SWAP_ADAPTER", address(0)),
             allowedAssets: _envAddressList("VAULT_ALLOWED_ASSETS")

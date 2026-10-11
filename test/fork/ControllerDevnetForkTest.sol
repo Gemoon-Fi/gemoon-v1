@@ -113,7 +113,7 @@ contract ControllerDevnetForkTest is Test {
                 usdg: address(usdg),
                 protocolRecipient: protocolRecipient,
                 feeBips: 125,
-                protocolShareBips: 3_000,
+                protocolShareBips: 3_333,
                 conversionThreshold: 0,
                 swapAdapter: address(0),
                 allowedAssets: assets
