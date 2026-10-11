@@ -70,7 +70,7 @@ contract HookManager is
     // Constants / immutables
     // ---------------------------------------------------------------------------------------------
 
-    uint64 public constant HOOK_MANAGER_VERSION = 1;
+    uint64 public constant HOOK_MANAGER_VERSION = 2;
 
     uint256 public constant BIPS = 10_000;
     /// @notice Fallback base fee for a Meme the controller never reported, see `baseFeeBips`.
@@ -87,6 +87,9 @@ contract HookManager is
     /// @notice Bounds of the Meme fee its creator chooses at deployment: 1%..10%.
     uint256 public constant MIN_MEME_FEE_BIPS = 100;
     uint256 public constant MAX_MEME_FEE_BIPS = 1_000;
+    /// @notice Gas of the payout itself on top of the vault conversion: claims burn, two takes,
+    ///         `notifyFees` bookkeeping.
+    uint256 public constant PAYOUT_GAS_OVERHEAD = 150_000;
 
     Currency private immutable i_pairToken;
 
@@ -347,10 +350,36 @@ contract HookManager is
             feeAmount
         );
 
+        _requireConversionGas(meme);
         try this.payout(meme) {} catch (bytes memory reason) {
             emit PayoutFailed(reason);
         }
         return (IHooks.afterSwap.selector, fee);
+    }
+
+    /// @dev Reverts the swap unless it carries enough gas for the vault conversion the payout below
+    /// may start. The conversion runs inside caught calls, so an out-of-gas there would not revert
+    /// the swap: gas estimation (wallets, routers, aggregators) would settle on a limit at which
+    /// the conversion always dies silently. Reverting here makes the estimate include it.
+    /// Required on every swap of a meme with automatic conversion on, whether or not this swap
+    /// reaches the threshold: an estimate made before other swaps fill the threshold must still
+    /// hold when this one lands. Only the gas actually used is paid.
+    /// Three nested calls (hook -> payout, vault -> notifyFees, vault -> convertFees) each get at
+    /// most 63/64 of the gas left, hence the factors. A failing vault view never blocks a swap.
+    function _requireConversionGas(address meme) internal view {
+        uint256 conversionGas;
+        try IVault(vault).conversionGasRequired(meme) returns (uint256 gas_) {
+            conversionGas = gas_;
+        } catch {
+            return;
+        }
+        if (conversionGas == 0) return;
+
+        // conversion behind three 63/64 forwards, the payout itself behind one
+        uint256 needed = (conversionGas * 64 * 64 * 64) / (63 * 63 * 63) +
+            (PAYOUT_GAS_OVERHEAD * 64) / 63;
+        uint256 available = gasleft();
+        if (available < needed) revert NotEnoughGasForConversion(needed, available);
     }
 
     // ---------------------------------------------------------------------------------------------

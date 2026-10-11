@@ -87,13 +87,19 @@ contract Vault is
     // ---------------------------------------------------------------------------------------------
 
     /// @notice Version of the implementation, bump it together with `reinitialize` migrations.
-    uint64 public constant VAULT_VERSION = 1;
+    uint64 public constant VAULT_VERSION = 3;
 
     uint256 public constant BPS = 10_000;
     uint256 public constant CREATOR_SHARE_BPS = 1_000; // 10%
-    uint256 public constant MAX_ASSETS = 5;
+    uint256 public constant MAX_ASSETS = 8;
     uint256 public constant PRECISION = 1e36;
     uint256 public constant CONVERSION_COOLDOWN = 1 minutes;
+    /// @notice Gas reserved for the fixed part of one `convertFees`: epoch bookkeeping, the
+    ///         USDG leg and the per-asset accounting.
+    uint256 public constant CONVERSION_BASE_GAS = 150_000;
+    /// @notice Gas reserved for every reward asset that is bought through the adapter (every
+    ///         asset but USDG). Measured ~250k per Uniswap V3 swap on Robinhood Chain, with margin.
+    uint256 public constant CONVERSION_GAS_PER_SWAP = 300_000;
 
     // ---------------------------------------------------------------------------------------------
     // Storage (proxy). Append-only across upgrades: never reorder, retype or remove fields.
@@ -598,6 +604,21 @@ contract Vault is
     }
 
     /// @inheritdoc IVault
+    function conversionGasRequired(
+        address meme
+    ) external view returns (uint256) {
+        if (s_vaults[meme].registeredAt == 0 || s_conversionThreshold == 0) return 0;
+
+        AssetConfig[] storage assets = s_assets[meme];
+        address usdg_ = address(s_usdg);
+        uint256 swaps;
+        for (uint256 i; i < assets.length; ++i) {
+            if (assets[i].token != usdg_) ++swaps;
+        }
+        return CONVERSION_BASE_GAS + swaps * CONVERSION_GAS_PER_SWAP;
+    }
+
+    /// @inheritdoc IVault
     function pendingUSDG(address meme) external view returns (uint256) {
         VaultInfo storage v = s_vaults[meme];
         return v.pendingStakerUSDG + v.pendingCreatorUSDG;
@@ -769,21 +790,26 @@ contract Vault is
     /// (or a bare `revert()`), which the caller of the swap controls through the gas limit, and
     /// must not let one underfunded transaction pause the automation for everyone.
     function _tryConvert(address meme, VaultInfo storage v) internal {
-        uint256 threshold = s_conversionThreshold;
-        if (threshold == 0) return;
-        if (v.pendingStakerUSDG + v.pendingCreatorUSDG < threshold) return;
-        if (paused()) return;
-        uint64 lastFailure = v.lastConversionFailure;
-        if (
-            lastFailure != 0 &&
-            block.timestamp < uint256(lastFailure) + CONVERSION_COOLDOWN
-        ) return;
+        if (!_conversionDue(v)) return;
 
         try this.convertFees(meme) {} catch (bytes memory reason) {
             if (reason.length != 0)
                 v.lastConversionFailure = uint64(block.timestamp);
             emit ConversionFailed(meme, reason);
         }
+    }
+
+    /// @dev Whether the automatic conversion runs now: threshold set and reached, not paused, not
+    /// cooling down after a failure.
+    function _conversionDue(VaultInfo storage v) internal view returns (bool) {
+        uint256 threshold = s_conversionThreshold;
+        if (threshold == 0) return false;
+        if (v.pendingStakerUSDG + v.pendingCreatorUSDG < threshold) return false;
+        if (paused()) return false;
+        uint64 lastFailure = v.lastConversionFailure;
+        return
+            lastFailure == 0 ||
+            block.timestamp >= uint256(lastFailure) + CONVERSION_COOLDOWN;
     }
 
     /// @dev Sells `amountIn` USDG for `asset` through the adapter, output by balance difference.

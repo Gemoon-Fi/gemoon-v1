@@ -15,10 +15,11 @@ import {IVault, AssetConfig} from "../src/contracts/interfaces/IVault.sol";
 import {DeployVault, ProxyVaultUpgrade, GemoonDeployBase} from "../script/GemoonDeploy.sol";
 import {MockToken, MockSwapAdapter} from "./VaultTest.sol";
 
-/// @dev Next Vault version, to exercise the reinitialize / downgrade paths of the upgrade script.
+/// @dev Next Vault version (current `VAULT_VERSION` + 1), to exercise the reinitialize /
+/// downgrade paths of the upgrade script.
 contract VaultV2 is Vault {
     function getVersion() public pure override returns (uint64) {
-        return 2;
+        return VAULT_VERSION + 1;
     }
 }
 
@@ -170,7 +171,11 @@ contract VaultUpgradeTest is Test {
         );
     }
 
+    /// @dev `initialize` leaves the proxy at version 1; `reinitialize` lifts it to `VAULT_VERSION`
+    /// once, a second call at the same version reverts.
     function test_Reinitialize_SameVersion_Reverts() external {
+        if (_initializedVersion() < vault.VAULT_VERSION()) vault.reinitialize();
+        assertEq(_initializedVersion(), vault.VAULT_VERSION());
         vm.expectRevert(Initializable.InvalidInitialization.selector);
         vault.reinitialize();
     }
@@ -180,11 +185,15 @@ contract VaultUpgradeTest is Test {
     // ---------------------------------------------------------------------------------------------
 
     function test_UpgradeVault_SameVersion_SwapsImplementation() external {
+        // bring the proxy to the current version first, then upgrade to the same version again
+        upgradeScript.upgradeVault(
+            address(upgradeScript), address(vault), proxyAdmin, address(new Vault())
+        );
         address newImpl = address(new Vault());
         upgradeScript.upgradeVault(address(upgradeScript), address(vault), proxyAdmin, newImpl);
 
         assertEq(Upgrades.getImplementationAddress(address(vault)), newImpl);
-        assertEq(_initializedVersion(), 1);
+        assertEq(_initializedVersion(), vault.VAULT_VERSION());
         assertEq(vault.owner(), owner);
     }
 
@@ -193,7 +202,7 @@ contract VaultUpgradeTest is Test {
         upgradeScript.upgradeVault(address(upgradeScript), address(vault), proxyAdmin, newImpl);
 
         assertEq(Upgrades.getImplementationAddress(address(vault)), newImpl);
-        assertEq(_initializedVersion(), 2);
+        assertEq(_initializedVersion(), vault.VAULT_VERSION() + 1);
         assertEq(vault.owner(), owner);
         assertEq(vault.usdg(), address(usdg));
 
@@ -206,7 +215,10 @@ contract VaultUpgradeTest is Test {
         upgradeScript.upgradeVault(address(upgradeScript), address(vault), proxyAdmin, v2);
 
         address v1 = address(new Vault());
-        vm.expectRevert(abi.encodeWithSelector(GemoonDeployBase.VersionDowngrade.selector, 2, 1));
+        uint64 current = vault.VAULT_VERSION();
+        vm.expectRevert(
+            abi.encodeWithSelector(GemoonDeployBase.VersionDowngrade.selector, current + 1, current)
+        );
         upgradeScript.upgradeVault(address(upgradeScript), address(vault), proxyAdmin, v1);
     }
 

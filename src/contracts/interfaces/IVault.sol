@@ -359,6 +359,16 @@ interface IVault {
     /// @notice USDG credited in the open epoch of `meme` and not yet converted.
     function pendingUSDG(address meme) external view returns (uint256);
 
+    /// @notice Gas every swap of `meme` must be able to give to the automatic conversion, zero when
+    ///         automatic conversion is off (threshold 0) or the meme is unknown.
+    /// @dev Read by the hook on every swap. It depends only on the threshold being on and on the
+    /// assets of the meme, never on the pending amount: a gas estimate made while the threshold
+    /// was not reached must stay valid if other swaps fill it before this one lands. Unused gas
+    /// is not charged. `CONVERSION_BASE_GAS + CONVERSION_GAS_PER_SWAP * (assets other than USDG)`.
+    /// @param meme Meme vault.
+    /// @return Gas to reserve for `convertFees`, or zero.
+    function conversionGasRequired(address meme) external view returns (uint256);
+
     /// @notice USDG credited to `account` in the open epoch, to be converted by the next `convertFees`.
     function pendingCreditOf(
         address meme,

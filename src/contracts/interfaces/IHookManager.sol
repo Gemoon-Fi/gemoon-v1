@@ -31,6 +31,10 @@ interface IHookManager is IGemoonable {
     error NotController();
     /// @dev Meme fee outside `MIN_MEME_FEE_BIPS..MAX_MEME_FEE_BIPS`.
     error InvalidMemeFeeBips(uint256 feeBips);
+    /// @dev The swap would start the vault conversion with less gas than it needs; the swap is
+    /// reverted so that gas estimation raises the limit. `needed` is the gas required at the
+    /// check, `available` what was left.
+    error NotEnoughGasForConversion(uint256 needed, uint256 available);
 
     // ---------------------------------------------------------------------------------------------
     // Events
@@ -197,6 +201,9 @@ interface IHookManager is IGemoonable {
 
     /// @notice Upper bound of the Meme fee, in bips (1 000 = 10%).
     function MAX_MEME_FEE_BIPS() external view returns (uint256);
+
+    /// @notice Gas of a payout on top of the vault conversion, reserved by swaps that trigger it.
+    function PAYOUT_GAS_OVERHEAD() external view returns (uint256);
 
     /// @notice Base fee of `meme` chosen by its creator, in bips of the swap, zero if never
     ///         reported.

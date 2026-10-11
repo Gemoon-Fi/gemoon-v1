@@ -94,6 +94,19 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | `testFuzz_DeployToken_DevBuy_ExactOutAtBaseFee` (fuzz) | Любой объём до 10% и любая ставка | Точный выход; `pairIn` = цена пула + базовая комиссия; комиссия сохраняется; у контроллера нет USDG | Все равенства выполняются |
 | `testFuzz_DeployToken_DevBuy_CostMonotonic` (fuzz) | Два объёма `a <= b` | Купить больше не дешевле | `cost(a) <= cost(b)` |
 
+#### Газ под конвертацию
+
+| Тест | Что проверяет | Инварианты | Ожидаемый результат |
+|---|---|---|---|
+| `test_Swap_CrossesThreshold_EnoughGas_ConvertsInSameSwap` | Своп, пересекающий порог, с лимитом 5M | Конвертация выполняется в том же свопе | Своп прошёл, `epoch` = 1, `pendingUSDG` = 0 |
+| `test_Swap_CrossesThreshold_LowGas_RevertsWithNotEnoughGasForConversion` | Тот же своп с лимитом 300k | Своп не проходит с тихо упавшей конвертацией | Revert с внутренней ошибкой `NotEnoughGasForConversion`; эпоха, комиссия и баланс трейдера без изменений |
+| `test_Swap_SellCrossesThreshold_ConvertsInSameSwap` | Продажа, пересекающая порог | Продажа запускает конвертацию так же, как покупка | `epoch` 1 → 2, `pendingUSDG` = 0 |
+| `test_Swap_SellLowGas_RevertsWithNotEnoughGasForConversion` | Продажа с лимитом 300k | Проверка газа действует и на продажи | Revert `NotEnoughGasForConversion` |
+| `test_Swap_BelowThreshold_LowGas_RevertsToo` | Лимит 300k, порог далеко | Требование действует и до порога | Revert `NotEnoughGasForConversion` |
+| `test_Swap_ConversionOff_LowGas_Succeeds` | Лимит 300k, порог 0 | Без автоконвертации лишнего газа не нужно | Своп прошёл |
+| `test_Swap_EstimatedBelowThreshold_OthersFillIt_EstimateStillEnough` | Газ оценён при далёком пороге (минимальный лимит, как `eth_estimateGas`), затем чужая сделка набирает порог почти до конца, наш своп его пересекает | Оценка газа не устаревает из-за чужих сделок | Своп с прежней оценкой прошёл и закрыл эпоху |
+| `testFuzz_Swap_CrossesThreshold_AnyGas_ConvertsOrReverts` (fuzz) | Любой лимит 150k..3M | Своп, пересёкший порог, либо закрывает эпоху, либо откатывается целиком | Успех ⇒ `epoch` = 1 и нет `ConversionFailed`; откат ⇒ состояние не изменилось |
+
 ## test/fork/ControllerDevnetForkTest.sol
 
 Девнет: Sepolia-форк на anvil (chain id 1337) с каноническими Uniswap V4, mock USDG. Запуск `make devnet-tests`, без `DEVNET_RPC` пропускается.
@@ -226,6 +239,12 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | `test_NotifyFees_AboveThreshold_ConvertsWholePending` | 1 000 USDG сразу выше порога, стейкеров нет. | Конвертируется весь pending | `epoch = 1`, pending 0, создатель 1 200 AAPL |
 | `test_NotifyFees_ThresholdZero_NeverConvertsAutomatically` | Порог 0. | 0 = автоконвертация выключена | `epoch = 0`, `pendingUSDG = 1 000e6` |
 | `test_NotifyFees_Paused_SkipsConversion` | Порог достигнут на паузе. | Пауза пропускает автоконвертацию без фиксации сбоя | `epoch = 0`, pending 100e6, `lastConversionFailure = 0`; после снятия паузы ручная конвертация → `epoch = 1` |
+| `test_ConversionGasRequired_ThresholdOff_ReturnsZero` | Порог 0 | Без порога автоконвертации нет, газ не нужен | 0 |
+| `test_ConversionGasRequired_BelowThreshold_ReturnsBudget` | Накоплено 40 при пороге 100, активы AAPL/WBTC | Газ нужен и до порога: оценка не устаревает, пока чужие сделки набирают порог | `CONVERSION_BASE_GAS + 2 × CONVERSION_GAS_PER_SWAP` |
+| `test_ConversionGasRequired_UsdgAsset_NoSwapCounted` | Единственный актив USDG | USDG не меняется через адаптер | `CONVERSION_BASE_GAS` |
+| `test_ConversionGasRequired_PausedOrCoolingDown_StillBudget` | Кулдаун после неудачной конвертации, затем пауза | Пауза и кулдаун не снижают требование: они могут закончиться между оценкой и сделкой | Полный бюджет в обоих случаях |
+| `test_ConversionGasRequired_UnknownMeme_ReturnsZero` | Незарегистрированный мем | Неизвестный мем не требует газа | 0 |
+| `testFuzz_ConversionGasRequired_StaticAndCoversEveryConversion` (fuzz) | Любые порог, накопленное и входящая сумма | Требование не зависит от накопленного; каждая конвертация была покрыта газом | Значение до и после зачисления одинаковое; эпоха закрылась ⇒ требование > 0 |
 | `test_NotifyFees_ConversionReverts_KeepsCreditAndStartsCooldown` | Автоконвертация падает внутри `notifyFees`. | Сбой свапа не ломает хук и не теряет кредит | Событие `ConversionFailed`; `epoch = 0`; 90e6/10e6 сохранены; `lastConversionFailure = now`; `accounted = баланс = 100e6`; кредит alice 90e6 |
 | `test_NotifyFees_WithinCooldown_DoesNotRetry` | Повтор автоконвертации в период cooldown и после. | Нет повторов во время cooldown | За 1 с до конца: `epoch = 0`, pending 101e6; после: `epoch = 1`, pending 0 |
 | `test_NotifyFees_ConversionRevertsWithoutData_NoCooldown` | Revert без данных (как out-of-gas). | Пустой revert не включает cooldown | `ConversionFailed(meme, "")`, `lastConversionFailure = 0`; следующий notify → `epoch = 1` |
@@ -256,15 +275,15 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | `test_Initialize_Twice_Reverts` | Повторный `initialize` на прокси. | Однократная инициализация | Revert `InvalidInitialization` |
 | `test_Initialize_Implementation_Reverts` | `initialize` на самой реализации. | Реализация заблокирована | Revert `InvalidInitialization` |
 | `test_Initialize_ZeroUsdg_Reverts` | Инициализация с нулевым USDG. | — | Revert `ZeroAddress` |
-| `test_Reinitialize_SameVersion_Reverts` | `reinitialize` на той же версии. | Реинициализация только при повышении версии | Revert `InvalidInitialization` |
+| `test_Reinitialize_SameVersion_Reverts` | `reinitialize` до текущей `VAULT_VERSION` и повторно. | Реинициализация один раз на версию | Первый вызов поднимает версию до `VAULT_VERSION`, второй — revert `InvalidInitialization` |
 
 ### Апгрейд
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
-| `test_UpgradeVault_SameVersion_SwapsImplementation` | Апгрейд на новую реализацию той же версии. | Состояние сохраняется | Реализация заменена, версия 1, owner прежний |
-| `test_UpgradeVault_VersionBump_RunsReinitialize` | Апгрейд на V2. | Реинициализация выполняется один раз | Версия 2, owner/usdg сохранены; повторный `reinitialize` → revert `InvalidInitialization` |
-| `test_UpgradeVault_Downgrade_Reverts` | Откат с V2 на V1. | Запрет даунгрейда | Revert `VersionDowngrade(2, 1)` |
+| `test_UpgradeVault_SameVersion_SwapsImplementation` | Апгрейд до текущей версии, затем ещё раз на реализацию той же версии. | Состояние сохраняется, повторный апгрейд не реинициализирует | Реализация заменена, версия = `VAULT_VERSION`, owner сохранён |
+| `test_UpgradeVault_VersionBump_RunsReinitialize` | Апгрейд на мок следующей версии (`VAULT_VERSION + 1`). | Реинициализация выполняется один раз | Версия `VAULT_VERSION + 1`, owner/usdg сохранены; повторный `reinitialize` — revert |
+| `test_UpgradeVault_Downgrade_Reverts` | Откат с `VAULT_VERSION + 1` на текущую. | Запрет даунгрейда | Revert `VersionDowngrade(VAULT_VERSION + 1, VAULT_VERSION)` |
 | `test_UpgradeVault_NotProxyAdminOwner_Reverts` | Апгрейд от имени не владельца ProxyAdmin. | Апгрейд только владельцем ProxyAdmin | Revert `NotProxyAdminOwner(upgradeScript, alice)` |
 | `test_UpgradeVault_WrongProxyAdmin_Reverts` | Передан чужой адрес ProxyAdmin. | — | Revert `ProxyAdminMismatch(alice, proxyAdmin)` |
 | `test_UpgradeAndCall_NotAdminOwner_Reverts` | Прямой `upgradeAndCall` от owner хранилища. | Owner хранилища ≠ право апгрейда | Revert `OwnableUnauthorizedAccount(owner)` |

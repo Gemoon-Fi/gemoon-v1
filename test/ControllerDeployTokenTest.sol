@@ -11,6 +11,7 @@ import {TickMath} from "@uniswap-v4-core/libraries/TickMath.sol";
 import {PoolKey} from "@uniswap-v4-core/types/PoolKey.sol";
 import {Currency} from "@uniswap-v4-core/types/Currency.sol";
 import {IHooks} from "@uniswap-v4-core/interfaces/IHooks.sol";
+import {CustomRevert} from "@uniswap-v4-core/libraries/CustomRevert.sol";
 import {PositionManager} from "@uniswap-v4-periphery/PositionManager.sol";
 import {IPositionDescriptor} from "@uniswap-v4-periphery/interfaces/IPositionDescriptor.sol";
 import {IWETH9} from "@uniswap-v4-periphery/interfaces/external/IWETH9.sol";
@@ -971,5 +972,222 @@ contract ControllerDeployTokenTest is Test {
         uint256 costB = _deployWithDevBuy(125, b).pairIn;
 
         assertLe(costA, costB);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Conversion gas: a swap that starts the vault conversion carries enough gas for it, or reverts
+    // ---------------------------------------------------------------------------------------------
+
+    /// @dev Meme whose next swap starts the conversion: a first buy funds the PoolManager with pair
+    /// token (its own fee stays accrued), then the vault threshold is set to 1 USDG.
+    function _memeAboutToConvert() internal returns (address token) {
+        (token,) = _deployMeme();
+        _buyMeme(token, 1_000 * PAIR_UNIT);
+        vm.prank(address(script));
+        vault.setConversionThreshold(1 * PAIR_UNIT);
+    }
+
+    /// @dev Buys as `trader` through the test router with an explicit gas limit, catching a revert.
+    function _buyWithGas(address token, uint256 usdgIn, uint256 gasLimit)
+        internal
+        returns (bool ok, bytes memory reason)
+    {
+        usdg.mint(trader, usdgIn);
+        PoolKey memory key = _poolKey(token);
+        bool usdgIs0 = Currency.unwrap(key.currency0) == address(usdg);
+        vm.startPrank(trader);
+        usdg.approve(address(swapRouter), usdgIn);
+        try swapRouter.swap{gas: gasLimit}(
+            key,
+            SwapParams({
+                zeroForOne: usdgIs0,
+                amountSpecified: -int256(usdgIn),
+                sqrtPriceLimitX96: usdgIs0 ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+            }),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            bytes("")
+        ) {
+            ok = true;
+        } catch (bytes memory r) {
+            reason = r;
+        }
+        vm.stopPrank();
+    }
+
+    /// @dev Selector of the hook's own revert inside the PoolManager `WrappedError`, zero if the
+    /// revert is something else (e.g. a plain out-of-gas).
+    function _hookRevertSelector(bytes memory reason) internal pure returns (bytes4) {
+        if (reason.length < 4 || bytes4(reason) != CustomRevert.WrappedError.selector) return 0;
+        bytes memory args = new bytes(reason.length - 4);
+        for (uint256 i; i < args.length; ++i) {
+            args[i] = reason[i + 4];
+        }
+        (,, bytes memory inner,) = abi.decode(args, (address, bytes4, bytes, bytes));
+        return inner.length < 4 ? bytes4(0) : bytes4(inner);
+    }
+
+    function test_Swap_CrossesThreshold_EnoughGas_ConvertsInSameSwap() external {
+        address token = _memeAboutToConvert();
+
+        (bool ok,) = _buyWithGas(token, 100 * PAIR_UNIT, 5_000_000);
+
+        assertTrue(ok, "swap succeeds");
+        assertEq(vault.vaultInfo(token).epoch, 1, "epoch closed in the swap");
+        assertEq(vault.pendingUSDG(token), 0, "everything converted");
+    }
+
+    function test_Swap_CrossesThreshold_LowGas_RevertsWithNotEnoughGasForConversion() external {
+        address token = _memeAboutToConvert();
+        uint256 accruedBefore = hook.pendingFees(token);
+
+        (bool ok, bytes memory reason) = _buyWithGas(token, 100 * PAIR_UNIT, 300_000);
+
+        assertFalse(ok, "swap reverts");
+        assertEq(
+            _hookRevertSelector(reason),
+            IHookManager.NotEnoughGasForConversion.selector,
+            "reverted by the gas guard, not by a plain out-of-gas"
+        );
+        assertEq(vault.vaultInfo(token).epoch, 0, "nothing converted");
+        assertEq(hook.pendingFees(token), accruedBefore, "nothing charged");
+        assertEq(usdg.balanceOf(trader), 100 * PAIR_UNIT, "trader keeps the input");
+    }
+
+    /// @dev Sells trigger the conversion exactly like buys: every swap ends with the payout.
+    function test_Swap_SellCrossesThreshold_ConvertsInSameSwap() external {
+        address token = _memeAboutToConvert();
+        (bool ok,) = _buyWithGas(token, 1_000 * PAIR_UNIT, 5_000_000);
+        assertTrue(ok);
+        assertEq(vault.vaultInfo(token).epoch, 1, "the buy converted");
+        assertEq(vault.pendingUSDG(token), 0);
+
+        uint256 memeIn = IERC20(token).balanceOf(trader) / 2;
+        vm.recordLogs();
+        _swap(token, false, -int256(memeIn), bytes(""));
+        Trade memory t = _memeSwapped();
+
+        assertFalse(t.isBuy, "a sell");
+        assertGt(t.fee * 2 / 3, 1 * PAIR_UNIT, "vault part of the sell fee crosses 1 USDG");
+        assertEq(vault.vaultInfo(token).epoch, 2, "the sell converted");
+        assertEq(vault.pendingUSDG(token), 0, "everything converted");
+    }
+
+    /// @dev A sell with too little gas reverts like a buy.
+    function test_Swap_SellLowGas_RevertsWithNotEnoughGasForConversion() external {
+        address token = _memeAboutToConvert();
+        (bool ok,) = _buyWithGas(token, 1_000 * PAIR_UNIT, 5_000_000);
+        assertTrue(ok);
+
+        PoolKey memory key = _poolKey(token);
+        bool usdgIs0 = Currency.unwrap(key.currency0) == address(usdg);
+        uint256 memeIn = IERC20(token).balanceOf(trader) / 2;
+        vm.startPrank(trader);
+        IERC20(token).approve(address(swapRouter), memeIn);
+        bytes memory reason;
+        try swapRouter.swap{gas: 300_000}(
+            key,
+            SwapParams({
+                zeroForOne: !usdgIs0,
+                amountSpecified: -int256(memeIn),
+                sqrtPriceLimitX96: !usdgIs0 ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+            }),
+            PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
+            bytes("")
+        ) {
+            ok = true;
+        } catch (bytes memory r) {
+            ok = false;
+            reason = r;
+        }
+        vm.stopPrank();
+
+        assertFalse(ok);
+        assertEq(_hookRevertSelector(reason), IHookManager.NotEnoughGasForConversion.selector);
+    }
+
+    /// @dev The requirement holds below the threshold too, so a swap estimated now cannot fail
+    /// later because other swaps filled the threshold in between.
+    function test_Swap_BelowThreshold_LowGas_RevertsToo() external {
+        address token = _memeAboutToConvert();
+        vm.prank(address(script));
+        vault.setConversionThreshold(1_000_000 * PAIR_UNIT);
+
+        (bool ok, bytes memory reason) = _buyWithGas(token, 100 * PAIR_UNIT, 300_000);
+
+        assertFalse(ok);
+        assertEq(_hookRevertSelector(reason), IHookManager.NotEnoughGasForConversion.selector);
+    }
+
+    /// @dev With automatic conversion off (threshold 0) nothing extra is required.
+    function test_Swap_ConversionOff_LowGas_Succeeds() external {
+        address token = _memeAboutToConvert();
+        vm.prank(address(script));
+        vault.setConversionThreshold(0);
+
+        (bool ok,) = _buyWithGas(token, 100 * PAIR_UNIT, 300_000);
+
+        assertTrue(ok, "no conversion possible, no extra gas required");
+    }
+
+    /// @dev Smallest gas limit at which the buy succeeds in the current state, like
+    /// `eth_estimateGas`. State is restored afterwards.
+    function _minGasToBuy(address token, uint256 usdgIn) internal returns (uint256 high) {
+        uint256 low = 100_000;
+        high = 5_000_000;
+        while (high - low > 1_000) {
+            uint256 mid = (low + high) / 2;
+            uint256 snap = vm.snapshotState();
+            (bool ok,) = _buyWithGas(token, usdgIn, mid);
+            vm.revertToState(snap);
+            if (ok) high = mid;
+            else low = mid;
+        }
+    }
+
+    /// @dev The race from review: the swap is estimated while the threshold is far, other swaps
+    /// fill it to just below before ours lands, ours crosses it. With the stale estimate it still
+    /// succeeds and converts.
+    function test_Swap_EstimatedBelowThreshold_OthersFillIt_EstimateStillEnough() external {
+        address token = _memeAboutToConvert();
+        (bool ok,) = _buyWithGas(token, 100 * PAIR_UNIT, 5_000_000);
+        assertTrue(ok);
+        assertEq(vault.vaultInfo(token).epoch, 1, "fresh epoch");
+        // vault part: 5000 USDG buy -> 41.67, our 100 USDG buy -> 0.83: only ours crosses 42
+        vm.prank(address(script));
+        vault.setConversionThreshold(42 * PAIR_UNIT);
+
+        uint256 estimate = _minGasToBuy(token, 100 * PAIR_UNIT);
+        (ok,) = _buyWithGas(token, 5_000 * PAIR_UNIT, 5_000_000);
+        assertTrue(ok);
+        assertEq(vault.vaultInfo(token).epoch, 1, "others stay below the threshold");
+
+        (ok,) = _buyWithGas(token, 100 * PAIR_UNIT, estimate);
+
+        assertTrue(ok, "stale estimate still lands");
+        assertEq(vault.vaultInfo(token).epoch, 2, "and converts");
+    }
+
+    /// @dev Invariant: whatever gas limit the swapper picks, a swap that crosses the threshold
+    /// either closes the epoch or reverts as a whole. A swap never succeeds while its conversion
+    /// silently runs out of gas, which is what made gas estimation skip conversions before.
+    function testFuzz_Swap_CrossesThreshold_AnyGas_ConvertsOrReverts(uint256 gasLimit) external {
+        gasLimit = bound(gasLimit, 150_000, 3_000_000);
+        address token = _memeAboutToConvert();
+        uint256 accruedBefore = hook.pendingFees(token);
+
+        vm.recordLogs();
+        (bool ok,) = _buyWithGas(token, 100 * PAIR_UNIT, gasLimit);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+
+        if (ok) {
+            assertEq(vault.vaultInfo(token).epoch, 1, "a successful swap converts");
+            bytes32 failed = keccak256("ConversionFailed(address,bytes)");
+            for (uint256 i; i < logs.length; ++i) {
+                assertTrue(logs[i].topics[0] != failed, "no silent conversion failure");
+            }
+        } else {
+            assertEq(vault.vaultInfo(token).epoch, 0, "reverted swap changes nothing");
+            assertEq(hook.pendingFees(token), accruedBefore, "no fee charged");
+        }
     }
 }

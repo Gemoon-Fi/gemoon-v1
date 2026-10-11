@@ -873,6 +873,75 @@ contract VaultTest is VaultFixture {
         assertEq(vault.vaultInfo(address(meme)).epoch, 1);
     }
 
+    // ------------------------------------------------------------------ conversion gas
+
+    function _gasFor(uint256 swaps) internal view returns (uint256) {
+        return vault.CONVERSION_BASE_GAS() + swaps * vault.CONVERSION_GAS_PER_SWAP();
+    }
+
+    function test_ConversionGasRequired_ThresholdOff_ReturnsZero() external {
+        _register(_assets6040());
+        assertEq(vault.conversionGasRequired(address(meme)), 0);
+    }
+
+    /// @dev Required before the threshold is reached too: a swap estimated now may land after
+    /// other swaps filled the threshold.
+    function test_ConversionGasRequired_BelowThreshold_ReturnsBudget() external {
+        _register(_assets6040());
+        _setThreshold(100e6);
+        _notify(40e6);
+        assertEq(vault.conversionGasRequired(address(meme)), _gasFor(2), "AAPL + WBTC");
+    }
+
+    function test_ConversionGasRequired_UsdgAsset_NoSwapCounted() external {
+        _register(_assetsUsdgOnly());
+        _setThreshold(100e6);
+        assertEq(vault.conversionGasRequired(address(meme)), _gasFor(0));
+    }
+
+    /// @dev Pause and cooldown do not lower the requirement either: they can end between the gas
+    /// estimate and the swap.
+    function test_ConversionGasRequired_PausedOrCoolingDown_StillBudget() external {
+        _register(_assets6040());
+        _setThreshold(100e6);
+        adapter.setShouldRevert(true);
+        _notify(100e6); // conversion fails with a reason: cooldown starts
+        assertEq(vault.conversionGasRequired(address(meme)), _gasFor(2), "cooling down");
+
+        vm.prank(owner);
+        vault.setPaused(true);
+        assertEq(vault.conversionGasRequired(address(meme)), _gasFor(2), "paused");
+    }
+
+    function test_ConversionGasRequired_UnknownMeme_ReturnsZero() external {
+        _setThreshold(1);
+        assertEq(vault.conversionGasRequired(makeAddr("unknown")), 0);
+    }
+
+    /// @dev Invariants: the requirement never depends on the pending amount (so a gas estimate
+    /// cannot go stale while other swaps fill the threshold), and whenever `notifyFees` does
+    /// convert, the requirement was non-zero.
+    function testFuzz_ConversionGasRequired_StaticAndCoversEveryConversion(
+        uint256 threshold,
+        uint256 pending,
+        uint256 incoming
+    ) external {
+        threshold = bound(threshold, 1, 1e12);
+        pending = bound(pending, 0, threshold - 1);
+        incoming = bound(incoming, 1, 2e12);
+        _register(_assets6040());
+        _setThreshold(threshold);
+        uint256 before = vault.conversionGasRequired(address(meme));
+        if (pending != 0) _notify(pending);
+        assertEq(vault.conversionGasRequired(address(meme)), before, "independent of pending");
+
+        _notify(incoming);
+        if (vault.vaultInfo(address(meme)).epoch == 1) {
+            assertGt(before, 0, "every conversion was covered");
+        }
+        assertEq(before, _gasFor(2));
+    }
+
     function test_NotifyFees_ConversionReverts_KeepsCreditAndStartsCooldown()
         external
     {
