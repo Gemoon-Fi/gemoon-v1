@@ -29,12 +29,14 @@ upgrade-controller-proxy:
 	forge script --via-ir ./script/GemoonDeploy.sol:ProxyGemoonControllerUpgrade --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
 
 # Vault allowlist of reward assets: make set-asset-allowed VAULT=0x.. ASSET=0x.. [ALLOWED=false]
+# or a list: make set-asset-allowed VAULT=0x.. FILE=tools/scripts/robinhood-assets.csv [DRY_RUN=1]
 set-asset-allowed:
-	bash ./tools/scripts/set-asset-allowed.sh $(VAULT) $(ASSET) $(ALLOWED)
+	bash ./tools/scripts/set-asset-allowed.sh $(VAULT) $(if $(FILE),--file $(abspath $(FILE)),$(ASSET) $(ALLOWED)) $(if $(DRY_RUN),--dry-run)
 
 # Swap route on the adapter: make set-route ADAPTER=0x.. ASSET=0x.. [FEE=3000] [SLIPPAGE=100]
+# or a list: make set-route ADAPTER=0x.. FILE=tools/scripts/robinhood-assets.csv [SLIPPAGE=100] [DRY_RUN=1]
 set-route:
-	bash ./tools/scripts/set-route.sh $(ADAPTER) $(ASSET) $(FEE) $(SLIPPAGE)
+	bash ./tools/scripts/set-route.sh $(ADAPTER) $(if $(FILE),--file $(abspath $(FILE)) $(if $(SLIPPAGE),--slippage $(SLIPPAGE)) $(if $(DRY_RUN),--dry-run),$(ASSET) $(FEE) $(SLIPPAGE))
 
 # Read-only: checks that controller, hook and vault point at each other.
 verify-wiring:
