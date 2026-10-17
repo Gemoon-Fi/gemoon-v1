@@ -6,6 +6,7 @@ import {GemoonController} from "../src/contracts/Gemoon.sol";
 import {HookManager} from "../src/contracts/hooks/HookManager.sol";
 import {Vault} from "../src/contracts/vault/Vault.sol";
 import {UniswapV3SwapAdapter} from "../src/contracts/adapters/UniswapV3SwapAdapter.sol";
+import {GmoonReferrals} from "../src/contracts/Referrals.sol";
 import "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
 import "@openzeppelin/contracts/proxy/transparent/ProxyAdmin.sol";
 import "@oz-upgrades/Upgrades.sol";
@@ -76,6 +77,15 @@ abstract contract GemoonDeployBase is Script {
         address proxyAdminOwner;
         address poolManager;
         address pairToken;
+    }
+
+    struct ReferralsDeployParams {
+        address owner;
+        address proxyAdminOwner;
+        address pairToken;
+        address controller;
+        address hook;
+        uint256 refShareBips;
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -243,6 +253,62 @@ abstract contract GemoonDeployBase is Script {
                 )
             )
         );
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Referrals
+    // ---------------------------------------------------------------------------------------------
+
+    /// @notice Deploys a Referrals proxy, fully configured by `initialize`.
+    /// @dev `params.owner` is the owner right away (Ownable2Step init sets it directly). Zero
+    /// `controller` / `hook` are skipped and can be set later by the owner.
+    /// @param params     Referrals configuration.
+    /// @return referrals Referrals proxy.
+    function deployReferrals(ReferralsDeployParams memory params)
+        public
+        returns (GmoonReferrals referrals)
+    {
+        GmoonReferrals implementation = new GmoonReferrals();
+        referrals = GmoonReferrals(
+            address(
+                new TransparentUpgradeableProxy(
+                    address(implementation),
+                    params.proxyAdminOwner,
+                    abi.encodeCall(
+                        GmoonReferrals.initialize,
+                        (
+                            params.owner,
+                            params.pairToken,
+                            params.controller,
+                            params.hook,
+                            params.refShareBips
+                        )
+                    )
+                )
+            )
+        );
+    }
+
+    /// @notice Reverts unless the referrals contract is the protocol recipient of the hook and
+    /// points at the same controller and hook, which in turn point at it.
+    function checkReferralsWiring(
+        GemoonController controller,
+        HookManager hook,
+        GmoonReferrals referrals
+    ) public view {
+        if (address(controller.referrals()) != address(referrals)) {
+            revert WiringMismatch("controller.referrals");
+        }
+        if (hook.protocolRecipient() != address(referrals)) {
+            revert WiringMismatch("hook.protocolRecipient");
+        }
+        if (referrals.hook() != address(hook)) revert WiringMismatch("referrals.hook");
+        if (referrals.controller() != address(controller)) {
+            revert WiringMismatch("referrals.controller");
+        }
+        if (referrals.pairToken() != Currency.unwrap(hook.pairToken())) {
+            revert WiringMismatch("referrals.pairToken");
+        }
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -688,7 +754,8 @@ contract ProxyGemoonControllerUpgrade is Script {
 }
 
 /// @notice Read-only check that a deployment is wired correctly. No broadcast.
-/// @dev Env: CONTROLLER_PROXY_ADDRESS, HOOK_PROXY_ADDRESS, VAULT_PROXY_ADDRESS.
+/// @dev Env: CONTROLLER_PROXY_ADDRESS, HOOK_PROXY_ADDRESS, VAULT_PROXY_ADDRESS,
+/// REFERRALS_PROXY_ADDRESS (optional: checked only if set).
 contract VerifyWiring is GemoonDeployBase {
     function run() external view {
         GemoonController controller =
@@ -711,6 +778,15 @@ contract VerifyWiring is GemoonDeployBase {
         console.log("CONTROLLER POSITION MANAGER: ", address(controller.positionManager()));
         console.log("CONTROLLER PERMIT2: ", address(controller.permit2()));
         console.log("PAIR TOKEN: ", vault.usdg());
+
+        address referralsAddress = _envAddressOr("REFERRALS_PROXY_ADDRESS", address(0));
+        if (referralsAddress != address(0)) {
+            GmoonReferrals referrals = GmoonReferrals(referralsAddress);
+            checkReferralsWiring(controller, hook, referrals);
+            _logProxy("REFERRALS", referralsAddress);
+            console.log("REFERRALS OWNER: ", referrals.owner());
+            console.log("REFERRALS REF SHARE BIPS: ", referrals.refShareBips());
+        }
         console.log("WIRING OK");
     }
 }
@@ -748,5 +824,138 @@ contract DeployUniswapV3SwapAdapter is GemoonDeployBase {
         console.log("VAULT: ", vault);
         console.log("USDG: ", usdg);
         console.log("TWAP WINDOW: ", uint256(window));
+    }
+}
+
+/// @notice Deploys the Referrals contract behind a proxy, e.g. for an existing deployment.
+/// @dev Env:
+///  - USDG_ADDRESS                 pair token the fees arrive in (required)
+///  - REFERRALS_REF_SHARE_BIPS     share of the protocol fee credited to referrers, in bips of the
+///                                 protocol fee (default: 1000, 10%)
+///  - GEMOON_OWNER                 owner, withdraws the protocol part (default: broadcaster)
+///  - GEMOON_PROXY_ADMIN_OWNER     owner of the ProxyAdmin, i.e. who can upgrade (default: GEMOON_OWNER)
+///  - CONTROLLER_PROXY_ADDRESS     GemoonController proxy (optional, can be set later)
+///  - HOOK_PROXY_ADDRESS           HookManager proxy (optional, can be set later); its pair token
+///                                 must equal USDG_ADDRESS
+/// After the run: `make wire-referrals` with REFERRALS_PROXY_ADDRESS set (owner of the controller
+/// and the hook), so the hook pays the protocol share here and the controller registers new Memes.
+contract DeployReferrals is GemoonDeployBase {
+    function run() external {
+        vm.startBroadcast();
+        (, address deployer,) = vm.readCallers();
+
+        address owner = _envAddressOr("GEMOON_OWNER", deployer);
+        ReferralsDeployParams memory params = ReferralsDeployParams({
+            owner: owner,
+            proxyAdminOwner: _envAddressOr("GEMOON_PROXY_ADMIN_OWNER", owner),
+            pairToken: vm.envAddress("USDG_ADDRESS"),
+            controller: _envAddressOr("CONTROLLER_PROXY_ADDRESS", address(0)),
+            hook: _envAddressOr("HOOK_PROXY_ADDRESS", address(0)),
+            refShareBips: _envUintOr("REFERRALS_REF_SHARE_BIPS", 1_000)
+        });
+        if (
+            params.hook != address(0)
+                && Currency.unwrap(HookManager(payable(params.hook)).pairToken()) != params.pairToken
+        ) revert WiringMismatch("hook.pairToken != USDG_ADDRESS");
+
+        GmoonReferrals referrals = deployReferrals(params);
+
+        vm.stopBroadcast();
+
+        _logProxy("REFERRALS", address(referrals));
+        console.log("REFERRALS OWNER: ", params.owner);
+        console.log("PAIR TOKEN: ", params.pairToken);
+        console.log("CONTROLLER: ", params.controller);
+        console.log("HOOK: ", params.hook);
+        console.log("REF SHARE BIPS: ", params.refShareBips);
+    }
+}
+
+/// @notice Points the controller and the hook at the Referrals contract and checks the wiring.
+/// @dev Env: REFERRALS_PROXY_ADDRESS, CONTROLLER_PROXY_ADDRESS, HOOK_PROXY_ADDRESS. The broadcaster
+/// must own the controller and the hook. From now on the protocol share of every fee goes to the
+/// referrals contract instead of the previous protocol recipient.
+contract WireReferrals is GemoonDeployBase {
+    function run() external {
+        GmoonReferrals referrals = GmoonReferrals(vm.envAddress("REFERRALS_PROXY_ADDRESS"));
+        GemoonController controller =
+            GemoonController(payable(vm.envAddress("CONTROLLER_PROXY_ADDRESS")));
+        HookManager hook = HookManager(payable(vm.envAddress("HOOK_PROXY_ADDRESS")));
+
+        vm.startBroadcast();
+        wireReferrals(controller, hook, referrals);
+        vm.stopBroadcast();
+
+        console.log("PREVIOUS PROTOCOL RECIPIENT REPLACED BY: ", address(referrals));
+        console.log("REFERRALS WIRING OK");
+    }
+
+    /// @notice Sets the referrals on the controller and as protocol recipient of the hook.
+    /// @dev Must be called by the owner of both. Reverts if the referrals contract does not point
+    /// at the same controller and hook.
+    function wireReferrals(
+        GemoonController controller,
+        HookManager hook,
+        GmoonReferrals referrals
+    ) public {
+        controller.setReferrals(address(referrals));
+        hook.setProtocolRecipient(address(referrals));
+        checkReferralsWiring(controller, hook, referrals);
+    }
+}
+
+/// @notice Upgrades the Referrals proxy to a freshly deployed implementation.
+/// @dev Env:
+///  - REFERRALS_PROXY_ADDRESS        Referrals proxy (required)
+///  - REFERRALS_PROXY_ADMIN_ADDRESS  ProxyAdmin of the Referrals proxy (required)
+/// The broadcaster must own the ProxyAdmin. If the new implementation bumps `REFERRALS_VERSION`,
+/// `reinitialize` runs atomically with the upgrade. Storage must stay append-only, see
+/// `ProxyVaultUpgrade`.
+contract ProxyReferralsUpgrade is GemoonDeployBase {
+    function run() external {
+        address proxy = vm.envAddress("REFERRALS_PROXY_ADDRESS");
+        address proxyAdmin = vm.envAddress("REFERRALS_PROXY_ADMIN_ADDRESS");
+
+        vm.startBroadcast();
+        (, address sender,) = vm.readCallers();
+        address newImplementation = address(new GmoonReferrals());
+        upgradeReferrals(sender, proxy, proxyAdmin, newImplementation);
+        vm.stopBroadcast();
+
+        _logProxy("REFERRALS", proxy);
+        console.log("REFERRALS VERSION: ", uint256(GmoonReferrals(proxy).getVersion()));
+    }
+
+    /// @notice Upgrades `proxy` to `newImplementation`. Must be called by `sender`.
+    /// @dev Reverts if the proxy admin or its owner do not match, if the version goes down, or if
+    /// owner / pair token / owed total / implementation are not as expected after the upgrade.
+    function upgradeReferrals(
+        address sender,
+        address proxy,
+        address proxyAdmin,
+        address newImplementation
+    ) public {
+        _checkProxyAdmin(sender, proxy, proxyAdmin);
+
+        GmoonReferrals referrals = GmoonReferrals(proxy);
+        address ownerBefore = referrals.owner();
+        address pairTokenBefore = referrals.pairToken();
+        uint256 pendingBefore = referrals.totalPending();
+
+        uint64 current = _initializedVersion(proxy);
+        uint64 next = GmoonReferrals(newImplementation).getVersion();
+        if (next < current) revert VersionDowngrade(current, next);
+        bytes memory data =
+            next > current ? abi.encodeCall(GmoonReferrals.reinitialize, ()) : bytes("");
+
+        ProxyAdmin(proxyAdmin).upgradeAndCall(
+            ITransparentUpgradeableProxy(proxy), newImplementation, data
+        );
+
+        if (
+            Upgrades.getImplementationAddress(proxy) != newImplementation
+                || referrals.owner() != ownerBefore || referrals.pairToken() != pairTokenBefore
+                || referrals.totalPending() != pendingBefore
+        ) revert StateChanged();
     }
 }

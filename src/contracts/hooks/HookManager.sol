@@ -26,6 +26,7 @@ import {
     Ownable2StepUpgradeable
 } from "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
 import {IVault} from "../interfaces/IVault.sol";
+import {IProtocolFeeReceiver} from "../interfaces/IReferrals.sol";
 import {IHookManager} from "../interfaces/IHookManager.sol";
 import {SignedMath} from "@openzeppelin/contracts/utils/math/SignedMath.sol";
 
@@ -48,9 +49,9 @@ import {SignedMath} from "@openzeppelin/contracts/utils/math/SignedMath.sol";
 ///    PoolManager as ERC6909 claims owned by this hook (`poolManager.mint`), and per Meme in
 ///    `accrued` (protocol part of it in `accruedProtocol`).
 ///  - end of every swap (`_afterSwap`): the claims accrued for the Meme of the pool are paid out as
-///    real tokens, `accruedProtocol` to the protocol recipient and the rest to the vault, and the
-///    vault is notified
-///    (`IVault.notifyFees`). The swapper pays the gas. The payout runs inside try/catch: if it
+///    real tokens, `accruedProtocol` to the protocol recipient and the rest to the vault. A protocol
+///    recipient with code (the Referrals contract) is notified (`IProtocolFeeReceiver.notifyFee`),
+///    an EOA is not; the vault is always notified (`IVault.notifyFees`). The swapper pays the gas. The payout runs inside try/catch: if it
 ///    fails, the swap still succeeds and the fee stays accrued until the next successful payout.
 ///  - `distribute(meme)`: manual fallback that pays out whatever is accrued for `meme`.
 contract HookManager is
@@ -88,8 +89,8 @@ contract HookManager is
     uint256 public constant MIN_MEME_FEE_BIPS = 100;
     uint256 public constant MAX_MEME_FEE_BIPS = 1_000;
     /// @notice Gas of the payout itself on top of the vault conversion: claims burn, two takes,
-    ///         `notifyFees` bookkeeping.
-    uint256 public constant PAYOUT_GAS_OVERHEAD = 150_000;
+    ///         protocol recipient `notifyFee` and vault `notifyFees` bookkeeping.
+    uint256 public constant PAYOUT_GAS_OVERHEAD = 220_000;
 
     Currency private immutable i_pairToken;
 
@@ -484,8 +485,10 @@ contract HookManager is
     }
 
     /// @dev claims -> positive delta for the hook -> real tokens out -> delta back to zero,
-    /// then the vault is told which Meme the fees belong to. A revert anywhere (including in
-    /// `notifyFees`) rolls the whole payout back, `accrued` included.
+    /// then the protocol recipient (if it is a contract) and the vault are told which Meme the fees
+    /// belong to. A revert anywhere (including in `notifyFee` / `notifyFees`) rolls the whole payout
+    /// back, `accrued` included. So a contract protocol recipient MUST implement
+    /// `IProtocolFeeReceiver`, otherwise every payout fails.
     /// Requires the PoolManager to be unlocked.
     function _payout(address meme) internal {
         uint256 total = accrued[meme];
@@ -503,6 +506,8 @@ contract HookManager is
         poolManager.burn(address(this), i_pairToken.toId(), total);
         poolManager.take(i_pairToken, protocol_, toProtocol);
         poolManager.take(i_pairToken, vault_, toVault);
+        if (toProtocol != 0 && protocol_.code.length != 0)
+            IProtocolFeeReceiver(protocol_).notifyFee(meme, toProtocol);
         if (toVault != 0) IVault(vault_).notifyFees(meme, toVault);
 
         emit FeesDistributed(meme, protocol_, vault_, toProtocol, toVault);

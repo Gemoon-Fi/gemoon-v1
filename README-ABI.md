@@ -10,12 +10,14 @@
 | GemoonController | `IGemoonController.json` | |
 | Vault | `IVault.json` | |
 | HookManager | `IHookManager.json` | |
+| GmoonReferrals | `IReferrals.json` | |
 | PoolManager (Uniswap V4) | `IPoolManager.json` | |
 | USDG (pair-токен) | стандартный ERC20 | |
 | Токен мема | `IGemoonToken.json` | адрес из `TokenCreated` |
+| GemoonLens (батч-чтения) | `GemoonLens.json` | `0xf5e9342Ffe373D9a3B4a986870cbC6E66dDCbF15` (devnet 1488, блок 84351591) |
 
-Все контракты, кроме токенов мемов, стоят за прокси: адреса постоянные, версия читается через
-`getVersion()` (`IGemoonable.json`).
+Все контракты, кроме токенов мемов и GemoonLens, стоят за прокси: адреса постоянные, версия читается через
+`getVersion()` (`IGemoonable.json`). GemoonLens без прокси: новая версия получает новый адрес.
 
 ## Что нужно знать сразу
 
@@ -27,6 +29,49 @@
   это в расчёт минимального выхода, ставку на момент сделки даёт `currentFeeBips(meme)`.
 - Награды стейкерам и создателю выплачиваются не в USDG, а в наградных активах мема, и только
   после конвертации, которую периодически запускает keeper протокола.
+
+## Читать батчами: GemoonLens
+
+Вместо десятков `eth_call` на токен — один вызов на экран. Все функции `view`, результат в порядке
+входного массива, дубликаты допустимы, сбой одного адреса не ломает батч.
+
+```solidity
+tokens(address[] memes, address account) returns (TokenView[])   // meta + market + vault + position
+markets(address[] memes) returns (TokenMarket[], uint256[] staked) // без строк, для обновления цен
+totalStaked(address[] memes) returns (uint256[])
+quotes(address[] assets, uint256 amountIn) returns (uint256[] amounts, bool[] ok) // USDG -> ассет
+protocol() returns (usdg, usdgDecimals, usdgSymbol, swapAdapter, conversionThreshold,
+                    conversionCooldown, hook, poolManager)
+creator(address meme) returns (creatorOf, address[] assets, uint256[] accrued)
+creators(address[] memes) returns (CreatorRewards[])  // { creatorOf, ok, assets[], accrued[] }
+```
+
+`TokenView = { meme, meta, market, vault, position }`, каждое поле описано в NatSpec
+`src/contracts/interfaces/IGemoonLens.sol` репозитория контрактов (в JSON только ABI).
+
+| Признак | Значение |
+|---|---|
+| `meta.ok == false` | адрес не токен (нет кода или `totalSupply()` упал), остальное нули кроме `market.poolId` |
+| `meta.decimalsOk`, `meta.creatorOk` == `false` | функции нет или ответ некорректный, показывать `–` |
+| `meta.socialOk == false` | нет `getSocialMedia()` или ответ некорректный, все четыре ссылки (`farcaster`, `twitterX`, `telegram`, `website`) пустые |
+| `market.burnedOk`, `market.pendingFeesOk` == `false` | чтение не ответило, значение 0 — показывать `–` |
+| `vault.registeredOk == false` | волт не ответил: `registered` неизвестен, показывать `–` |
+| `vault.assets[i].symbolOk`, `decimalsOk` == `false` | у ассета нет `symbol()`/`decimals()`, показывать `–` |
+| `creators` `ok == false` | волт не ответил, данные создателя неизвестны |
+| пустые `name`/`symbol`/`description`/`image` | функции нет или ответ не строка |
+| `market.sqrtPriceX96 == 0` | пул не создан, цены нет |
+| `vault.registered == false` при `registeredOk` | у адреса нет волта: это не мем протокола, поля волта нули |
+| `account == 0x0` | `position` нулевая, вызовы по аккаунту не делаются |
+| `quotes` `ok[i] == false` | у адаптера нет маршрута для ассета; USDG всегда 1:1 |
+
+Цена: `sqrtPriceX96` и `memeIsToken0`, decimals мема (18) и USDG (`protocol().usdgDecimals`)
+известны, цену считает фронт. Мем ли это — проверять по `vault.registered`. Строки `description`
+и `image` задаёт создатель мема, их нужно экранировать.
+
+Размер батча: `tokens` — до **50** адресов (≈27.5M газа в худшем случае со строками по 2 КБ,
+обычно 70 токенов ≈ 14–18M), `markets`, `totalStaked` и `creators` — до 200 (≈6M, 1.4M,
+`creators(70)` ≈ 2.3M). Включать Lens,
+только если по адресу есть код, иначе читать контракты напрямую.
 
 ## Создать токен
 
@@ -201,6 +246,36 @@ HookManager для интеграций (`IHookManager.json`):
 | Vault | `Staked`, `Unstaked`, `RewardPaid`, `CreatorRewardPaid` | действия пользователей |
 | Vault | `CreatorTransferStarted`, `CreatorTransferred` | смена создателя |
 | Token | `UpdateImage`, `UpdateDescription` | смена метаданных |
+| Referrals | `CodeRegistered(referrer, codeHash, code)`, `ReferrerSet(user, referrer, codeHash)` | коды и привязки |
+| Referrals | `TokenRegistered(meme, creator, referrer)` | мем закреплён за реферером (0x0 — нет) |
+| Referrals | `FeeReceived(meme, referrer, amount, refAmount)` | пришла протокольная доля, `refAmount` начислен рефереру |
+| Referrals | `ReferralPaid(referrer, amount)`, `ProtocolFeesWithdrawn(to, amount)` | выплаты |
+
+## Рефералы
+
+Реферер получает `refShareBips()` (по умолчанию 10%) от **протокольной** доли комиссии каждого
+мема, созданного приведённым им пользователем.
+
+```js
+// реферер: завести код (1..32 символа a-z 0-9 _ -, уникальный)
+await referrals.registerCode("denis");
+await referrals.codeOwner("denis");            // кто владеет кодом, 0x0 — свободен
+
+// пользователь: привязаться ДО деплоя мема, один раз навсегда
+await referrals.useCode("denis");
+await referrals.referrerOf(user);              // 0x0 — реферера нет
+
+// мемы, задеплоенные этим пользователем после привязки, закреплены за реферером
+await referrals.memeReferrer(meme);
+
+// реферер: баланс и вывод
+await referrals.pendingOf(referrer);           // к выплате, в USDG
+await referrals.earnedOf(referrer);            // заработано всего
+await referrals.claim();                       // забрать; кто угодно может distribute([..])
+await referrals.paused();                      // true — выплаты временно остановлены
+```
+
+Мем закрепляется за реферером того, кто вызвал `deployToken`, в момент деплоя.
 
 ## Типичные ошибки
 
@@ -215,6 +290,10 @@ HookManager для интеграций (`IHookManager.json`):
 | `EnforcedPause` | волт на паузе: стейк, клейм и конвертация недоступны, вывод стейка работает |
 | `NotCreator`, `NotPendingCreator` | смена создателя не тем адресом |
 | `Caller is not an admin` | метаданные токена меняет не админ |
+| `InvalidCode`, `CodeTaken`, `CodeNotFound` | реферальный код неверного формата, занят или не существует |
+| `ReferrerAlreadySet`, `SelfReferral` | реферер уже привязан или свой код |
+| `NothingToClaim` | рефереру нечего выплачивать |
+| `EnforcedPause` (Referrals) | выплаты рефералам на паузе, начисления продолжаются |
 
 ## Для keeper и адаптеров
 

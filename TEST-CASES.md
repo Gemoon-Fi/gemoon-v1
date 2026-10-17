@@ -130,6 +130,178 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | `test_Distribute_AfterDevBuy_FeeReachesVaultAndProtocolAndClosesEpoch` | `distribute` после dev buy | Протокол получает треть комиссии, волт остальное; порог закрывает эпоху | Протоколу треть комиссии dev buy, волту остальное, эпоха 0 закрыта, всё создателю (стейкеров нет) |
 | `test_DeployToken_DevBuyThenTrading_FeesConvertedOverSeveralEpochs` | Dev buy, стейк половины, две покупки после окна | Протокол получил ровно треть (3333 bips) каждой комиссии, dev buy включительно; волт остальное и должен всё создателю и стейкерам; каждая выплата закрывает эпоху | Закрыты 2 эпохи, суммы протокола и волта точные, создатель забирает всё через `claim` и `claimCreatorRewards`, в волте ≤ 2 wei пыли |
 
+## test/GemoonLensTest.sol
+
+End-to-end в процессе теста: настоящие PoolManager/PositionManager/Permit2, протокол через скрипт деплоя, пять наградных активов в allowlist (USDG и четыре mock-токена с decimals 8/18/6/2), Lens поверх деплоя. Номера в скобках — кейсы раздела 6 ТЗ.
+
+Инварианты Lens (общие для всех кейсов):
+- **L1** Ни одна функция не ревертит из-за входных адресов: результат на каждый вход, в том же порядке.
+- **L2** Элемент батча `i` равен вызову с одним элементом `[memes[i]]`: соседи не влияют друг на друга.
+- **L3** Каждое поле совпадает с прямым чтением протокола (vault, hook, token, slot0 PoolManager).
+- **L4** Неудачное чтение даёт ноль, а где ноль допустим — флаг `false`; вызовы по аккаунту и волту не выполняются, если `account == 0` или мем не зарегистрирован.
+
+| Тест | Что проверяет | Инварианты | Ожидаемый результат |
+|---|---|---|---|
+| `test_Constructor_ZeroAddress_Revert` | Нулевой адрес в конструкторе | Lens не создаётся над пустыми адресами | revert `ZeroAddress` для каждого из четырёх параметров |
+| `test_Constructor_StoresAddresses` | Адреса конструктора | Lens читает тот деплой, для которого создан | `controller()`, `vault()`, `protocol().hook/poolManager` = переданным |
+| `test_Tokens_RegisteredMemeNoAccount_MatchesDirectReads` (1) | Мем с 5 ассетами и соцсетями после двух покупок и сжигания на `0xdEaD`, без аккаунта | L3, L4 | meta/market/vault равны `name/symbol/decimals/description/imageAddress/creator/getSocialMedia`, `totalSupply`, `balanceOf(0x0)+balanceOf(dEaD)`, `getSlot0(poolId)`, `pendingFees`, `vaultInfo`, `getAssets` + symbol/decimals ассетов; все флаги `true`; `position` нулевая |
+| `test_Tokens_FeeAccruedInHook_PendingFeesMatchHook` | Первая покупка, комиссия осталась в хуке | L3 | `market.pendingFees` = `hook.pendingFees(meme)` > 0 |
+| `test_Tokens_AssetWithBrokenMetadata_AssetFlagsFalse` | Ассет из allowlist с ревертящим `symbol()` и `decimals()` = 256 | L4 | У сломанного ассета `symbolOk`/`decimalsOk` = `false`, нули; у USDG флаги `true`, decimals 6 |
+| `test_Tokens_HookPendingFeesReverts_PendingFeesOkFalse` | `hook.pendingFees` ревертит (mock) | L4 | `pendingFeesOk = false`, `pendingFees` = 0, остальное читается |
+| `test_Tokens_IsRegisteredReverts_RegisteredOkFalse` | `vault.isRegistered` ревертит (mock) | L4 | `registeredOk = false`, `registered = false`, вызовы волта в `vault` и `position` пропущены |
+| `test_Tokens_StakerAccount_PositionMatchesVault` (2) | Аккаунт со стейком, сконвертированной наградой и кредитом открытой эпохи | L3 | `balance`, `staked`, `pendingCredit` > 0, `allowance` = 777, `earned` (> 0) совпадают с прямыми вызовами |
+| `test_Tokens_UnregisteredToken_VaultZeroNoRevert` (3) | Обычный ERC20 без волта | L1, L4 | `meta.ok`, `vault` нулевой кроме `registered = false` и `registeredOk = true` (волт ответил), `position.balance` из токена, поля волта в позиции 0 |
+| `test_Tokens_PoolNotCreated_SqrtPriceZeroPoolIdComputed` (6) | Токен без пула | L4 | `sqrtPriceX96` = 0, `poolId` = id ключа `sort(USDG, token), 0, 200, hook` |
+| `test_Tokens_EoaInBatch_MetaNotOkOthersCorrect` (4) | EOA между двумя мемами | L1, L2 | У EOA `meta.ok = false`, нули, `poolId` посчитан; соседние элементы равны одиночным вызовам |
+| `test_Tokens_TokenWithoutCreatorOrDecimals_FlagsFalse` (5) | Токен без метаданных, `creator()` и `getSocialMedia()` | L4 | `decimalsOk`, `creatorOk`, `socialOk` = `false`, строки пустые, `burnedOk` = `true` (`balanceOf` есть), батч не падает |
+| `test_Tokens_MalformedReturnData_FlagsFalseNoRevert` (5) | Ответы, не декодируемые как стандартные типы: `bytes32`-имя, revert, `decimals` = 256, `creator` > 160 бит, длина и offset строки за пределами данных, член `getSocialMedia` за пределами данных, нет `balanceOf` | L1, L4 | Все флаги `false` (включая `socialOk`, `burnedOk`), строки и соцсети пустые, мем в том же батче равен одиночному вызову |
+| `test_Tokens_TotalSupplyReverts_MetaNotOk` | `totalSupply()` ревертит | L4 | `meta.ok = false`, остальное нули, `position` не заполняется |
+| `test_Tokens_EmptyInput_EmptyOutput` | Пустой массив | L1 | Пустые массивы из `tokens` и `markets` |
+| `test_Tokens_LongStrings_ReturnedWhole` | Описание и картинка по 2 КБ | L3 | Строки возвращаются целиком |
+| `test_Tokens_DuplicatesAndOrder_ThreeElementsSameOrder` (10) | `[a, b, a]` | L1, L2 | Три элемента в том же порядке, первый и третий идентичны |
+| `test_Markets_MatchTokensMarketAndVaultTotalStaked` | `markets` и `totalStaked` на мемах и EOA | L2, L3 | `market[i]` = `tokens(...)[i].market`, `staked[i]` = `vault.totalStaked`, `totalStaked(list)` = `staked` |
+| `test_Quotes_AssetWithoutRoute_OkFalseOthersQuoted` (7) | Адаптер с маршрутами для двух ассетов из трёх | L1, L4 | Без маршрута `ok = false`, 0; остальные `amountIn * rate`; USDG 1:1 |
+| `test_Quotes_NoAdapter_AllOkFalseExceptUsdg` | Адаптер не задан | L1 | Ассет `ok = false`, USDG 1:1 |
+| `test_Quotes_AdapterIsEoa_OkFalseNoRevert` | Адаптер — адрес без кода | L1 | `ok = false`, без revert |
+| `test_Protocol_MatchesVaultAndHook` (8) | `protocol()` | L3 | USDG = `vault.usdg()` = `hook.pairToken()`, decimals 6, symbol, адаптер, порог 5e6, cooldown, хук, PoolManager |
+| `test_Creator_MatchesVault` | Доля создателя после конвертации | L3 | `creatorOf`, `assets`, `accrued` (> 0) = `vault.creatorOf/creatorAccrued` |
+| `test_Creator_Unregistered_Zero` | Неизвестный мем | L1 | Нулевой создатель, пустые массивы |
+| `test_Creators_Batch_EachEqualsCreator` | `creators([a, неизвестный, b, a])` | L1, L2, L3 | 4 элемента, каждый равен `creator(meme)`, `ok = true`, у `a` начислено > 0 |
+| `test_Creators_VaultReverts_OkFalseNoRevert` | `creatorAccrued` ревертит (mock) | L1, L4 | `ok = false`, `creatorOf` всё равно заполнен, массивы пустые |
+| `testFuzz_Creators_AnyAddresses_OnePerInput` (fuzz) | До 16 любых адресов | L1, L3 | Элемент на каждый вход, `creatorOf` = `vault.creatorOf` |
+| `test_DeployLens_Create2_DeterministicAndRepeatable` | Скрипт деплоя дважды | Адрес детерминирован, повторный запуск ничего не деплоит | Адрес = `predict`, второй запуск возвращает тот же адрес |
+| `test_DeployLens_WiringMismatch_Revert` | PoolManager не тот, что у хука | Lens не деплоится над несвязанными контрактами | revert `WiringMismatch("hook.poolManager")` |
+| `testFuzz_Tokens_AnyAddresses_NeverRevertsOnePerInput` (fuzz) | До 16 любых адресов (EOA, прекомпайлы, cheatcodes, контракты) и любой аккаунт | L1 | `tokens` и `markets` возвращают по элементу на вход, не-токен никогда не `registered` |
+| `testFuzz_Tokens_BatchElementEqualsSingleCall` (fuzz) | Случайная смесь мемов, обычного, сломанного и пустого токена и EOA с повторами | L1, L2 | Каждый элемент батча побайтно равен одиночному вызову |
+| `testFuzz_Tokens_Burned_SumOfBurnAddresses` (fuzz) | Любая сумма на `0xdEaD` | L3 | `burned` = переведённая сумма |
+
+### Газ (GemoonLensGasTest, кейс 9)
+
+Мемы создаются в `setUp`, поэтому в замеряемом вызове все аккаунты и слоты холодные, как в `eth_call`. У каждого мема 5 ассетов, аккаунт держит и стейкает каждый.
+
+| Тест | Что проверяет | Инварианты | Ожидаемый результат |
+|---|---|---|---|
+| `test_Gas_Tokens70WithAccount_Below30M` | 70 мемов, аккаунт, соцсети, строки 280/120 Б | Лимит ТЗ 30M | 18.4M < 30M |
+| `test_Gas_Tokens70NoAccount_Below30M` | То же без аккаунта | Лимит ТЗ 30M | 14.5M < 30M |
+| `test_Gas_Tokens70WithAccount2KbStrings_BelowNodeCap` | 70 мемов со строками по 2 КБ | Худший случай под лимитом ноды 50M | 40.8M < 50M (> 30M, отсюда чанк 50) |
+| `test_Gas_Tokens50WithAccount2KbStrings_Below30M` | Чанк 50 со строками по 2 КБ | Рекомендуемый чанк держит 30M | 27.5M < 30M |
+| `test_Gas_Markets200_Below15M` | `markets(200)` | Лимит ТЗ 15M | 6.0M < 15M |
+| `test_Gas_TotalStaked200_Below15M` | `totalStaked(200)` | Лимит ТЗ 15M | 1.4M < 15M |
+
+## test/fork/GemoonLensDevnetForkTest.sol
+
+Девнет: Anvil-форк Robinhood (chain id 1488) с развёрнутым протоколом, адреса из ТЗ. Lens деплоится внутри форка, ничего не отправляется. Мемы — последние 70 CREATE контроллера. Без `DEVNET_RPC` или на другой сети пропускается.
+
+| Тест | Что проверяет | Инварианты | Ожидаемый результат |
+|---|---|---|---|
+| `test_Tokens_DevnetMemes_MatchDirectReadsAndStateView` | 5 реальных мемов | L3, цена совпадает с периферийным `StateView` | `sqrtPriceX96` = `StateView.getSlot0(poolId)` > 0, supply, burned, `pendingFees`, соцсети, `vaultInfo`, `getAssets` совпадают, все флаги `true` |
+| `test_Creators_DevnetMemes_MatchVault` | `creators` на 70 реальных мемах | L3 | Все `ok`, `creatorOf` = `vault.creatorOf` |
+| `test_Protocol_Devnet_MatchesVault` | `protocol()` на девнете | L3 | USDG, адаптер, хук, PoolManager = реальным |
+| `test_Quotes_DevnetAllowlist_AllQuoted` | Котировки всего allowlist через реальный адаптер | У каждого разрешённого ассета есть маршрут | Все `ok`, суммы > 0 |
+| `test_Gas_Tokens70Devnet_Below30M` | `tokens(70, account)` на реальных мемах | Лимит ТЗ 30M на реальных данных | 14.2M < 30M |
+
+## test/ReferralsTest.sol
+
+Юнит-тесты `GmoonReferrals` за прокси, mock USDG (6 dec). Тест играет хук и контроллер через `prank`. `refShareBips` = 1000 (10%). alice — реферер с кодом `alice`, bob привязан к нему и деплоит `meme`, carol без реферера.
+
+### Инициализация и админ
+
+| Тест | Что проверяет | Инварианты | Ожидаемый результат |
+|---|---|---|---|
+| `test_Initialize_Valid_StoresConfig` | Конфиг после `initialize` | Прокси настроен одной транзакцией | owner, pairToken, controller, hook, refShare, версия 1 |
+| `test_Initialize_Twice_Reverts` | Повторный `initialize` | Инициализация один раз | revert |
+| `test_Initialize_Implementation_Reverts` | `initialize` имплементации | Имплементация не инициализируется | revert |
+| `test_Initialize_RefShareAboveBips_Reverts` | refShare > 100% | `refShareBips <= BIPS` | revert `InvalidRefShare` |
+| `test_Initialize_ZeroControllerAndHook_LeftUnset` | Нулевые controller/hook | Их можно задать позже | оба 0 |
+| `test_SetRefShare_AboveBips_Reverts`, `test_SetRefShare_NotOwner_Reverts` | `setRefShare` | Граница и доступ | revert `InvalidRefShare` / `OwnableUnauthorizedAccount` |
+| `test_SetHook_Zero_Reverts`, `test_SetController_Zero_Reverts`, `test_SetHook_NotOwner_Reverts` | Сеттеры | Нельзя обнулить, только владелец | revert `ZeroAddress` / `OwnableUnauthorizedAccount` |
+| `test_SetHook_NewHook_OldHookRejected` | Смена хука | `notifyFee` только от текущего хука | старый хук получает revert `NotHook` |
+
+### Коды и привязка
+
+| Тест | Что проверяет | Инварианты | Ожидаемый результат |
+|---|---|---|---|
+| `test_RegisterCode_Valid_StoresOwner` | Регистрация кода | Код → владелец, по строке и по хешу | `codeOwner` = alice |
+| `test_RegisterCode_Taken_Reverts` | Занятый код | Код уникален | revert `CodeTaken` |
+| `test_RegisterCode_SeveralPerReferrer_AllOwned` | Несколько кодов у одного | Ограничения на число кодов нет | оба кода у alice |
+| `test_RegisterCode_Empty_Reverts`, `test_RegisterCode_TooLong_Reverts`, `test_RegisterCode_MaxLength_Succeeds` | Длина | 1..32 символа | revert `InvalidCode` для 0 и 33, 32 проходит |
+| `test_RegisterCode_Uppercase_Reverts`, `test_RegisterCode_Space_Reverts` | Алфавит | Только `[a-z0-9_-]`, одно написание кода | revert `InvalidCode` |
+| `testFuzz_RegisterCode_InvalidChar_Reverts` (fuzz) | Любой байт вне алфавита | Ни один посторонний символ не проходит | revert `InvalidCode` |
+| `test_UseCode_Valid_SetsReferrer` | Привязка по коду | user → владелец кода, событие | `referrerOf(bob)` = alice, `ReferrerSet` |
+| `test_UseCode_ManyUsersOneCode_AllReferredBySameReferrer` | Один код, три пользователя | По одному коду приводится сколько угодно пользователей | все три привязаны к alice, она получает 10% с мема каждого |
+| `test_UseCode_Unknown_Reverts` | Несуществующий код | — | revert `CodeNotFound` |
+| `test_UseCode_Own_Reverts` | Свой код | Нельзя привести себя | revert `SelfReferral` |
+| `test_UseCode_Twice_Reverts` | Повторная привязка | Реферер один и навсегда | revert `ReferrerAlreadySet`, реферер прежний |
+
+### Регистрация мемов
+
+| Тест | Что проверяет | Инварианты | Ожидаемый результат |
+|---|---|---|---|
+| `test_RegisterToken_NotController_Reverts` | Не контроллер | Только контроллер | revert `NotController` |
+| `test_RegisterToken_ReferredCreator_StoresReferrer` | Мем приведённого | Мем → реферер создателя | `memeReferrer` = alice, `TokenRegistered` |
+| `test_RegisterToken_CreatorWithoutReferrer_NoReferrer` | Мем без реферера | — | `memeReferrer` = 0 |
+| `test_RegisterToken_ReferrerBoundLater_OldMemeStaysUnattributed` | Привязка после деплоя | Реферер фиксируется на момент деплоя | старый мем без реферера, новый за alice |
+
+### Начисление (`notifyFee`)
+
+| Тест | Что проверяет | Инварианты | Ожидаемый результат |
+|---|---|---|---|
+| `test_NotifyFee_NotHook_Reverts` | Не хук | Только хук | revert `NotHook` |
+| `test_NotifyFee_ReferredMeme_CreditsRefShare` | Комиссия мема реферала | 10% рефереру, остальное протоколу | pending 100 000, protocolBalance 900 000, `FeeReceived` |
+| `test_NotifyFee_MemeWithoutReferrer_AllToProtocol` | Мем без реферера | Всё протоколу | totalPending 0 |
+| `test_NotifyFee_UnregisteredMeme_NoRevertAllToProtocol` | Неизвестный мем | Не блокирует выплату хука | без revert, всё протоколу |
+| `test_NotifyFee_WithoutTransfer_Reverts` | Уведомление без перевода | `balance >= totalPending` | revert `BalanceTooLow` |
+| `test_NotifyFee_SameTransferReportedTwice_RevertsOnceDebtExceedsBalance` | Повторное уведомление | Долг не может превысить баланс | второй вызов revert `BalanceTooLow` |
+| `test_NotifyFee_DustBelowShare_NothingCredited` | Пыль | Округление вниз в пользу протокола | pending 0 |
+| `test_NotifyFee_ZeroRefShare_AllToProtocol`, `test_NotifyFee_FullRefShare_AllToReferrer` | Границы доли | 0% и 100% | всё протоколу / всё рефереру |
+| `test_NotifyFee_RefShareChanged_AppliesToNewFeesOnly` | Смена доли | Действует на новые комиссии | 100 + 500 = 600 |
+| `testFuzz_NotifyFee_SplitsExactly` (fuzz) | Любая сумма и доля | Реферер = floor(amount·share/BIPS), остальное протоколу, сумма = баланс | точное деление |
+
+### Выплаты, пауза, протокол
+
+| Тест | Что проверяет | Инварианты | Ожидаемый результат |
+|---|---|---|---|
+| `test_Claim_Pending_PaysAndResets` | `claim` | Выплата обнуляет долг, earned сохраняется, доля протокола не трогается | alice 100 000, pending 0 |
+| `test_Claim_Nothing_Reverts`, `test_Claim_Twice_SecondReverts` | Нечего забирать | Нет двойной выплаты | revert `NothingToClaim` |
+| `test_Distribute_SeveralReferrers_PaysEach` | `distribute` от кипера | Каждому своё, дубли и нули пропускаются | alice 100, carol 300, totalPending 0 |
+| `test_Distribute_Empty_ReturnsZero` | Пустой список | — | 0 |
+| `test_SetPaused_NotOwner_Reverts`, `test_SetPaused_Twice_NoOp` | `setPaused` | Только владелец, повтор — no-op | revert / состояние как задано |
+| `test_Claim_Paused_Reverts`, `test_Distribute_Paused_Reverts` | Выплаты на паузе | Пауза останавливает выплаты рефералам | revert `EnforcedPause` |
+| `test_Paused_CreditAndProtocolWithdrawKeepWorking_ClaimAfterUnpause` | Пауза | Начисление и вывод протокола работают всегда; долг рефералам не трогается | начислено 100 000, протокол вывел 900 000, после снятия паузы alice получила 100 000 |
+| `test_WithdrawProtocolFees_Owner_SendsBalanceMinusDebt` | Вывод протокола | Протокол забирает всё, кроме долга рефералам, включая прямые переводы | 900 005 протоколу, 100 000 остаются и выплачиваются alice |
+| `test_WithdrawProtocolFees_NotOwner_Reverts`, `_Nothing_Reverts`, `_ZeroTo_Reverts` | Ограничения вывода | Только владелец, не в ноль | revert |
+| `test_RescueERC20_OtherToken_Sends`, `_PairToken_Reverts`, `_NotOwner_Reverts` | `rescueERC20` | Pair-токен не спасается мимо учёта долга | чужой токен выведен, USDG revert `PairTokenRescue` |
+| `testFuzz_ClaimAndWithdraw_AnyOrder_EmptiesContract` (fuzz) | Любой порядок claim / withdraw | Каждый получает ровно своё, контракт пустеет | balance 0, totalPending 0 |
+
+### Инварианты (ReferralsInvariantTest, handler: useCode / deployMeme / fee / claim / distribute / withdrawProtocol / setRefShare / setPaused)
+
+| Тест | Инвариант |
+|---|---|
+| `invariant_BalanceCoversReferralDebt` | `balanceOf(referrals) >= totalPending` — каждому рефереру всегда хватает |
+| `invariant_TotalPendingIsSumOfPending` | `totalPending` = сумма `pendingOf` по всем реферерам |
+| `invariant_Conservation` | баланс = всё пришедшее − всё выплаченное, токены не создаются и не теряются |
+| `invariant_EarnedEqualsPendingPlusPaid` | `earnedOf(r)` = `pendingOf(r)` + выплаченное r: начисления не теряются и не выплачиваются дважды |
+
+## test/ReferralsIntegrationTest.sol
+
+End-to-end: настоящие PoolManager и PositionManager, Gemoon через `DeployGemoon`, рефералы через `deployReferrals` и `WireReferrals`. Комиссия 1.25%, протоколу 3333 bips, рефереру 1000 bips протокольной доли. alice — реферер, bob привязан к ней.
+
+| Тест | Что проверяет | Инварианты | Ожидаемый результат |
+|---|---|---|---|
+| `test_WireReferrals_Valid_EverythingPointsAtReferrals` | Связка после `wireReferrals` | Контроллер, хук и рефералы указывают друг на друга | `checkReferralsWiring` проходит |
+| `test_WireReferrals_ReferralsPointAtOtherHook_Reverts` | Рефералы смотрят на другой хук | Скрипт не оставляет битую связку | revert `WiringMismatch("referrals.hook")` |
+| `test_SetReferrals_NotOwner_Reverts` | `setReferrals` не от владельца | Только владелец контроллера | revert |
+| `test_DeployToken_ReferredCreator_MemeAttributedToReferrer` | `deployToken` приведённого | Контроллер регистрирует мем | `memeReferrer` = alice |
+| `test_Swap_ReferredMeme_ReferrerEarnsRefShareOfProtocolFee` | Две покупки, claim, вывод протокола | В рефералы приходит ровно протокольная доля, рефереру 10% её | точные суммы, после claim и withdraw баланс 0 |
+| `test_Swap_MemeWithoutReferrer_AllToProtocol` | Мем без реферера | Всё протоколу | totalPending 0 |
+| `test_Distribute_AfterTrades_PaysReferrer` | `distribute` после торгов | — | alice получила начисленное |
+| `test_DeployToken_ReferralsUnset_NotRegistered` | Рефералы выключены в контроллере | Ноль выключает регистрацию | `memeReferrer` = 0 |
+| `test_Payout_ReferralsRejectsHook_FeesStayAccruedUntilFixed` | Рефералы отвергают хук | Сбой получателя не ломает своп, комиссия не теряется | `PayoutFailed`, комиссия в хуке, после починки `distribute` выплачивает |
+| `test_Payout_EoaProtocolRecipient_PaysWithoutNotify` | EOA как получатель | Хук не уведомляет EOA | EOA получает протокольную долю |
+| `testFuzz_Swap_ReferredMeme_SplitConserved` (fuzz) | Любые объёмы сделок | Баланс рефералов = протокольная доля; credit ≈ floor(доля·10%) (±1 на выплату, вниз); credit + протокол = баланс | точное сохранение |
+| `test_UpgradeReferrals_NewVersion_KeepsState` | Апгрейд на v2 | Состояние и владелец сохраняются, reinitialize | версия 2, pending и memeReferrer прежние |
+| `test_UpgradeReferrals_NotProxyAdminOwner_Reverts` | Апгрейд не владельцем ProxyAdmin | — | revert |
+
 ## test/VaultTest.sol
 
 Фикстура: USDG (6 dec), MEME, AAPL (1 USDG → 2 AAPL), WBTC (1 USDG → 1 WBTC). Веса по умолчанию 60/40 (AAPL/WBTC). Доля создателя при наличии стейкеров — 10%.

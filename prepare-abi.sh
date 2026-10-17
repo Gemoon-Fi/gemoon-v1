@@ -4,8 +4,9 @@ set -euo pipefail
 ABI_DIR="${PWD}/../abi"
 mkdir -p "${ABI_DIR}"
 
-# Third-party interfaces exported next to our own (artifact dir name in ./out).
-external_interfaces="IPoolManager.sol"
+# Third-party interfaces and contracts exported next to our own interfaces (artifact dir name in
+# ./out). GemoonLens is read by frontends directly, so its own ABI goes out too.
+external_interfaces="IPoolManager.sol GemoonLens.sol"
 
 # Extract the `abi` object from forge artifacts of every interface and put it into ../abi/<Contract>.json
 export_abi() {
@@ -43,6 +44,7 @@ grep -Pi 'UNISWAP_V3_FACTORY=\K0x[A-Za-z0-9]{40}' ./.env | awk -F'\n' '{print NR
 grep -Pi 'NATIVE_TOKEN_ADDRESS=\K0x[A-Za-z0-9]{40}' ./.env | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> "${ABI_DIR}/README.md" || true
 grep -Pi 'VAULT_SWAP_ADAPTER=\K0x[A-Za-z0-9]{40}' ./.env | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> "${ABI_DIR}/README.md" || true
 grep -Pi 'USDG_ADDRESS=\K0x[A-Za-z0-9]{40}' ./.env | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> "${ABI_DIR}/README.md" || true
+grep -Pi 'LENS_ADDRESS=\K0x[A-Za-z0-9]{40}' ./.env | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> "${ABI_DIR}/README.md" || true
 echo '## Usage:' >> "${ABI_DIR}/README.md"
 cat ./README-ABI.md >> "${ABI_DIR}/README.md"
 

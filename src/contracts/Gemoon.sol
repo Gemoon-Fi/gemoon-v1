@@ -27,6 +27,7 @@ import {
 import "./utils/Ticks.sol";
 import {IVault} from "./interfaces/IVault.sol";
 import {IHookManager} from "./interfaces/IHookManager.sol";
+import {IReferrals} from "./interfaces/IReferrals.sol";
 import {
     IUnlockCallback
 } from "@uniswap-v4-core/interfaces/callback/IUnlockCallback.sol";
@@ -62,6 +63,7 @@ contract GemoonController is
         address indexed positionManager,
         address indexed permit2
     );
+    event ReferralsUpdated(address indexed referrals);
 
     address private _weth;
 
@@ -77,9 +79,11 @@ contract GemoonController is
     IPositionManager public positionManager;
     /// @notice Permit2 the PositionManager pulls the Meme supply through.
     IAllowanceTransfer public permit2;
+    /// @notice Referrals contract every new Meme is registered in; zero = referrals off.
+    IReferrals public referrals;
 
     /// @dev Version of the Gemoon contract.
-    uint64 public constant GEMOON_VERSION = 1;
+    uint64 public constant GEMOON_VERSION = 2;
 
     function getVersion() public pure returns (uint64) {
         return GEMOON_VERSION;
@@ -162,12 +166,21 @@ contract GemoonController is
         emit PositionManagerUpdated(positionManager_, permit2_);
     }
 
+    /// @notice Sets the referrals contract new Memes are registered in.
+    /// @dev Only owner. Zero turns referrals off for Memes deployed afterwards.
+    /// @param referrals_ Referrals proxy, or zero.
+    function setReferrals(address referrals_) external onlyOwner {
+        referrals = IReferrals(referrals_);
+        emit ReferralsUpdated(referrals_);
+    }
+
     /// @notice Entry point for deploying a Meme: token, its vault, the Meme/pair pool and the
     ///         initial one-sided position holding the whole supply, owned by this contract.
     /// @dev If `rewardRecipient` is not set in `rewardsConfig`, it defaults to `creatorAddress`.
     /// Admins of the token are the given ones plus this contract and the caller.
     /// A non-zero `config.devBuy.memeAmount` makes the caller the first buyer of the pool, in this
-    /// same transaction: see `_devBuy`.
+    /// same transaction: see `_devBuy`. With `referrals` set, the Meme is attributed to the referrer
+    /// of the caller.
     /// @param config Token, rewards, vault and dev buy configuration.
     /// @return Address of the new Meme token.
     function deployToken(
@@ -231,6 +244,11 @@ contract GemoonController is
             block.timestamp,
             config.rewardsConfig.swapFeeBips
         );
+
+        // Before the dev buy: its fee is already attributed to the referrer.
+        IReferrals referrals_ = referrals;
+        if (address(referrals_) != address(0))
+            referrals_.registerToken(deployedToken, msg.sender);
 
         if (config.devBuy.memeAmount != 0)
             _devBuy(poolKey, deployedToken, config.devBuy);

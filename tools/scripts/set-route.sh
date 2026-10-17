@@ -136,7 +136,9 @@ twap_ok() {
 # Sends setRoute unless the asset already has this route. Prints the outcome after `label`.
 route() {
     local asset="$1" fee="$2" pool="$3" label="$4" current
-    current=$(call "$ADAPTER" "routeOf(address)((address,uint24,uint16))" "$asset" | tr -d '() ')
+    # cast annotates large numbers (`10000 [1e4]`), drop the annotation before comparing
+    current=$(call "$ADAPTER" "routeOf(address)((address,uint24,uint16))" "$asset" \
+        | sed 's/ \[[^]]*\]//g' | tr -d '() ')
     if [ "$(lower "$current")" = "$(lower "$pool,$fee,$SLIPPAGE")" ]; then
         echo "  $label: already routed"
         return 0
