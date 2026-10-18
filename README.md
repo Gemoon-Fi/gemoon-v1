@@ -13,7 +13,7 @@
 | Vault | `src/contracts/vault/Vault.sol` | Один контракт, логический волт на каждый мем: приём комиссий, стейкинг, конвертация, выплаты. Прокси, Ownable2Step. |
 | GmoonReferrals | `src/contracts/Referrals.sol`, интерфейс `IReferrals.sol` | Получатель протокольной доли (`HookManager.protocolRecipient`): реферальные коды, привязка пользователя к рефереру, `refShareBips` протокольной комиссии мемов рефералов — рефереру, остальное протоколу. Прокси, Ownable2Step, Pausable (только выплаты рефералам). |
 | UniswapV3SwapAdapter | `src/contracts/adapters/UniswapV3SwapAdapter.sol` | Меняет USDG волта на наградные активы в пулах Uniswap V3, минимальный выход считает сам по TWAP пула. Ownable2Step, не прокси: волт меняет адаптер через `setSwapAdapter`. |
-| GemoonToken | `src/contracts/Token.sol` | ERC20 мема с метаданными и админами. Не обновляемый. |
+| GemoonToken | `src/contracts/Token.sol` | ERC20 мема с метаданными и админами, ERC-1046 `tokenURI` (задаётся в `TokenConfig`, меняют админы) и ERC-165, счётчик холдеров `totalHolders`. Не обновляемый. |
 | PositionDeployer | `src/contracts/utils/PositionDeployer.sol` | Внутренняя библиотека, инлайнится в контроллер: минт позиции через PositionManager и Permit2. Отдельного адреса нет. |
 | Deployer, Ticks | `src/contracts/Deployer.sol`, `src/contracts/utils/Ticks.sol` | Внешние библиотеки, линкуются при деплое. |
 | GemoonLens | `src/contracts/lens/GemoonLens.sol`, интерфейс `IGemoonLens.sol` | Read-only батч-чтения для фронтенда: всё о списке мемов одним `eth_call`. Без состояния, владельца и средств, только `view`. Не прокси: при смене адресов протокола деплоится заново (CREATE2, `make deploy-lens`). |
@@ -199,7 +199,7 @@ hooks = HookManager}`, `poolId = keccak256(abi.encode(key))`, цена из slot
 | `meta.decimalsOk` | нет `decimals()` или ответ не влезает в uint8 | `–` вместо сумм |
 | `meta.creatorOk` | нет `creator()` (старые токены) или ответ не адрес | `–` |
 | `meta.socialOk` | нет `getSocialMedia()` или хоть одна из четырёх строк некорректна; тогда все четыре пустые | ссылки не показывать |
-| `name`, `symbol`, `description`, `image` | функции нет, revert или ответ не ABI-строка (например `bytes32`-имя) | пустая строка |
+| `name`, `symbol`, `description`, `image`, `tokenURI` | функции нет (у `tokenURI` — мемы до ERC-1046), revert или ответ не ABI-строка (например `bytes32`-имя) | пустая строка |
 | `market.sqrtPriceX96 == 0` | пул не создан или не инициализирован | нет цены |
 | `market.burnedOk` | хотя бы один `balanceOf` (0x0 или 0xdEaD) не ответил; `burned` = 0 | `–` |
 | `market.pendingFeesOk` | `hook.pendingFees` не ответил | `–` |

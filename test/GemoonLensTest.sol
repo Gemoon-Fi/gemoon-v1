@@ -155,7 +155,8 @@ abstract contract GemoonLensTestBase is Test {
                 socialMedia: _social(),
                 name: "Meme",
                 symbol: "MEME",
-                admins: admins
+                admins: admins,
+                tokenURI: "ipfs://meta"
             }),
             rewardsConfig: RewardsConfig({
                 swapFeeBips: 125, creatorAddress: creator, rewardRecipient: address(0)
@@ -291,6 +292,7 @@ contract GemoonLensTest is GemoonLensTestBase {
         assertTrue(v.meta.decimalsOk);
         assertEq(v.meta.description, "a description");
         assertEq(v.meta.image, "ipfs://image");
+        assertEq(v.meta.tokenURI, "ipfs://meta");
         assertEq(v.meta.creator, creator);
         assertTrue(v.meta.creatorOk);
         assertTrue(v.meta.socialOk);

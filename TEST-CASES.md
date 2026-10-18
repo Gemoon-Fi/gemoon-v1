@@ -16,6 +16,8 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
 | `test_DeployToken_MintsWholeSupplyIntoPositionOwnedByController` | Деплой мема без dev buy | Вся эмиссия в позиции, NFT позиции у контроллера, создатель без токенов | Ликвидность > 0, supply = 1 млрд, у контроллера < 1 токена пыли, у создателя 0, волт зарегистрирован |
+| `test_DeployToken_TokenURI_SetOnToken` | `tokenConfig.tokenURI` при деплое | ERC-1046 URI из конфига доходит до токена | `tokenURI()` = `ipfs://meme-metadata.json` |
+| `test_DeployToken_TokenURITooLong_Reverts` | URI длиннее 2048 байт | Ограничение длины действует и через контроллер | revert `TokenURITooLong(2049, 2048)` |
 | `test_DeployToken_NoAllowanceLeftBehind` | Апрувы после минта позиции | После деплоя контроллер не оставляет апрувов | ERC20-апрув на Permit2 = 0, Permit2-апрув на PositionManager = 0 |
 | `test_DeployToken_EmitsPositionCreated` | Событие `PositionCreated` | Событие совпадает с реальной позицией | `token`, `positionId`, `liquidity` из события равны данным PositionManager |
 | `test_DeployToken_Twice_IndependentPositions` | Два мема подряд | Позиции независимы | Разные адреса токенов, id позиций подряд, обе у контроллера |
@@ -144,7 +146,7 @@ End-to-end в процессе теста: настоящие PoolManager/Positi
 |---|---|---|---|
 | `test_Constructor_ZeroAddress_Revert` | Нулевой адрес в конструкторе | Lens не создаётся над пустыми адресами | revert `ZeroAddress` для каждого из четырёх параметров |
 | `test_Constructor_StoresAddresses` | Адреса конструктора | Lens читает тот деплой, для которого создан | `controller()`, `vault()`, `protocol().hook/poolManager` = переданным |
-| `test_Tokens_RegisteredMemeNoAccount_MatchesDirectReads` (1) | Мем с 5 ассетами и соцсетями после двух покупок и сжигания на `0xdEaD`, без аккаунта | L3, L4 | meta/market/vault равны `name/symbol/decimals/description/imageAddress/creator/getSocialMedia`, `totalSupply`, `balanceOf(0x0)+balanceOf(dEaD)`, `getSlot0(poolId)`, `pendingFees`, `vaultInfo`, `getAssets` + symbol/decimals ассетов; все флаги `true`; `position` нулевая |
+| `test_Tokens_RegisteredMemeNoAccount_MatchesDirectReads` (1) | Мем с 5 ассетами и соцсетями после двух покупок и сжигания на `0xdEaD`, без аккаунта | L3, L4 | meta/market/vault равны `name/symbol/decimals/description/imageAddress/creator/getSocialMedia/tokenURI`, `totalSupply`, `balanceOf(0x0)+balanceOf(dEaD)`, `getSlot0(poolId)`, `pendingFees`, `vaultInfo`, `getAssets` + symbol/decimals ассетов; все флаги `true`; `position` нулевая |
 | `test_Tokens_FeeAccruedInHook_PendingFeesMatchHook` | Первая покупка, комиссия осталась в хуке | L3 | `market.pendingFees` = `hook.pendingFees(meme)` > 0 |
 | `test_Tokens_AssetWithBrokenMetadata_AssetFlagsFalse` | Ассет из allowlist с ревертящим `symbol()` и `decimals()` = 256 | L4 | У сломанного ассета `symbolOk`/`decimalsOk` = `false`, нули; у USDG флаги `true`, decimals 6 |
 | `test_Tokens_HookPendingFeesReverts_PendingFeesOkFalse` | `hook.pendingFees` ревертит (mock) | L4 | `pendingFeesOk = false`, `pendingFees` = 0, остальное читается |
@@ -584,6 +586,49 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 | `testTokenChangeDescription` | Админ меняет описание | — | `description()` = "New description" |
 | `testTokenChangeDescriptionFailBecauseUserIsNotAdmin` | Не-админ меняет описание | Только админ меняет метаданные токена | Revert "Caller is not an admin" |
 | `testGetTokenInfo` | Геттеры метаданных после конструктора | — | description, name "Test Token", symbol "TEST", 4 ссылки на соцсети совпадают с конфигом |
+
+## test/TokenHoldersTest.sol
+
+`totalHolders` = число адресов с ненулевым балансом. Вся эмиссия минтится деплоеру (тесту), он единственный холдер на старте.
+
+| Тест | Что проверяет | Инварианты | Ожидаемый результат |
+|---|---|---|---|
+| `test_TotalHolders_AfterMint_DeployerOnly` | После конструктора | Минт из address(0) не считает нулевой адрес | 1 |
+| `test_TotalHolders_TransferToNew_Increments` | Перевод новому адресу | 0 → >0 добавляет холдера | 2 |
+| `test_TotalHolders_TransferToExistingHolder_Unchanged` | Повторный перевод тому же | Уже холдер не считается дважды | 2 |
+| `test_TotalHolders_WholeBalanceMoved_SenderLeaves` | Отправитель отдал всё | >0 → 0 убирает холдера | 2 (деплоер + bob) |
+| `test_TotalHolders_ZeroValueTransfer_Unchanged` | Перевод 0 | Нулевой перевод не делает холдером | 1 |
+| `test_TotalHolders_SelfTransfer_Unchanged` | Перевод самому себе | Баланс не меняется — счётчик тоже | 2 |
+| `test_TotalHolders_BurnWholeBalance_Leaves` | Сжёг всё | Burn в address(0) убирает холдера, нулевой адрес не считается | 1 |
+| `test_TotalHolders_BurnPart_Unchanged` | Сжёг часть | — | 2 |
+| `test_TotalHolders_TransferFrom_CountsLikeTransfer` | `transferFrom` | Учёт тот же, что у `transfer` | 2 |
+| `test_TotalHolders_EverythingBurned_Zero` | Сожжена вся эмиссия | Счётчик доходит до 0 без underflow | 0 |
+| `testFuzz_TotalHolders_Transfer_MatchesBalances` (fuzz) | Два перевода любых сумм на любой адрес | Счётчик = число ненулевых балансов | совпадает |
+
+### Инварианты (TokenHoldersInvariantTest, handler: transfer / transferFrom / burn / burnAll между 5 адресами, включая self и нулевые суммы)
+
+| Тест | Инвариант |
+|---|---|
+| `invariant_TotalHoldersEqualsNonZeroBalances` | `totalHolders()` = число адресов с ненулевым балансом |
+
+## test/TokenURITest.sol
+
+ERC-1046 `tokenURI` токена: из `TokenConfig.tokenURI`, меняется админом, объявлен через ERC-165. Лимит длины 2048 байт.
+
+| Тест | Что проверяет | Инварианты | Ожидаемый результат |
+|---|---|---|---|
+| `test_TokenURI_FromConfig_Returned` | URI из конфига | Конструктор сохраняет URI | `tokenURI()` = `ipfs://meta.json` |
+| `test_TokenURI_EmptyConfig_Empty` | Пустой URI | URI необязателен | `""` |
+| `test_TokenURI_Constructor_EmitsUpdateTokenURI` | Событие при создании | Индексатор видит начальный URI | `UpdateTokenURI(uri)` |
+| `test_TokenURI_MaxLength_Accepted`, `test_TokenURI_TooLong_Reverts` | Граница длины в конструкторе | ≤ 2048 байт | 2048 принимается, 2049 revert `TokenURITooLong` |
+| `test_SetTokenURI_Admin_UpdatesAndEmits` | Смена админом | — | новый URI, `UpdateTokenURI` |
+| `test_SetTokenURI_Empty_Clears` | Очистка | Пустая строка допустима | `""` |
+| `test_SetTokenURI_NotAdmin_Reverts` | Смена не админом | Метаданные меняет только админ | revert "Caller is not an admin", URI прежний |
+| `test_SetTokenURI_TooLong_Reverts` | Слишком длинный URI | ≤ 2048 байт | revert `TokenURITooLong` |
+| `testFuzz_SetTokenURI_LengthBound` (fuzz) | Любая длина 0..2112 | ≤ лимита сохраняется как есть, длиннее — revert без изменений | совпадает |
+| `test_SupportsInterface_ERC1046_True` | ERC-165 для ERC-1046 | id = `0x3c130d90`, виден через `ERC165Checker` | `true` |
+| `test_SupportsInterface_ERC165AndERC20_True` | ERC-165 для базовых интерфейсов | — | `true` для IERC165, IERC20, IERC20Metadata |
+| `test_SupportsInterface_InvalidId_False` | Неизвестные id | `0xffffffff` всегда `false` (ERC-165) | `false` для `0xffffffff` и ERC-721 |
 
 ## test/AdminTest.sol
 

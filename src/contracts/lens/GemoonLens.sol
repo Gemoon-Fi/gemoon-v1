@@ -11,6 +11,7 @@ import {PoolId, PoolIdLibrary} from "@uniswap-v4-core/types/PoolId.sol";
 import {Currency} from "@uniswap-v4-core/types/Currency.sol";
 import {IGemoonLens} from "../interfaces/IGemoonLens.sol";
 import {IGemoonToken, SocialMedia} from "../interfaces/IToken.sol";
+import {IERC1046} from "../interfaces/IERC1046.sol";
 import {IHookManager} from "../interfaces/IHookManager.sol";
 import {IUniswapV3SwapAdapter} from "../interfaces/IUniswapV3SwapAdapter.sol";
 import {IVault, VaultInfo, AssetConfig} from "../interfaces/IVault.sol";
@@ -251,6 +252,7 @@ contract GemoonLens is IGemoonLens {
         (, t.image) = _readString(meme, abi.encodeCall(IGemoonToken.imageAddress, ()));
         (t.creatorOk, t.creator) = _readAddress(meme, abi.encodeCall(IGemoonToken.creator, ()));
         (t.socialOk, t.social) = _readSocial(meme);
+        (, t.tokenURI) = _readString(meme, abi.encodeCall(IERC1046.tokenURI, ()));
     }
 
     function _vaultPublic(address meme) private view returns (VaultPublic memory p) {

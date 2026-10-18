@@ -27,7 +27,8 @@ contract TokenTest is Test {
                 }),
                 name: "Test Token",
                 symbol: "TEST",
-                admins: initAdminsStruct(initAdmins, removables)
+                admins: initAdminsStruct(initAdmins, removables),
+                tokenURI: ""
             }),
             CREATOR
         );
@@ -56,7 +57,8 @@ contract TokenTest is Test {
                 }),
                 name: "Test Token",
                 symbol: "TEST",
-                admins: initAdminsStruct(initAdmins, removables)
+                admins: initAdminsStruct(initAdmins, removables),
+                tokenURI: ""
             }),
             CREATOR
         );
@@ -105,7 +107,8 @@ contract TokenTest is Test {
                 }),
                 name: "Test Token",
                 symbol: "TEST",
-                admins: initAdminsStruct(initAdmins, removables)
+                admins: initAdminsStruct(initAdmins, removables),
+                tokenURI: ""
             }),
             CREATOR
         );
@@ -134,7 +137,8 @@ contract TokenTest is Test {
                 }),
                 name: "Test Token",
                 symbol: "TEST",
-                admins: initAdminsStruct(initAdmins, removables)
+                admins: initAdminsStruct(initAdmins, removables),
+                tokenURI: ""
             }),
             CREATOR
         );
@@ -166,7 +170,8 @@ contract TokenTest is Test {
                 }),
                 name: "Test Token",
                 symbol: "TEST",
-                admins: initAdminsStruct(initAdmins, removables)
+                admins: initAdminsStruct(initAdmins, removables),
+                tokenURI: ""
             }),
             CREATOR
         );
@@ -197,7 +202,8 @@ contract TokenTest is Test {
                 }),
                 name: "Test Token",
                 symbol: "TEST",
-                admins: initAdminsStruct(initAdmins, removables)
+                admins: initAdminsStruct(initAdmins, removables),
+                tokenURI: ""
             }),
             CREATOR
         );
@@ -226,7 +232,8 @@ contract TokenTest is Test {
                 }),
                 name: "Test Token",
                 symbol: "TEST",
-                admins: initAdminsStruct(initAdmins, removables)
+                admins: initAdminsStruct(initAdmins, removables),
+                tokenURI: ""
             }),
             CREATOR
         );
@@ -256,7 +263,8 @@ contract TokenTest is Test {
                 }),
                 name: "Test Token",
                 symbol: "TEST",
-                admins: initAdminsStruct(initAdmins, removables)
+                admins: initAdminsStruct(initAdmins, removables),
+                tokenURI: ""
             }),
             CREATOR
         );

@@ -136,7 +136,8 @@ contract ControllerDevnetForkTest is Test {
                 socialMedia: SocialMedia({farcaster: "", twitterX: "", telegram: "", website: ""}),
                 name: symbol,
                 symbol: symbol,
-                admins: admins
+                admins: admins,
+                tokenURI: ""
             }),
             rewardsConfig: RewardsConfig({
                 swapFeeBips: 125, creatorAddress: creator, rewardRecipient: address(0)

@@ -139,7 +139,8 @@ contract ReferralsIntegrationTest is Test {
                 socialMedia: SocialMedia({farcaster: "", twitterX: "", telegram: "", website: ""}),
                 name: "Meme",
                 symbol: "MEME",
-                admins: admins
+                admins: admins,
+                tokenURI: ""
             }),
             rewardsConfig: RewardsConfig({
                 swapFeeBips: FEE_BIPS, creatorAddress: msg.sender, rewardRecipient: address(0)

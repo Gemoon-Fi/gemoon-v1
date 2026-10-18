@@ -149,7 +149,8 @@ contract DevBuyDevnetForkTest is Test {
                 socialMedia: SocialMedia({farcaster: "", twitterX: "", telegram: "", website: ""}),
                 name: "DevBuy",
                 symbol: "DEVB",
-                admins: admins
+                admins: admins,
+                tokenURI: ""
             }),
             rewardsConfig: RewardsConfig({
                 swapFeeBips: MEME_FEE_BIPS, creatorAddress: creator, rewardRecipient: address(0)
