@@ -58,7 +58,7 @@ creators(address[] memes) returns (CreatorRewards[])  // { creatorOf, ok, assets
 | `vault.registeredOk == false` | волт не ответил: `registered` неизвестен, показывать `–` |
 | `vault.assets[i].symbolOk`, `decimalsOk` == `false` | у ассета нет `symbol()`/`decimals()`, показывать `–` |
 | `creators` `ok == false` | волт не ответил, данные создателя неизвестны |
-| пустые `name`/`symbol`/`description`/`image`/`tokenURI` | функции нет или ответ не строка (`tokenURI` нет у мемов, созданных до ERC-1046) |
+| пустые `name`/`symbol`/`description`/`image` | функции нет или ответ не строка |
 | `market.sqrtPriceX96 == 0` | пул не создан, цены нет |
 | `vault.registered == false` при `registeredOk` | у адреса нет волта: это не мем протокола, поля волта нули |
 | `account == 0x0` | `position` нулевая, вызовы по аккаунту не делаются |
@@ -86,7 +86,6 @@ const config = {
     name: "My Meme",                  // 1..150 символов
     symbol: "MEME",                   // 1..50 символов
     admins: [{ admin: "0x...", removable: true }], // минимум один
-    tokenURI: "ipfs://.../meta.json", // ERC-1046, необязательно ("" = нет), до 2048 байт
   },
   rewardsConfig: {
     swapFeeBips: 300n,                // комиссия свопа мема, 100..1000 (1%..10%)
@@ -235,12 +234,20 @@ HookManager для интеграций (`IHookManager.json`):
 - `totalHolders()`: число адресов с ненулевым балансом. Считаются все адреса, включая контракты:
   PoolManager (ликвидность пула), контроллер (пыль после минта позиции), волт (стейки). Есть
   только у мемов, созданных после этого обновления: у старых токенов вызов откатится.
-- `tokenURI()`: ERC-1046, ссылка на JSON с метаданными токена (`name`, `symbol`, `decimals`,
-  `image`, `description`, опционально `interop` для кошельков ERC-721/1155). Задаётся в
-  `tokenConfig.tokenURI` при деплое, может быть пустой. `supportsInterface(0x3c130d90)` (ERC-165)
-  возвращает `true`; также `true` для IERC165, IERC20, IERC20Metadata.
-- Только админ: `updateImage(url)`, `changeDescription(text)`, `setTokenURI(uri)` (пустая строка
-  очищает).
+- `tokenURI()`: ERC-1046, метаданные собираются ончейн из текущих данных токена и отдаются как
+  `data:application/json;base64,<json>`. Отдельно ничего задавать не нужно, после `updateImage` /
+  `changeDescription` URI меняется сам. JSON:
+  ```json
+  {"name":"Meme","symbol":"MEME","decimals":18,"description":"...","image":"ipfs://...",
+   "socialMedia":{"farcaster":"...","twitterX":"...","telegram":"...","website":"..."}}
+  ```
+  Строки экранированы по JSON, кавычки и переводы строк в описании безопасны.
+  `supportsInterface(0x3c130d90)` (ERC-165) возвращает `true`; также `true` для IERC165, IERC20,
+  IERC20Metadata. Есть только у мемов, созданных после этого обновления.
+- Только админ: `updateImage(url)`, `changeDescription(text)`, `setTokenURI(uri)`. `setTokenURI`
+  задаёт свой URI метаданных (`ipfs://`, `https://`, `data:`): пока он не пустой, `tokenURI()`
+  отдаёт его как есть, без ончейн JSON и без проверки содержимого. Пустая строка возвращает
+  ончейн JSON.
 - Замена админа: `GemoonController.changeAdmin(token, oldAdmin, newAdmin)`. Заменить можно
   только админа с `removable = true`.
 
@@ -254,7 +261,8 @@ HookManager для интеграций (`IHookManager.json`):
 | Vault | `FeesConverted(meme, epoch, usdgIn, toStakers[], toCreator[])` | USDG сконвертирован, награды стали claimable |
 | Vault | `Staked`, `Unstaked`, `RewardPaid`, `CreatorRewardPaid` | действия пользователей |
 | Vault | `CreatorTransferStarted`, `CreatorTransferred` | смена создателя |
-| Token | `UpdateImage`, `UpdateDescription`, `UpdateTokenURI` | смена метаданных (`UpdateTokenURI` эмитится и в конструкторе) |
+| Token | `UpdateImage`, `UpdateDescription` | смена метаданных (а значит и ончейн `tokenURI`) |
+| Token | `UpdateTokenURI(newTokenURI)` | админ задал свой URI метаданных (пустой — снова ончейн JSON) |
 | Referrals | `CodeRegistered(referrer, codeHash, code)`, `ReferrerSet(user, referrer, codeHash)` | коды и привязки |
 | Referrals | `TokenRegistered(meme, creator, referrer)` | мем закреплён за реферером (0x0 — нет) |
 | Referrals | `FeeReceived(meme, referrer, amount, refAmount)` | пришла протокольная доля, `refAmount` начислен рефереру |
@@ -299,7 +307,6 @@ await referrals.paused();                      // true — выплаты вре
 | `EnforcedPause` | волт на паузе: стейк, клейм и конвертация недоступны, вывод стейка работает |
 | `NotCreator`, `NotPendingCreator` | смена создателя не тем адресом |
 | `Caller is not an admin` | метаданные токена меняет не админ |
-| `TokenURITooLong(length, maxLength)` | `tokenURI` длиннее 2048 байт (в `deployToken` или `setTokenURI`) |
 | `InvalidCode`, `CodeTaken`, `CodeNotFound` | реферальный код неверного формата, занят или не существует |
 | `ReferrerAlreadySet`, `SelfReferral` | реферер уже привязан или свой код |
 | `NothingToClaim` | рефереру нечего выплачивать |

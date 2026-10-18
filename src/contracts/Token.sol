@@ -10,6 +10,9 @@ import {ERC165} from "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IERC1046} from "./interfaces/IERC1046.sol";
+import {Base64} from "@openzeppelin/contracts/utils/Base64.sol";
+import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
+import {Json} from "./utils/Json.sol";
 
 contract GemoonToken is
     IGemoonToken,
@@ -26,7 +29,7 @@ contract GemoonToken is
     SocialMedia private _socialMedia;
     /// @dev Number of addresses with a non-zero balance, kept by `_update`.
     uint256 private _holders;
-    /// @dev ERC-1046 metadata URI.
+    /// @dev Custom ERC-1046 URI set by an admin; empty = on-chain JSON.
     string private _tokenURI;
 
     constructor(
@@ -42,7 +45,6 @@ contract GemoonToken is
         _decimals = DECIMALS;
         _creator = creator_;
         _socialMedia = config.socialMedia;
-        _setTokenURI(config.tokenURI);
 
         /// @notice Minting the maximum supply of tokens to the deployer.
         _mint(msg.sender, 1_000_000_000 * 10 ** uint256(_decimals));
@@ -95,14 +97,29 @@ contract GemoonToken is
         emit UpdateImage(addr);
     }
 
-    /// @inheritdoc IERC1046
+    /// @notice ERC-1046 metadata URI. The custom URI set by an admin (`setTokenURI`) if any,
+    ///         otherwise built on-chain from the current token data:
+    ///         `data:application/json;base64,<json>` with
+    ///         `{"name","symbol","decimals","description","image",
+    ///         "socialMedia":{"farcaster","twitterX","telegram","website"}}`.
+    /// @dev The on-chain JSON is always in sync with `updateImage` / `changeDescription`
+    /// (`UpdateImage`, `UpdateDescription` signal a change). Creator-chosen strings are
+    /// JSON-escaped, so they cannot break out of their field. A custom URI is returned as is.
+    /// @return Metadata URI.
     function tokenURI() external view override returns (string memory) {
-        return _tokenURI;
+        string memory custom = _tokenURI;
+        if (bytes(custom).length != 0) return custom;
+        return
+            string.concat(
+                "data:application/json;base64,",
+                Base64.encode(bytes(_metadataJson()))
+            );
     }
 
     /// @inheritdoc IGemoonToken
     function setTokenURI(string calldata uri) external override onlyAdmin {
-        _setTokenURI(uri);
+        _tokenURI = uri;
+        emit UpdateTokenURI(uri);
     }
 
     /// @inheritdoc IERC165
@@ -131,12 +148,36 @@ contract GemoonToken is
         return _socialMedia;
     }
 
-    function _setTokenURI(string memory uri) internal {
-        uint256 length = bytes(uri).length;
-        if (length > MAX_TOKEN_URI_LENGTH)
-            revert TokenURITooLong(length, MAX_TOKEN_URI_LENGTH);
-        _tokenURI = uri;
-        emit UpdateTokenURI(uri);
+    /// @dev Metadata JSON of `tokenURI`.
+    function _metadataJson() internal view returns (string memory) {
+        SocialMedia memory social = _socialMedia;
+        string memory socials = string.concat(
+            '{"farcaster":"',
+            Json.escape(social.farcaster),
+            '","twitterX":"',
+            Json.escape(social.twitterX),
+            '","telegram":"',
+            Json.escape(social.telegram),
+            '","website":"',
+            Json.escape(social.website),
+            '"}'
+        );
+        return
+            string.concat(
+                '{"name":"',
+                Json.escape(name()),
+                '","symbol":"',
+                Json.escape(symbol()),
+                '","decimals":',
+                Strings.toString(decimals()),
+                ',"description":"',
+                Json.escape(_description),
+                '","image":"',
+                Json.escape(_imgUrl),
+                '","socialMedia":',
+                socials,
+                "}"
+            );
     }
 
     function showAdmins() public view override returns (address[] memory) {

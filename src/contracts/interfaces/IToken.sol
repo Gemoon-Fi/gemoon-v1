@@ -21,20 +21,11 @@ struct TokenConfig {
     string name;
     string symbol;
     AdminConfig[] admins;
-    /// @dev ERC-1046 metadata JSON URI (`tokenURI()`), optional: empty = none. At most
-    /// `MAX_TOKEN_URI_LENGTH` bytes.
-    string tokenURI;
 }
 
-/// @dev Longest `tokenURI` accepted at deployment and by `setTokenURI`.
-uint256 constant MAX_TOKEN_URI_LENGTH = 2048;
-
-/// @dev Also ERC-1046 (`tokenURI()`) and ERC-165: `supportsInterface` reports IERC165, IERC20,
-/// IERC20Metadata and IERC1046.
+/// @dev Also ERC-1046 (`tokenURI()`, metadata built on-chain) and ERC-165: `supportsInterface`
+/// reports IERC165, IERC20, IERC20Metadata and IERC1046.
 interface IGemoonToken is IERC20, IERC1046 {
-    /// @dev `tokenURI` longer than `MAX_TOKEN_URI_LENGTH`.
-    error TokenURITooLong(uint256 length, uint256 maxLength);
-
     function creator() external view returns (address);
 
     function imageAddress() external view returns (string memory);
@@ -47,8 +38,9 @@ interface IGemoonToken is IERC20, IERC1046 {
 
     function changeDescription(string memory desc_) external;
 
-    /// @notice Replaces the ERC-1046 metadata URI. Only admin. Empty clears it.
-    /// @param uri New metadata JSON URI, at most `MAX_TOKEN_URI_LENGTH` bytes.
+    /// @notice Sets a custom ERC-1046 metadata URI returned by `tokenURI()` instead of the
+    ///         on-chain JSON. Empty string switches back to the on-chain JSON. Only admin.
+    /// @param uri Metadata JSON URI (e.g. `ipfs://...`, `https://...`, `data:...`), or empty.
     function setTokenURI(string calldata uri) external;
 
     function showAdmins() external view returns (address[] memory);
@@ -60,6 +52,6 @@ interface IGemoonToken is IERC20, IERC1046 {
 
     event UpdateDescription(string newDescription);
 
-    /// @notice ERC-1046 metadata URI changed.
+    /// @notice Custom metadata URI set (empty: back to the on-chain JSON).
     event UpdateTokenURI(string newTokenURI);
 }

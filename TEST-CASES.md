@@ -16,8 +16,7 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
 | `test_DeployToken_MintsWholeSupplyIntoPositionOwnedByController` | Деплой мема без dev buy | Вся эмиссия в позиции, NFT позиции у контроллера, создатель без токенов | Ликвидность > 0, supply = 1 млрд, у контроллера < 1 токена пыли, у создателя 0, волт зарегистрирован |
-| `test_DeployToken_TokenURI_SetOnToken` | `tokenConfig.tokenURI` при деплое | ERC-1046 URI из конфига доходит до токена | `tokenURI()` = `ipfs://meme-metadata.json` |
-| `test_DeployToken_TokenURITooLong_Reverts` | URI длиннее 2048 байт | Ограничение длины действует и через контроллер | revert `TokenURITooLong(2049, 2048)` |
+| `test_DeployToken_TokenURI_DataJsonBase64` | ERC-1046 у мема из `deployToken` | Метаданные ончейн, без отдельного URI | `tokenURI()` начинается с `data:application/json;base64,` и не пуст |
 | `test_DeployToken_NoAllowanceLeftBehind` | Апрувы после минта позиции | После деплоя контроллер не оставляет апрувов | ERC20-апрув на Permit2 = 0, Permit2-апрув на PositionManager = 0 |
 | `test_DeployToken_EmitsPositionCreated` | Событие `PositionCreated` | Событие совпадает с реальной позицией | `token`, `positionId`, `liquidity` из события равны данным PositionManager |
 | `test_DeployToken_Twice_IndependentPositions` | Два мема подряд | Позиции независимы | Разные адреса токенов, id позиций подряд, обе у контроллера |
@@ -146,7 +145,7 @@ End-to-end в процессе теста: настоящие PoolManager/Positi
 |---|---|---|---|
 | `test_Constructor_ZeroAddress_Revert` | Нулевой адрес в конструкторе | Lens не создаётся над пустыми адресами | revert `ZeroAddress` для каждого из четырёх параметров |
 | `test_Constructor_StoresAddresses` | Адреса конструктора | Lens читает тот деплой, для которого создан | `controller()`, `vault()`, `protocol().hook/poolManager` = переданным |
-| `test_Tokens_RegisteredMemeNoAccount_MatchesDirectReads` (1) | Мем с 5 ассетами и соцсетями после двух покупок и сжигания на `0xdEaD`, без аккаунта | L3, L4 | meta/market/vault равны `name/symbol/decimals/description/imageAddress/creator/getSocialMedia/tokenURI`, `totalSupply`, `balanceOf(0x0)+balanceOf(dEaD)`, `getSlot0(poolId)`, `pendingFees`, `vaultInfo`, `getAssets` + symbol/decimals ассетов; все флаги `true`; `position` нулевая |
+| `test_Tokens_RegisteredMemeNoAccount_MatchesDirectReads` (1) | Мем с 5 ассетами и соцсетями после двух покупок и сжигания на `0xdEaD`, без аккаунта | L3, L4 | meta/market/vault равны `name/symbol/decimals/description/imageAddress/creator/getSocialMedia`, `totalSupply`, `balanceOf(0x0)+balanceOf(dEaD)`, `getSlot0(poolId)`, `pendingFees`, `vaultInfo`, `getAssets` + symbol/decimals ассетов; все флаги `true`; `position` нулевая |
 | `test_Tokens_FeeAccruedInHook_PendingFeesMatchHook` | Первая покупка, комиссия осталась в хуке | L3 | `market.pendingFees` = `hook.pendingFees(meme)` > 0 |
 | `test_Tokens_AssetWithBrokenMetadata_AssetFlagsFalse` | Ассет из allowlist с ревертящим `symbol()` и `decimals()` = 256 | L4 | У сломанного ассета `symbolOk`/`decimalsOk` = `false`, нули; у USDG флаги `true`, decimals 6 |
 | `test_Tokens_HookPendingFeesReverts_PendingFeesOkFalse` | `hook.pendingFees` ревертит (mock) | L4 | `pendingFeesOk = false`, `pendingFees` = 0, остальное читается |
@@ -613,19 +612,26 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 
 ## test/TokenURITest.sol
 
-ERC-1046 `tokenURI` токена: из `TokenConfig.tokenURI`, меняется админом, объявлен через ERC-165. Лимит длины 2048 байт.
+ERC-1046 `tokenURI` токена: свой URI админа (`setTokenURI`), если задан, иначе `data:application/json;base64,` от JSON, собранного ончейн из name, symbol, decimals, description, image и ссылок на соцсети. Каждый тест декодирует base64 и читает поля через `vm.parseJson`.
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
-| `test_TokenURI_FromConfig_Returned` | URI из конфига | Конструктор сохраняет URI | `tokenURI()` = `ipfs://meta.json` |
-| `test_TokenURI_EmptyConfig_Empty` | Пустой URI | URI необязателен | `""` |
-| `test_TokenURI_Constructor_EmitsUpdateTokenURI` | Событие при создании | Индексатор видит начальный URI | `UpdateTokenURI(uri)` |
-| `test_TokenURI_MaxLength_Accepted`, `test_TokenURI_TooLong_Reverts` | Граница длины в конструкторе | ≤ 2048 байт | 2048 принимается, 2049 revert `TokenURITooLong` |
-| `test_SetTokenURI_Admin_UpdatesAndEmits` | Смена админом | — | новый URI, `UpdateTokenURI` |
-| `test_SetTokenURI_Empty_Clears` | Очистка | Пустая строка допустима | `""` |
-| `test_SetTokenURI_NotAdmin_Reverts` | Смена не админом | Метаданные меняет только админ | revert "Caller is not an admin", URI прежний |
-| `test_SetTokenURI_TooLong_Reverts` | Слишком длинный URI | ≤ 2048 байт | revert `TokenURITooLong` |
-| `testFuzz_SetTokenURI_LengthBound` (fuzz) | Любая длина 0..2112 | ≤ лимита сохраняется как есть, длиннее — revert без изменений | совпадает |
+| `test_TokenURI_Prefix_DataJsonBase64` | Формат URI | `data:application/json;base64,` + OZ `Base64` от JSON | совпадает |
+| `test_TokenURI_Fields_MatchTokenData` | Основные поля | JSON = данные токена | name, symbol, decimals 18, description, image |
+| `test_TokenURI_SocialMedia_AllFourLinks` | Соцсети | Все 4 ссылки в `socialMedia` | farcaster, twitterX, telegram, website |
+| `test_TokenURI_EmptySocialMedia_EmptyStrings` | Пустые соцсети | JSON валиден и без ссылок | пустые строки |
+| `test_TokenURI_Json_ExactLayout` | Точная раскладка JSON | Формат стабилен для фронта | строка совпадает байт в байт |
+| `test_TokenURI_AfterUpdateImageAndDescription_Reflected` | После смены метаданных админом | URI всегда отражает текущие данные | новые image и description |
+| `test_TokenURI_QuoteInDescription_NoInjection` | Кавычки в описании | Создатель не может подменить поля JSON | description как есть, image прежний |
+| `test_TokenURI_ControlCharsAndBackslash_RoundTrip` | `\`, `"`, `\n`, `\r`, `\t`, 0x01, 0x1f | Экранирование по RFC 8259 | строки возвращаются без изменений |
+| `test_TokenURI_Utf8_KeptAsIs` | UTF-8 (кириллица, эмодзи) | Байты ≥ 0x20 не трогаются | строки без изменений |
+| `test_Escape_Plain_ReturnsSameString`, `test_Escape_SpecialChars_Escaped` | `Json.escape` | Без спецсимволов — та же строка; спецсимволы — короткие escape или `\u00XX` | точные строки |
+| `testFuzz_TokenURI_AsciiDescription_RoundTrip` (fuzz) | Любое ASCII-описание до 256 байт | JSON всегда валиден, описание возвращается как есть, остальные поля не задеты | совпадает |
+| `test_SetTokenURI_Admin_OverridesOnChainJson` | Админ задаёт свой URI | Свой URI заменяет ончейн JSON, событие | `tokenURI()` = `ipfs://custom.json`, `UpdateTokenURI` |
+| `test_SetTokenURI_Empty_BackToOnChainJson` | Сброс пустой строкой | Пустой URI возвращает ончейн JSON | URI равен исходному, JSON валиден |
+| `test_SetTokenURI_NotAdmin_Reverts` | Не админ | URI меняет только админ | revert "Caller is not an admin", URI прежний |
+| `test_SetTokenURI_CustomSet_IgnoresMetadataUpdates` | Свой URI + смена image/description | Свой URI отдаётся как есть | `ipfs://custom.json` |
+| `testFuzz_SetTokenURI_AnyUri_ReturnedOrOnChain` (fuzz) | Любая строка | Непустая отдаётся как есть, пустая — ончейн JSON | совпадает |
 | `test_SupportsInterface_ERC1046_True` | ERC-165 для ERC-1046 | id = `0x3c130d90`, виден через `ERC165Checker` | `true` |
 | `test_SupportsInterface_ERC165AndERC20_True` | ERC-165 для базовых интерфейсов | — | `true` для IERC165, IERC20, IERC20Metadata |
 | `test_SupportsInterface_InvalidId_False` | Неизвестные id | `0xffffffff` всегда `false` (ERC-165) | `false` для `0xffffffff` и ERC-721 |

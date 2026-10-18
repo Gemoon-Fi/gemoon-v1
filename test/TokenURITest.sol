@@ -6,147 +6,265 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import {ERC165Checker} from "@openzeppelin/contracts/utils/introspection/ERC165Checker.sol";
+import {Base64} from "@openzeppelin/contracts/utils/Base64.sol";
 import {GemoonToken} from "../src/contracts/Token.sol";
-import {
-    TokenConfig,
-    SocialMedia,
-    IGemoonToken,
-    MAX_TOKEN_URI_LENGTH
-} from "../src/contracts/interfaces/IToken.sol";
+import {TokenConfig, SocialMedia, IGemoonToken} from "../src/contracts/interfaces/IToken.sol";
 import {IERC1046} from "../src/contracts/interfaces/IERC1046.sol";
 import {AdminConfig} from "../src/contracts/utils/Admin.sol";
+import {Json} from "../src/contracts/utils/Json.sol";
 
-/// @notice ERC-1046 `tokenURI` of GemoonToken: set from `TokenConfig.tokenURI`, changed by admins,
-/// advertised through ERC-165.
+/// @notice ERC-1046 `tokenURI` of GemoonToken: `data:application/json;base64,` of a JSON built
+/// on-chain from name, symbol, decimals, description, image and social links. Every test decodes
+/// the URI and reads the fields back with `vm.parseJson`, so the JSON must stay valid whatever the
+/// creator put into the strings.
 contract TokenURITest is Test {
+    string constant PREFIX = "data:application/json;base64,";
+
     address admin = makeAddr("admin");
     address stranger = makeAddr("stranger");
 
-    function _deploy(string memory uri) internal returns (GemoonToken) {
+    function _deploy(
+        string memory name_,
+        string memory description_,
+        string memory image_,
+        SocialMedia memory social_
+    ) internal returns (GemoonToken) {
         AdminConfig[] memory admins = new AdminConfig[](1);
         admins[0] = AdminConfig({admin: admin, removable: false});
         return new GemoonToken(
             TokenConfig({
-                imgUrl: "ipfs://image",
-                description: "uri",
-                socialMedia: SocialMedia({farcaster: "", twitterX: "", telegram: "", website: ""}),
-                name: "Meme",
+                imgUrl: image_,
+                description: description_,
+                socialMedia: social_,
+                name: name_,
                 symbol: "MEME",
-                admins: admins,
-                tokenURI: uri
+                admins: admins
             }),
             address(0xC0FFEE)
         );
     }
 
-    function _uri(uint256 length) internal pure returns (string memory) {
-        bytes memory b = new bytes(length);
-        for (uint256 i; i < length; ++i) b[i] = "a";
-        return string(b);
+    function _social() internal pure returns (SocialMedia memory) {
+        return SocialMedia({
+            farcaster: "https://warpcast.com/meme",
+            twitterX: "https://x.com/meme",
+            telegram: "https://t.me/meme",
+            website: "https://meme.xyz"
+        });
     }
 
-    // ------------------------------------------------------------------ constructor
-
-    function test_TokenURI_FromConfig_Returned() external {
-        GemoonToken token = _deploy("ipfs://meta.json");
-        assertEq(token.tokenURI(), "ipfs://meta.json");
+    function _deployDefault() internal returns (GemoonToken) {
+        return _deploy("Meme", "a meme", "ipfs://image", _social());
     }
 
-    function test_TokenURI_EmptyConfig_Empty() external {
-        assertEq(_deploy("").tokenURI(), "");
+    /// @dev Strips the data URI prefix and decodes the base64 payload.
+    function _json(GemoonToken token) internal view returns (string memory) {
+        bytes memory uri = bytes(token.tokenURI());
+        bytes memory prefix = bytes(PREFIX);
+        require(uri.length >= prefix.length, "short uri");
+        for (uint256 i; i < prefix.length; ++i) require(uri[i] == prefix[i], "prefix");
+        bytes memory payload = new bytes(uri.length - prefix.length);
+        for (uint256 i; i < payload.length; ++i) payload[i] = uri[prefix.length + i];
+        return string(_decodeBase64(payload));
     }
 
-    function test_TokenURI_Constructor_EmitsUpdateTokenURI() external {
-        vm.expectEmit(false, false, false, true);
-        emit IGemoonToken.UpdateTokenURI("ipfs://meta.json");
-        _deploy("ipfs://meta.json");
+    /// @dev Standard base64 with `=` padding, as produced by OZ `Base64.encode`.
+    function _decodeBase64(bytes memory data) internal pure returns (bytes memory out) {
+        require(data.length % 4 == 0, "base64 length");
+        if (data.length == 0) return out;
+        uint256 pad = data[data.length - 1] == "=" ? (data[data.length - 2] == "=" ? 2 : 1) : 0;
+        out = new bytes((data.length / 4) * 3 - pad);
+        uint256 j;
+        for (uint256 i; i < data.length; i += 4) {
+            uint256 n = (_b64(data[i]) << 18) | (_b64(data[i + 1]) << 12)
+                | (_b64(data[i + 2]) << 6) | _b64(data[i + 3]);
+            if (j < out.length) out[j++] = bytes1(uint8(n >> 16));
+            if (j < out.length) out[j++] = bytes1(uint8(n >> 8));
+            if (j < out.length) out[j++] = bytes1(uint8(n));
+        }
     }
 
-    function test_TokenURI_MaxLength_Accepted() external {
-        assertEq(bytes(_deploy(_uri(MAX_TOKEN_URI_LENGTH)).tokenURI()).length, MAX_TOKEN_URI_LENGTH);
+    function _b64(bytes1 c) internal pure returns (uint256) {
+        if (c >= "A" && c <= "Z") return uint8(c) - 65;
+        if (c >= "a" && c <= "z") return uint8(c) - 71;
+        if (c >= "0" && c <= "9") return uint8(c) + 4;
+        if (c == "+") return 62;
+        if (c == "/") return 63;
+        if (c == "=") return 0;
+        revert("base64 char");
     }
 
-    function test_TokenURI_TooLong_Reverts() external {
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IGemoonToken.TokenURITooLong.selector, MAX_TOKEN_URI_LENGTH + 1, MAX_TOKEN_URI_LENGTH
-            )
+    // ------------------------------------------------------------------ content
+
+    function test_TokenURI_Prefix_DataJsonBase64() external {
+        GemoonToken token = _deployDefault();
+        string memory json = _json(token);
+        assertEq(token.tokenURI(), string.concat(PREFIX, Base64.encode(bytes(json))));
+    }
+
+    function test_TokenURI_Fields_MatchTokenData() external {
+        string memory json = _json(_deployDefault());
+        assertEq(vm.parseJsonString(json, ".name"), "Meme");
+        assertEq(vm.parseJsonString(json, ".symbol"), "MEME");
+        assertEq(vm.parseJsonUint(json, ".decimals"), 18);
+        assertEq(vm.parseJsonString(json, ".description"), "a meme");
+        assertEq(vm.parseJsonString(json, ".image"), "ipfs://image");
+    }
+
+    function test_TokenURI_SocialMedia_AllFourLinks() external {
+        string memory json = _json(_deployDefault());
+        assertEq(vm.parseJsonString(json, ".socialMedia.farcaster"), "https://warpcast.com/meme");
+        assertEq(vm.parseJsonString(json, ".socialMedia.twitterX"), "https://x.com/meme");
+        assertEq(vm.parseJsonString(json, ".socialMedia.telegram"), "https://t.me/meme");
+        assertEq(vm.parseJsonString(json, ".socialMedia.website"), "https://meme.xyz");
+    }
+
+    function test_TokenURI_EmptySocialMedia_EmptyStrings() external {
+        string memory json = _json(
+            _deploy("Meme", "d", "i", SocialMedia({farcaster: "", twitterX: "", telegram: "", website: ""}))
         );
-        _deploy(_uri(MAX_TOKEN_URI_LENGTH + 1));
+        assertEq(vm.parseJsonString(json, ".socialMedia.farcaster"), "");
+        assertEq(vm.parseJsonString(json, ".socialMedia.website"), "");
+    }
+
+    /// @dev Exact JSON layout, so frontends can rely on it.
+    function test_TokenURI_Json_ExactLayout() external {
+        assertEq(
+            _json(_deployDefault()),
+            '{"name":"Meme","symbol":"MEME","decimals":18,"description":"a meme","image":"ipfs://image",'
+            '"socialMedia":{"farcaster":"https://warpcast.com/meme","twitterX":"https://x.com/meme",'
+            '"telegram":"https://t.me/meme","website":"https://meme.xyz"}}'
+        );
+    }
+
+    function test_TokenURI_AfterUpdateImageAndDescription_Reflected() external {
+        GemoonToken token = _deployDefault();
+        vm.startPrank(admin);
+        token.updateImage("ipfs://new-image");
+        token.changeDescription("new description");
+        vm.stopPrank();
+        string memory json = _json(token);
+        assertEq(vm.parseJsonString(json, ".image"), "ipfs://new-image");
+        assertEq(vm.parseJsonString(json, ".description"), "new description");
+    }
+
+    // ------------------------------------------------------------------ escaping
+
+    /// @dev A creator cannot inject fields: quotes are escaped, the injected key does not exist.
+    function test_TokenURI_QuoteInDescription_NoInjection() external {
+        string memory evil = 'x","image":"https://phish.example';
+        string memory json = _json(_deploy("Meme", evil, "ipfs://image", _social()));
+        assertEq(vm.parseJsonString(json, ".description"), evil);
+        assertEq(vm.parseJsonString(json, ".image"), "ipfs://image");
+    }
+
+    function test_TokenURI_ControlCharsAndBackslash_RoundTrip() external {
+        string memory raw = string(abi.encodePacked("a\\b\"c\nd\re\tf", bytes1(0x01), bytes1(0x1f), "g"));
+        string memory json = _json(_deploy(raw, raw, raw, _social()));
+        assertEq(vm.parseJsonString(json, ".name"), raw);
+        assertEq(vm.parseJsonString(json, ".description"), raw);
+        assertEq(vm.parseJsonString(json, ".image"), raw);
+    }
+
+    function test_TokenURI_Utf8_KeptAsIs() external {
+        string memory raw = unicode"мем 🚀";
+        string memory json = _json(_deploy(raw, raw, "i", _social()));
+        assertEq(vm.parseJsonString(json, ".name"), raw);
+        assertEq(vm.parseJsonString(json, ".description"), raw);
+    }
+
+    function test_Escape_Plain_ReturnsSameString() external pure {
+        assertEq(Json.escape("https://meme.xyz/a?b=c"), "https://meme.xyz/a?b=c");
+    }
+
+    function test_Escape_SpecialChars_Escaped() external pure {
+        assertEq(
+            Json.escape(string(abi.encodePacked('"\\', bytes1(0x08), bytes1(0x0c), "\n\r\t", bytes1(0x00)))),
+            '\\"\\\\\\b\\f\\n\\r\\t\\u0000'
+        );
+    }
+
+    /// @dev Any ASCII description (control chars, quotes, backslashes included) survives the round
+    /// trip through the JSON unchanged and does not touch the other fields.
+    function testFuzz_TokenURI_AsciiDescription_RoundTrip(bytes memory raw) external {
+        vm.assume(raw.length <= 256);
+        for (uint256 i; i < raw.length; ++i) raw[i] = bytes1(uint8(raw[i]) & 0x7f);
+        string memory description_ = string(raw);
+        string memory json = _json(_deploy("Meme", description_, "ipfs://image", _social()));
+        assertEq(vm.parseJsonString(json, ".description"), description_);
+        assertEq(vm.parseJsonString(json, ".image"), "ipfs://image");
+        assertEq(vm.parseJsonString(json, ".socialMedia.website"), "https://meme.xyz");
     }
 
     // ------------------------------------------------------------------ setTokenURI
 
-    function test_SetTokenURI_Admin_UpdatesAndEmits() external {
-        GemoonToken token = _deploy("ipfs://old");
+    function test_SetTokenURI_Admin_OverridesOnChainJson() external {
+        GemoonToken token = _deployDefault();
         vm.expectEmit(address(token));
-        emit IGemoonToken.UpdateTokenURI("ipfs://new");
+        emit IGemoonToken.UpdateTokenURI("ipfs://custom.json");
         vm.prank(admin);
-        token.setTokenURI("ipfs://new");
-        assertEq(token.tokenURI(), "ipfs://new");
+        token.setTokenURI("ipfs://custom.json");
+        assertEq(token.tokenURI(), "ipfs://custom.json");
     }
 
-    function test_SetTokenURI_Empty_Clears() external {
-        GemoonToken token = _deploy("ipfs://old");
-        vm.prank(admin);
+    function test_SetTokenURI_Empty_BackToOnChainJson() external {
+        GemoonToken token = _deployDefault();
+        string memory onChain = token.tokenURI();
+        vm.startPrank(admin);
+        token.setTokenURI("ipfs://custom.json");
         token.setTokenURI("");
-        assertEq(token.tokenURI(), "");
+        vm.stopPrank();
+        assertEq(token.tokenURI(), onChain);
+        assertEq(vm.parseJsonString(_json(token), ".name"), "Meme");
     }
 
     function test_SetTokenURI_NotAdmin_Reverts() external {
-        GemoonToken token = _deploy("ipfs://old");
+        GemoonToken token = _deployDefault();
+        string memory before = token.tokenURI();
         vm.expectRevert("Caller is not an admin");
         vm.prank(stranger);
-        token.setTokenURI("ipfs://evil");
-        assertEq(token.tokenURI(), "ipfs://old");
+        token.setTokenURI("https://phish.example/meta.json");
+        assertEq(token.tokenURI(), before);
     }
 
-    function test_SetTokenURI_TooLong_Reverts() external {
-        GemoonToken token = _deploy("ipfs://old");
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IGemoonToken.TokenURITooLong.selector, MAX_TOKEN_URI_LENGTH + 1, MAX_TOKEN_URI_LENGTH
-            )
-        );
-        vm.prank(admin);
-        token.setTokenURI(_uri(MAX_TOKEN_URI_LENGTH + 1));
+    /// @dev A custom URI is returned verbatim and stays put while image / description change.
+    function test_SetTokenURI_CustomSet_IgnoresMetadataUpdates() external {
+        GemoonToken token = _deployDefault();
+        vm.startPrank(admin);
+        token.setTokenURI("ipfs://custom.json");
+        token.updateImage("ipfs://new-image");
+        token.changeDescription("new description");
+        vm.stopPrank();
+        assertEq(token.tokenURI(), "ipfs://custom.json");
     }
 
-    /// @dev Any URI up to the cap is stored as is, anything longer is rejected and changes nothing.
-    function testFuzz_SetTokenURI_LengthBound(uint16 length) external {
-        uint256 len = bound(length, 0, MAX_TOKEN_URI_LENGTH + 64);
-        GemoonToken token = _deploy("ipfs://old");
-        string memory uri = _uri(len);
-        if (len > MAX_TOKEN_URI_LENGTH) {
-            vm.expectRevert(
-                abi.encodeWithSelector(
-                    IGemoonToken.TokenURITooLong.selector, len, MAX_TOKEN_URI_LENGTH
-                )
-            );
-        }
+    /// @dev Any non-empty URI is returned verbatim, an empty one restores the on-chain JSON.
+    function testFuzz_SetTokenURI_AnyUri_ReturnedOrOnChain(string memory uri) external {
+        GemoonToken token = _deployDefault();
+        string memory onChain = token.tokenURI();
         vm.prank(admin);
         token.setTokenURI(uri);
-        assertEq(token.tokenURI(), len > MAX_TOKEN_URI_LENGTH ? "ipfs://old" : uri);
+        assertEq(token.tokenURI(), bytes(uri).length == 0 ? onChain : uri);
     }
 
     // ------------------------------------------------------------------ ERC-165
 
     function test_SupportsInterface_ERC1046_True() external {
-        GemoonToken token = _deploy("");
+        GemoonToken token = _deployDefault();
         assertEq(type(IERC1046).interfaceId, bytes4(0x3c130d90), "ERC-1046 id");
         assertTrue(token.supportsInterface(type(IERC1046).interfaceId));
         assertTrue(ERC165Checker.supportsInterface(address(token), type(IERC1046).interfaceId));
     }
 
     function test_SupportsInterface_ERC165AndERC20_True() external {
-        GemoonToken token = _deploy("");
+        GemoonToken token = _deployDefault();
         assertTrue(token.supportsInterface(type(IERC165).interfaceId));
         assertTrue(token.supportsInterface(type(IERC20).interfaceId));
         assertTrue(token.supportsInterface(type(IERC20Metadata).interfaceId));
     }
 
     function test_SupportsInterface_InvalidId_False() external {
-        GemoonToken token = _deploy("");
+        GemoonToken token = _deployDefault();
         assertFalse(token.supportsInterface(0xffffffff), "ERC-165 invalid id");
         assertFalse(token.supportsInterface(0x80ac58cd), "not ERC-721");
     }

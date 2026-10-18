@@ -40,7 +40,6 @@ interface IGemoonLens {
     /// @param social     `getSocialMedia()`: farcaster, twitterX, telegram, website. Empty if it
     ///                   failed (see `socialOk`).
     /// @param socialOk   Whether `getSocialMedia()` returned four strings.
-    /// @param tokenURI   ERC-1046 `tokenURI()`, empty if it failed (Memes deployed before it).
     struct TokenMeta {
         bool ok;
         string name;
@@ -53,7 +52,6 @@ interface IGemoonLens {
         bool creatorOk;
         SocialMedia social;
         bool socialOk;
-        string tokenURI;
     }
 
     /// @notice Often changing market data.

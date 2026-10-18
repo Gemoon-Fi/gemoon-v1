@@ -37,13 +37,8 @@ import {
 import {PriceMath} from "../src/contracts/utils/Price.sol";
 import {StateLibrary} from "@uniswap-v4-core/libraries/StateLibrary.sol";
 import {PoolIdLibrary} from "@uniswap-v4-core/types/PoolId.sol";
-import {
-    TokenConfig,
-    SocialMedia,
-    AdminConfig,
-    IGemoonToken,
-    MAX_TOKEN_URI_LENGTH
-} from "../src/contracts/interfaces/IToken.sol";
+import {TokenConfig, SocialMedia, AdminConfig} from "../src/contracts/interfaces/IToken.sol";
+import {IERC1046} from "../src/contracts/interfaces/IERC1046.sol";
 import {MintableToken} from "./mocks/MintableToken.sol";
 
 /// @notice End-to-end: real PoolManager, PositionManager and Permit2 deployed in-process, the
@@ -123,8 +118,7 @@ contract ControllerDeployTokenTest is Test {
                 socialMedia: SocialMedia({farcaster: "", twitterX: "", telegram: "", website: ""}),
                 name: "Meme",
                 symbol: "MEME",
-                admins: admins,
-                tokenURI: ""
+                admins: admins
             }),
             rewardsConfig: RewardsConfig({
                 swapFeeBips: swapFeeBips, creatorAddress: creator, rewardRecipient: address(0)
@@ -241,25 +235,13 @@ contract ControllerDeployTokenTest is Test {
         assertTrue(vault.isRegistered(token), "vault registered");
     }
 
-    /// @dev `tokenConfig.tokenURI` reaches the token: ERC-1046 metadata set at deployment.
-    function test_DeployToken_TokenURI_SetOnToken() external {
-        DeployConfig memory config = _config();
-        config.tokenConfig.tokenURI = "ipfs://meme-metadata.json";
-        vm.prank(creator);
-        address token = controller.deployToken(config);
-        assertEq(IGemoonToken(token).tokenURI(), "ipfs://meme-metadata.json");
-    }
-
-    function test_DeployToken_TokenURITooLong_Reverts() external {
-        DeployConfig memory config = _config();
-        config.tokenConfig.tokenURI = string(new bytes(MAX_TOKEN_URI_LENGTH + 1));
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IGemoonToken.TokenURITooLong.selector, MAX_TOKEN_URI_LENGTH + 1, MAX_TOKEN_URI_LENGTH
-            )
-        );
-        vm.prank(creator);
-        controller.deployToken(config);
+    /// @dev ERC-1046 metadata of a deployed Meme is an on-chain base64 JSON data URI.
+    function test_DeployToken_TokenURI_DataJsonBase64() external {
+        (address token,) = _deployMeme();
+        string memory uri = IERC1046(token).tokenURI();
+        bytes memory prefix = bytes("data:application/json;base64,");
+        assertGt(bytes(uri).length, prefix.length, "has payload");
+        for (uint256 i; i < prefix.length; ++i) assertEq(bytes(uri)[i], prefix[i], "prefix");
     }
 
     function test_DeployToken_NoAllowanceLeftBehind() external {

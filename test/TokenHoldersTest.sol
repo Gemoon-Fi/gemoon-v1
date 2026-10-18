@@ -16,8 +16,7 @@ function _newToken() returns (GemoonToken) {
             socialMedia: SocialMedia({farcaster: "", twitterX: "", telegram: "", website: ""}),
             name: "Meme",
             symbol: "MEME",
-            admins: admins,
-            tokenURI: ""
+            admins: admins
         }),
         address(0xC0FFEE)
     );
