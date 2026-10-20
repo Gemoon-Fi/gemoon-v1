@@ -87,7 +87,7 @@ contract Vault is
     // ---------------------------------------------------------------------------------------------
 
     /// @notice Version of the implementation, bump it together with `reinitialize` migrations.
-    uint64 public constant VAULT_VERSION = 3;
+    uint64 public constant VAULT_VERSION = 1;
 
     uint256 public constant BPS = 10_000;
     uint256 public constant CREATOR_SHARE_BPS = 1_000; // 10%

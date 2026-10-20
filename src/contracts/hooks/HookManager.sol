@@ -71,7 +71,7 @@ contract HookManager is
     // Constants / immutables
     // ---------------------------------------------------------------------------------------------
 
-    uint64 public constant HOOK_MANAGER_VERSION = 2;
+    uint64 public constant HOOK_MANAGER_VERSION = 1;
 
     uint256 public constant BIPS = 10_000;
     /// @notice Fallback base fee for a Meme the controller never reported, see `baseFeeBips`.

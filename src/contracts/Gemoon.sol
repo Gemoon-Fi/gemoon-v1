@@ -83,7 +83,7 @@ contract GemoonController is
     IReferrals public referrals;
 
     /// @dev Version of the Gemoon contract.
-    uint64 public constant GEMOON_VERSION = 2;
+    uint64 public constant GEMOON_VERSION = 1;
 
     function getVersion() public pure returns (uint64) {
         return GEMOON_VERSION;
