@@ -26,13 +26,15 @@ Pair-токен один на весь протокол: контроллер, �
 
 ### Развёртывание, один раз
 
-`DeployGemoon` поднимает три прокси в одном прогоне в порядке Vault, GemoonController, HookManager.
-Хук получает адреса волта и контроллера в `initialize`. Контроллер — единственный, кто может звать
+`DeployGemoon` поднимает всё в одном прогоне в порядке Vault, GemoonController, GmoonReferrals,
+HookManager, UniswapV3SwapAdapter. Хук получает адреса волта, контроллера и рефералов (получатель
+протокольной доли) в `initialize`. Контроллер — единственный, кто может звать
 `onlyController`-функции хука (`notifyPoolCreated`), владелец хука меняет его через `setController`.
 Контроллер получает хук, волт и PositionManager сеттерами,
-волт получает хук и контроллер. В конце владение уходит на `GEMOON_OWNER`, волту нужен отдельный
-`acceptOwnership`. Владелец волта затем настраивает allowlist наградных активов, порог конверсии
-и swap adapter, а владелец адаптера задаёт маршрут на каждый актив.
+волт получает хук, контроллер и адаптер. Активы из `DEPLOY_ASSETS_FILE` (robinhood-активы)
+разрешаются в волте и получают маршрут на адаптере в том же прогоне, если их пул USDG/актив
+есть в фабрике и отдаёт TWAP; остальные пропускаются с причиной в отчёте. В конце владение уходит
+на `GEMOON_OWNER`; волту, рефералам и адаптеру нужен отдельный `acceptOwnership`.
 
 Полуразвёрнутое состояние безопасно: контроллер не деплоит токены без хука, волта и
 PositionManager, хук не пускает пулы незарегистрированных мемов, волт принимает комиссии только от
@@ -279,17 +281,21 @@ Devnet (chain 1488): `0xf5e9342Ffe373D9a3B4a986870cbC6E66dDCbF15`, блок 8435
 | `RPC`, `PRIVATE_KEY` | Сеть и ключ деплоера. |
 | `POOL_MANAGER`, `POSITION_MANAGER`, `PERMIT2` | Uniswap V4 в целевой сети. |
 | `USDG_ADDRESS` | Pair-токен всех пулов. |
-| `PROTOCOL_FEE_RECIPIENT` | Получатель протокольной доли комиссии при `deploy-gemoon`. После `wire-referrals` им становится контракт рефералов. |
-| `REFERRALS_REF_SHARE_BIPS` | Для `deploy-referrals`: доля реферера в bips протокольной доли, по умолчанию 1000. |
+| `PROTOCOL_FEE_RECIPIENT` | Только для ручных сценариев (`set-protocol-recipient`). Полный деплой отдаёт протокольную долю контракту рефералов. |
+| `REFERRALS_REF_SHARE_BIPS` | Доля реферера в bips протокольной доли, по умолчанию 1000. |
 | `HOOK_TOTAL_FEE_BIPS`, `HOOK_PROTOCOL_SHARE_BIPS` | Резервная комиссия для мемов без своей ставки (bips сделки) и доля протокола (bips комиссии), по умолчанию 125 и 3333. |
 | `VAULT_CONVERSION_THRESHOLD` | Порог конверсии эпохи в единицах USDG, обязателен. 0 выключает автоматику. |
-| `VAULT_SWAP_ADAPTER`, `VAULT_ALLOWED_ASSETS` | Адаптер и allowlist волта, можно задать позже. |
-| `UNISWAP_V3_FACTORY`, `ADAPTER_TWAP_WINDOW` | Для `deploy-swap-adapter`: фабрика Uniswap V3 и окно TWAP в секундах, по умолчанию 600. |
+| `UNISWAP_V3_FACTORY` | Фабрика Uniswap V3 с пулами USDG/актив, обязательна. |
+| `ADAPTER_TWAP_WINDOW`, `ADAPTER_MAX_SLIPPAGE_BPS` | Окно TWAP адаптера (по умолчанию 600 с) и допуск маршрутов (по умолчанию 100 bps). |
+| `DEPLOY_ASSETS_FILE` | Список наградных активов, по умолчанию `tools/scripts/robinhood-assets.csv`. |
+| `VAULT_ALLOWED_ASSETS` | Дополнительные активы без маршрута (например USDG). |
+| `VAULT_SWAP_ADAPTER`, `SWAP_ADAPTER`, `LENS_ADDRESS` | Заполняет `deploy.sh`. |
 | `GEMOON_OWNER`, `GEMOON_PROXY_ADMIN_OWNER` | Итоговый владелец контрактов и владелец ProxyAdmin. По умолчанию деплоер. |
 | `*_PROXY_ADDRESS`, `*_PROXY_ADMIN_ADDRESS` | Заполняются из логов деплоя, нужны апгрейдам и проверке. |
 
 ```sh
-make deploy-gemoon            # Vault + HookManager + GemoonController, связка, владение
+./deploy.sh [--simulate] [--no-lens]  # полный деплой: все контракты, активы и маршруты, .env, Lens, отчёт
+make deploy-gemoon            # то же без .env и Lens: Vault, Controller, Referrals, Hook, Adapter, активы, владение
 make verify-wiring            # read-only проверка, что контракты указывают друг на друга
 make upgrade-vault-proxy      # новая имплементация волта
 make upgrade-hook-proxy       # новая имплементация хука, адрес майнится под биты разрешений
@@ -315,8 +321,10 @@ make deploy-lens              # GemoonLens через CREATE2, повторяе�
 (`upgrade-controller-proxy`, `GEMOON_VERSION` = 2), хук — тоже (`upgrade-hook-proxy`), иначе хук
 не уведомляет получателя.
 
-После `deploy-gemoon` владелец волта зовёт `acceptOwnership`, если он отличается от деплоера.
-Хук и контроллер принадлежат владельцу сразу. Адреса из логов переносятся в `.env`.
+После деплоя `GEMOON_OWNER`, если он не деплоер, зовёт `acceptOwnership` у Vault, GmoonReferrals
+и UniswapV3SwapAdapter. Хук и контроллер принадлежат ему сразу. Отчёт деплоя
+(`deploy-logs/deploy-<время>-report.md`) перечисляет адреса, назначение контрактов, связку,
+владельцев, результат по каждому активу и оставшиеся шаги. Подробно — `docs/DEPLOY.md`.
 
 Хук деплоится через CREATE2: и имплементация, и прокси должны нести биты разрешений в адресе.
 Скрипт сам подбирает соль и проверяет результат. В сети должен существовать детерминированный
@@ -335,7 +343,10 @@ forge test          # всё вместе; если DEVNET_RPC задан в .en
 - `test/UniswapV3SwapAdapterTest.sol`: адаптер против мок-пула с настраиваемыми TWAP и спотом,
   fuzz на границу допуска, интеграция с настоящим волтом.
 - `test/DeployGemoonTest.sol`: логика скрипта деплоя, связка, владение, биты адреса хука,
-  чтение параметров из окружения, доступ `onlyController` к хуку.
+  доступ `onlyController` к хуку.
+- `test/DeployGemoonFullTest.sol`: полный деплой со всеми пятью контрактами, разбор файла
+  активов, allowlist и маршруты с пропуском неконвертируемых активов (fuzz на инвариант
+  «разрешён ⇔ есть маршрут»), владение, отчёт, `run()` из окружения.
 - `test/ControllerDeployTokenTest.sol`: end-to-end в процессе теста. Настоящие PoolManager,
   PositionManager и Permit2 из `lib/`, деплой через скрипт, `deployToken`, свопы, путь комиссии
   до протокола и волта, fuzz на инвариант «протокол + волт + начислено = вся взятая комиссия»,

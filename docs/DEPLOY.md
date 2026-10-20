@@ -13,15 +13,21 @@
 | `PRIVATE_KEY` | да | ключ деплоера, с него уходят все транзакции |
 | `POOL_MANAGER`, `POSITION_MANAGER`, `PERMIT2` | да | Uniswap V4 в целевой сети |
 | `USDG_ADDRESS` | да | pair-токен всех пулов, должен уже существовать |
-| `PROTOCOL_FEE_RECIPIENT` | да | получатель протокольной доли комиссии |
 | `VAULT_CONVERSION_THRESHOLD` | да | порог конверсии эпохи в единицах USDG (например `5000000` для 5 USDG с 6 знаками). 0 выключает автоматическую конверсию |
-| `GEMOON_OWNER` | нет | итоговый владелец трёх контрактов, по умолчанию деплоер |
-| `GEMOON_PROXY_ADMIN_OWNER` | нет | владелец трёх ProxyAdmin, то есть кто может апгрейдить, по умолчанию `GEMOON_OWNER` |
+| `UNISWAP_V3_FACTORY` | да | фабрика Uniswap V3 с пулами USDG/актив, из неё адаптер берёт пулы |
+| `GEMOON_OWNER` | нет | итоговый владелец всех контрактов, по умолчанию деплоер |
+| `GEMOON_PROXY_ADMIN_OWNER` | нет | владелец четырёх ProxyAdmin, то есть кто может апгрейдить, по умолчанию `GEMOON_OWNER` |
 | `HOOK_TOTAL_FEE_BIPS`, `HOOK_PROTOCOL_SHARE_BIPS` | нет | резервная комиссия хука в bips сделки (по умолчанию 125) и доля протокола в bips комиссии (по умолчанию 3333 = треть) |
-| `VAULT_SWAP_ADAPTER` | нет | адаптер USDG в наградные активы, можно задать позже |
-| `VAULT_ALLOWED_ASSETS` | нет | allowlist наградных активов через запятую, можно задать позже |
-| `UNISWAP_V3_FACTORY` | для адаптера | фабрика Uniswap V3, в которой есть пулы USDG/актив |
+| `REFERRALS_REF_SHARE_BIPS` | нет | доля реферера в bips протокольной доли, по умолчанию 1000 |
 | `ADAPTER_TWAP_WINDOW` | нет | окно TWAP адаптера в секундах, по умолчанию 600 |
+| `ADAPTER_MAX_SLIPPAGE_BPS` | нет | допуск от TWAP для каждого маршрута, по умолчанию 100 (1%) |
+| `DEPLOY_ASSETS_FILE` | нет | список наградных активов, по умолчанию `tools/scripts/robinhood-assets.csv` (формат: заголовок, затем `Ticker,Contract address,Uniswap V3 / USDG pool`) |
+| `VAULT_ALLOWED_ASSETS` | нет | дополнительные активы через запятую, разрешаются без маршрута (например сам USDG). Актив не-USDG без маршрута отчёт помечает WARNING |
+| `DEPLOY_REPORT` | нет | файл отчёта; `deploy.sh` задаёт его сам |
+
+Протокольная доля комиссии всегда идёт в контракт рефералов, отдельный `PROTOCOL_FEE_RECIPIENT`
+при полном деплое не нужен: протокольную часть владелец рефералов выводит через
+`withdrawProtocolFees(to)`. `VAULT_SWAP_ADAPTER` полный деплой не читает, адаптер он создаёт сам.
 
 **Сеть.** Проверить до старта:
 
@@ -30,8 +36,8 @@
   откажется работать. Проверка: `cast code 0x4e59b44847b379578588920cA78FbF26c0B4956C --rpc-url $RPC`.
 - Лимит размера контракта (EIP-170, 24 576 байт) все контракты проходят: самый большой,
   GemoonController, ~12 КБ, Vault ~14 КБ (`forge build --sizes`).
-- На деплоере есть нативный токен на газ. Весь прогон стоит порядка 20 млн газа, из них
-  большая часть на имплементации.
+- На деплоере есть нативный токен на газ. Весь прогон с 64 активами стоит порядка 40 млн газа
+  (оценка симуляции на девнете), около половины уходит на allowlist и маршруты.
 - Адреса Uniswap V4 верные для этой сети. Скрипт их не проверяет, ошибку покажет только первый
   `deployToken`.
 
@@ -42,40 +48,50 @@
 forge script --via-ir script/GemoonDeploy.sol:DeployGemoon --rpc-url $RPC --private-key $PRIVATE_KEY -vvvv
 ```
 
-В логе должны быть адреса всех трёх прокси и строка про владельцев. Если симуляция прошла,
-запускать с broadcast.
+Удобнее `./deploy.sh --simulate`: та же симуляция плюс отчёт в `deploy-logs/`, по которому видно,
+какие активы получат маршрут, а какие будут пропущены и почему. Если симуляция прошла и в отчёте
+нет неожиданных SKIPPED/WARNING, запускать с broadcast.
 
 ## 2. Полный деплой
 
 Рекомендуемый способ — `deploy.sh` в корне репозитория:
 
 ```sh
-./deploy.sh --simulate       # прогон без отправки транзакций
-./deploy.sh                  # деплой Vault, GemoonController, HookManager
-./deploy.sh --with-adapter   # то же плюс UniswapV3SwapAdapter и Vault.setSwapAdapter
+./deploy.sh --simulate   # прогон без отправки транзакций, отчёт пишется
+./deploy.sh              # полный деплой
+./deploy.sh --no-lens    # то же без GemoonLens
 ```
 
-Скрипт проверяет `.env` и что у `POOL_MANAGER`, `POSITION_MANAGER`, `PERMIT2`, `USDG_ADDRESS`
-есть код в сети, запускает `make deploy-gemoon` (симуляция — `make simulate-gemoon`; всё только через Makefile,
-значения, которые скрипт переопределяет, передаются в командной строке `make`), читает
-адреса прокси и ProxyAdmin из лога и записывает их в `.env` (`*_PROXY_ADDRESS`,
-`*_PROXY_ADMIN_ADDRESS`), затем `make verify-wiring`. Перед правкой `.env` делает копию
-`.env.bak.<время>`, лог кладёт в `deploy-logs/`; оба в `.gitignore`. В конце печатает, что
-осталось руками: `acceptOwnership` волта, allowlist, маршруты адаптера. `setSwapAdapter` скрипт
-вызывает сам, только если владелец волта — деплоер.
+Что делает скрипт:
 
-Если в `.env` задан `VAULT_SWAP_ADAPTER`, скрипт его не подключает к новому волту и после деплоя
-очищает (с `--with-adapter` записывает туда новый адаптер). Адаптер привязан к одному волту (`immutable i_vault`, `swap()` принимает вызовы только от него), а
-каждый полный деплой создаёт новый прокси волта, поэтому старый адаптер с ним работать не будет.
-Один адаптер используется, пока жив прокси волта: апгрейд волта (`make upgrade-vault-proxy`)
-адрес прокси не меняет, адаптер и его маршруты остаются. Адрес задеплоенного адаптера скрипт
-пишет в `SWAP_ADAPTER`.
+1. Проверяет `.env`, файл активов и что у `POOL_MANAGER`, `POSITION_MANAGER`, `PERMIT2`,
+   `USDG_ADDRESS`, `UNISWAP_V3_FACTORY` и CREATE2-деплоера есть код в сети.
+2. `make deploy-gemoon` (симуляция — `make simulate-gemoon`): весь деплой одним forge-скриптом,
+   таблица шагов ниже.
+3. Читает из лога адреса и пишет их в `.env`: `VAULT_/HOOK_/CONTROLLER_/REFERRALS_PROXY_ADDRESS`,
+   `*_PROXY_ADMIN_ADDRESS`, `SWAP_ADAPTER`, `VAULT_SWAP_ADAPTER`. Перед правкой делает копию
+   `.env.bak.<время>`.
+4. `make verify-wiring`: read-only проверка связки по сети, включая рефералы и адаптер.
+5. `make deploy-lens`, адрес в `LENS_ADDRESS`.
+6. Дописывает в отчёт Lens и итог (broadcast, проверка связки, что записано в `.env`) и печатает
+   отчёт.
 
-Без скрипта то же самое делается вручную:
+**Отчёт** `deploy-logs/deploy-<время>-report.md`: что задеплоено, куда и зачем. В нём:
 
-```sh
-make deploy-gemoon
-```
+- все контракты: прокси, имплементация, ProxyAdmin с владельцем, назначение каждого; внешние
+  контракты;
+- связка: кто на кого указывает и зачем;
+- конфигурация: комиссии, доли, порог, окно TWAP, допуск;
+- владельцы и pending-владельцы;
+- таблица активов: пул, fee-tier, результат (`allowed + routed` или `SKIPPED` с причиной);
+- что осталось сделать руками.
+
+Полный вывод forge лежит рядом в `deploy-<время>.log`. Оба файла в `.gitignore`. Табличную часть
+отчёта строит forge-скрипт до отправки транзакций. Если broadcast упал, `deploy.sh` дописывает в
+отчёт раздел «Result» с пометкой FAILED.
+
+Без скрипта то же самое делается вручную: `make deploy-gemoon DEPLOY_REPORT=deploy-logs/report.md`,
+дальше адреса из лога переносятся в `.env` руками.
 
 Скрипт `DeployGemoon` делает всё в одном прогоне, транзакции уходят по очереди (`--slow`).
 Порядок и что происходит на каждом шаге:
@@ -83,20 +99,20 @@ make deploy-gemoon
 | # | Транзакция | Кто | Комментарий |
 |---|---|---|---|
 | 1 | Библиотеки `Deployer`, `Ticks` | деплоер | внешние библиотеки, forge линкует и ставит их сам |
-| 2 | `Vault` имплементация | деплоер | |
-| 3 | `Vault` прокси, `initialize(deployer, USDG)` | деплоер | владелец пока деплоер, чтобы настроить в этом же прогоне. Прокси сам создаёт ProxyAdmin с владельцем `GEMOON_PROXY_ADMIN_OWNER` |
-| 4 | `Vault.setConversionThreshold`, `setSwapAdapter`, `setAssetAllowed` на каждый актив | деплоер | порог пропускается, если равен 0, адаптер и allowlist, если не заданы |
-| 5 | `GemoonController` имплементация | деплоер | |
-| 6 | `GemoonController` прокси, `initialize(POOL_MANAGER, USDG, deployer)` | деплоер | владелец пока деплоер |
-| 7 | `HookManager` имплементация через CREATE2 | деплоер | соль подбирается в скрипте так, чтобы адрес нёс биты разрешений хука |
-| 8 | `HookManager` прокси через CREATE2, `initialize(GEMOON_OWNER, PROTOCOL_FEE_RECIPIENT, vault, controller, fee, protocolFee)` | деплоер | адрес прокси тоже майнится. Контроллер становится единственным, кто может звать `onlyController`-функции хука. Хуку больше ничего не нужно, поэтому владелец сразу итоговый |
-| 9 | `Vault.setHook`, `Vault.setController` | деплоер | |
-| 10 | `Controller.setHook`, `setVault`, `setPositionManager` | деплоер | `setHook` проверяет, что pair-токен хука равен USDG контроллера, `setVault` проверяет USDG волта |
-| 11 | `Vault.transferOwnership(GEMOON_OWNER)`, `Controller.transferOwnership(GEMOON_OWNER)` | деплоер | только если владелец отличается от деплоера. У контроллера владение переходит сразу, у волта остаётся pending |
-| 12 | `checkWiring` | view | скрипт падает, если что-то не сошлось |
+| 2 | `Vault` имплементация и прокси, `initialize(deployer, USDG)` | деплоер | владелец пока деплоер, чтобы настроить в этом же прогоне. Прокси сам создаёт ProxyAdmin с владельцем `GEMOON_PROXY_ADMIN_OWNER` |
+| 3 | `Vault.setConversionThreshold`, `setAssetAllowed` на активы из `VAULT_ALLOWED_ASSETS` | деплоер | порог пропускается, если равен 0 |
+| 4 | `GemoonController` имплементация и прокси, `initialize(POOL_MANAGER, USDG, deployer)` | деплоер | владелец пока деплоер |
+| 5 | `GmoonReferrals` имплементация и прокси, `initialize(deployer, USDG, controller, 0, refShare)` | деплоер | до хука: хук получает рефералы как получателя протокольной доли в `initialize` |
+| 6 | `HookManager` имплементация и прокси через CREATE2, `initialize(GEMOON_OWNER, referrals, vault, controller, fee, protocolShare)` | деплоер | соль майнится под биты разрешений. Хуку больше ничего не нужно, поэтому владелец сразу итоговый |
+| 7 | `Controller.setReferrals`, `Referrals.setHook`; `Vault.setHook`, `setController`; `Controller.setHook`, `setVault`, `setPositionManager` | деплоер | рефералы подключаются первыми: `deployToken` открывается с `setPositionManager`, мем до `setReferrals` остался бы без реферера. `setHook`/`setVault` контроллера проверяют, что pair-токен совпадает |
+| 8 | `UniswapV3SwapAdapter(deployer, UNISWAP_V3_FACTORY, vault, USDG, window)`, `Vault.setSwapAdapter` | деплоер | адаптер не прокси, привязан к этому волту |
+| 9 | на каждую строку файла активов: `Vault.setAssetAllowed`, `Adapter.setRoute(asset, fee, slippage)` | деплоер | только если актив имеет код, пул — фабричный пул USDG/актив своего fee-tier и отдаёт TWAP за окно. Иначе строка пропускается, причина в отчёте. Уже разрешённое и с тем же маршрутом не отправляется |
+| 10 | `transferOwnership(GEMOON_OWNER)` у Vault, Controller, Referrals, Adapter | деплоер | только если владелец отличается от деплоера. Контроллер переходит сразу, остальные остаются pending до `acceptOwnership` |
+| 11 | `checkWiring`, `checkReferralsWiring`, `checkAdapterWiring`, `checkAssets` | view | скрипт падает, если что-то не сошлось |
 
-Порядок именно такой, потому что хук требует адреса волта и контроллера в `initialize`, а
-контроллер и волт принимают хук сеттерами. Никаких временных нулевых адресов и предсказания адресов не нужно.
+Активы без маршрута в allowlist не попадают: мемы с таким активом не смогли бы конвертировать
+комиссии. Пропущенные строки после исправления пула добиваются `make set-asset-allowed` и
+`make set-route` с тем же файлом (раздел 3a).
 
 **Если скрипт упал посередине.** Ничего страшного: контроллер не деплоит токены, пока не заданы
 хук, волт и PositionManager, хук отвергает пулы незарегистрированных мемов, волт принимает
@@ -109,18 +125,16 @@ make deploy-gemoon
 
 ## 3. После деплоя
 
-1. Перенести адреса из лога в `.env`: `VAULT_PROXY_ADDRESS`, `VAULT_PROXY_ADMIN_ADDRESS`,
-   `HOOK_PROXY_ADDRESS`, `HOOK_PROXY_ADMIN_ADDRESS`, `CONTROLLER_PROXY_ADDRESS`,
-   `CONTROLLER_PROXY_ADMIN_ADDRESS`. Они нужны апгрейдам и проверке.
-2. `GEMOON_OWNER` принимает волт: `Vault.acceptOwnership()`. До этого волтом владеет деплоер.
-   Хук и контроллер уже принадлежат `GEMOON_OWNER`.
-3. Проверить связку: `make verify-wiring`. Это read-only скрипт, печатает владельцев, pending
-   владельцев, ProxyAdmin и их владельцев, падает при расхождении.
-4. Если allowlist не задавали в `.env`, владелец волта задаёт его сейчас:
-   `setAssetAllowed(asset, true)` на каждый актив. Без allowlist `deployToken` будет падать на
-   `AssetNotAllowed`.
-5. Поднять swap adapter, см. раздел «Swap adapter» ниже. Без адаптера конверсия эпох будет
-   падать, начисления останутся в USDG до его появления.
+1. Прочитать отчёт `deploy-logs/deploy-<время>-report.md`: раздел «Left to do» и строки
+   `SKIPPED` / `WARNING` в таблице активов. `deploy.sh` уже перенёс адреса в `.env`.
+2. Если `GEMOON_OWNER` не деплоер, он принимает владение: `acceptOwnership()` на Vault,
+   GmoonReferrals и UniswapV3SwapAdapter. До этого ими владеет деплоер. Хук и контроллер уже
+   принадлежат `GEMOON_OWNER`.
+3. `make verify-wiring` (deploy.sh уже запускал): read-only, печатает владельцев, pending
+   владельцев, ProxyAdmin, адаптер, размер allowlist, падает при расхождении.
+4. Пропущенные активы, если есть: исправить пул (см. 3a), затем `make set-asset-allowed` и
+   `make set-route` от владельца.
+5. Контракты верифицируются в эксплорере, см. п. 6.
 6. Верифицировать контракты в эксплорере. Аргументы конструкторов:
 
 ```sh
@@ -156,6 +170,9 @@ Calldata `initialize` для прокси можно взять из `broadcast/
 ```sh
 make deploy-swap-adapter
 ```
+
+Полный деплой ставит адаптер и маршруты сам. Ниже описан ручной путь: замена адаптера у
+существующего волта или добивка пропущенных активов.
 
 Скрипт `DeployUniswapV3SwapAdapter` читает `UNISWAP_V3_FACTORY`, `VAULT_PROXY_ADDRESS`,
 `USDG_ADDRESS`, `ADAPTER_TWAP_WINDOW`, проверяет, что USDG совпадает с `Vault.usdg()`, и ставит
@@ -253,12 +270,9 @@ anvil-аккаунт `0xf39F…2266` на девнете пуст, на него
 - [ ] `.env` заполнен, `USDG_ADDRESS` указывает на существующий токен
 - [ ] CREATE2-деплоер есть в сети
 - [ ] симуляция `DeployGemoon` без broadcast прошла
-- [ ] `make deploy-gemoon`
-- [ ] адреса из лога перенесены в `.env`
-- [ ] `GEMOON_OWNER` вызвал `Vault.acceptOwnership`
-- [ ] `make verify-wiring` зелёный
-- [ ] allowlist активов задан, `VAULT_CONVERSION_THRESHOLD` ненулевой
-- [ ] swap adapter задеплоен, маршруты на все активы заданы, у пулов хватает observation cardinality
-- [ ] `Vault.setSwapAdapter` вызван
+- [ ] `./deploy.sh --simulate`: в отчёте нет неожиданных SKIPPED / WARNING
+- [ ] `./deploy.sh`, в отчёте «Result»: broadcast OK, wiring OK
+- [ ] `GEMOON_OWNER` вызвал `acceptOwnership` на Vault, GmoonReferrals, UniswapV3SwapAdapter
+- [ ] пропущенные активы добиты (`set-asset-allowed`, `set-route`) или осознанно оставлены
 - [ ] контракты верифицированы
 - [ ] пробный `deployToken` дал `PositionCreated` с ликвидностью

@@ -2,7 +2,9 @@ include .env
 export RPC ?= "https://rpc-testnet.gmoon.xyz"
 FORK_RPC ?= "https://ethereum-sepolia-rpc.publicnode.com"
 
-# Vault + HookManager + GemoonController, wired, in one run.
+# Full deployment in one run: Vault, GemoonController, GmoonReferrals, HookManager, UniswapV3SwapAdapter,
+# wired; reward assets of DEPLOY_ASSETS_FILE allowed and routed; report into DEPLOY_REPORT. Prefer ./deploy.sh,
+# it also writes the addresses into .env, checks the wiring, deploys the Lens and completes the report.
 deploy-gemoon:
 	forge script --via-ir ./script/GemoonDeploy.sol:DeployGemoon --slow --legacy -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
 

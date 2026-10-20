@@ -146,39 +146,6 @@ contract DeployGemoonTest is Test {
         _assertWired(b);
     }
 
-    function test_Run_FromEnv_DeploysAndWires() external {
-        vm.setEnv("POOL_MANAGER", vm.toString(poolManager));
-        vm.setEnv("POSITION_MANAGER", vm.toString(positionManager));
-        vm.setEnv("PERMIT2", vm.toString(permit2));
-        vm.setEnv("USDG_ADDRESS", vm.toString(address(usdg)));
-        vm.setEnv("PROTOCOL_FEE_RECIPIENT", vm.toString(protocolRecipient));
-        vm.setEnv("VAULT_CONVERSION_THRESHOLD", "5000000");
-        vm.setEnv("GEMOON_OWNER", vm.toString(owner));
-        vm.setEnv("GEMOON_PROXY_ADMIN_OWNER", "");
-        vm.setEnv("HOOK_TOTAL_FEE_BIPS", "300");
-        vm.setEnv("HOOK_PROTOCOL_SHARE_BIPS", "");
-        vm.setEnv("VAULT_SWAP_ADAPTER", "");
-        vm.setEnv("VAULT_ALLOWED_ASSETS", vm.toString(address(aapl)));
-
-        script.run();
-        (Vault vault, HookManager hook, GemoonController controller) = script.deployed();
-        DeployGemoon.Deployment memory d =
-            DeployGemoon.Deployment({vault: vault, hook: hook, controller: controller});
-
-        _assertWired(d);
-        assertEq(hook.owner(), owner);
-        assertEq(controller.owner(), owner);
-        assertEq(vault.pendingOwner(), owner);
-        // empty GEMOON_PROXY_ADMIN_OWNER falls back to GEMOON_OWNER
-        assertEq(ProxyAdmin(Upgrades.getAdminAddress(address(hook))).owner(), owner);
-        assertEq(hook.TOTAL_FEE_BIPS(), 300);
-        // empty HOOK_PROTOCOL_SHARE_BIPS falls back to a third of the fee
-        assertEq(hook.PROTOCOL_SHARE_BIPS(), 3_333);
-        assertTrue(vault.isAssetAllowed(address(aapl)));
-        assertEq(vault.conversionThreshold(), 5e6);
-        assertEq(uint160(address(hook)) & Hooks.ALL_HOOK_MASK, HOOK_FLAGS);
-    }
-
     function test_SetVault_UsdgMismatch_Revert() external {
         Vault other = script.deployVault(
             address(script),

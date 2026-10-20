@@ -108,6 +108,27 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | `test_Swap_EstimatedBelowThreshold_OthersFillIt_EstimateStillEnough` | Газ оценён при далёком пороге (минимальный лимит, как `eth_estimateGas`), затем чужая сделка набирает порог почти до конца, наш своп его пересекает | Оценка газа не устаревает из-за чужих сделок | Своп с прежней оценкой прошёл и закрыл эпоху |
 | `testFuzz_Swap_CrossesThreshold_AnyGas_ConvertsOrReverts` (fuzz) | Любой лимит 150k..3M | Своп, пересёкший порог, либо закрывает эпоху, либо откатывается целиком | Успех ⇒ `epoch` = 1 и нет `ConversionFailed`; откат ⇒ состояние не изменилось |
 
+## test/DeployGemoonFullTest.sol
+
+Полный деплой `DeployGemoon.deployFull` / `run`: Vault, GemoonController, GmoonReferrals, HookManager, UniswapV3SwapAdapter, наградные активы с маршрутами, владение, отчёт. Uniswap V3 — моки `MockV3Factory` / `MockV3Pool` (fee tier 3000, история TWAP включается флагом), окно 600 с, допуск 100 bps.
+
+| Тест | Что проверяет | Инварианты | Ожидаемый результат |
+|---|---|---|---|
+| `test_DeployFull_Wiring_AllContractsPointAtEachOther` | Связка всех пяти контрактов | Каждый указывает на нужных соседей, рефералы — получатель протокольной доли | `checkWiring`, `checkReferralsWiring`, `checkAdapterWiring` проходят; `hook.protocolRecipient = referrals`, `vault.swapAdapter = adapter`, параметры адаптера и рефералов из params |
+| `test_DeployFull_Ownership_TwoStepPendingUntilAccepted` | Передача владения при `owner ≠ deployer` | Ownable2Step не отдаёт владение без accept; ProxyAdmin у `proxyAdminOwner` | Контроллер и хук сразу у owner; vault, referrals, adapter — pending до `acceptOwnership`, после — у owner; все 4 ProxyAdmin у `proxyAdminOwner` |
+| `test_DeployFull_OwnerIsDeployer_NothingPending` | Владелец = деплоер | Нет лишних pending-передач | Все контракты у деплоера, `pendingOwner = 0` |
+| `test_DeployFull_RoutableAssets_AllowedAndRouted` | Активы с фабричным пулом и историей TWAP | Разрешён ⇔ есть маршрут на пул из файла | Статус `Routed`, актив в allowlist, маршрут: пул, fee 3000, допуск 100; allowlist = 2 |
+| `test_DeployFull_UnroutableAssets_SkippedWithReason` | Актив без кода, без пула, чужой пул, пул без истории, сам USDG | Неконвертируемый актив не попадает в allowlist | Статусы `NoCode`, `NoPool`, `NotFactoryPool`, `NoTwapHistory`, `PairToken`; маршрутов нет; разрешён только USDG |
+| `test_ConfigureAssets_SameRowTwice_SendsNothingNew` | Повторный прогон тех же строк | Идемпотентность: без изменений — без транзакций | Повтор не эмитит событий; новый допуск перезаписывает только маршрут (200) |
+| `test_ConfigureAssets_NotOwner_Revert` | Настройка активов после передачи владения | Allowlist меняет только владелец волта | revert |
+| `test_CheckAssets_RouteMissing_Revert` | Маршрут удалён после настройки | Проверка ловит рассинхрон allowlist и маршрутов | revert `WiringMismatch("route: AAPL")` |
+| `testFuzz_ConfigureAssets_AllowedIffRoutable` (fuzz) | 6 строк со случайным видом (маршрутизируемый, без пула, чужой пул, без истории, без кода) | Актив разрешён ⇔ маршрутизируем; маршрут ⇔ маршрутизируем и ведёт на пул из файла; размер allowlist = числу маршрутизируемых | Статус, allowlist, маршрут и размер allowlist совпадают с видом каждой строки; `checkAssets` проходит |
+| `test_ParseAssets_Csv_SkipsHeaderAndBlankLines` | Разбор CSV с `\r\n`, пробелами, пустой строкой и пустой колонкой пула | Заголовок и пустые строки не дают строк | 2 строки, тикеры и адреса без пробелов, пустой пул = 0 |
+| `test_ParseAssets_RowWithoutAddress_Revert` | Строка без колонки адреса | Битый файл не проходит молча | revert `InvalidAssetRow(2)` |
+| `test_ParseAssets_RepoAssetFile_AllRowsHaveAssetAndPool` | Реальный `tools/scripts/robinhood-assets.csv` | Файл в репозитории разбирается целиком | Все строки с тикером, адресом актива и пула |
+| `test_BuildReport_ListsContractsOwnershipAndAssets` | Отчёт деплоя | В отчёте есть всё, что нужно оператору | Адреса пяти контрактов, строка актива, причина пропуска, to-do `acceptOwnership`, итог «Allowed: 1, skipped: 1» |
+| `test_Run_FromEnv_DeploysWiresAndWritesReport` | `run()` из env, активы из файла, отчёт в файл | Пустые env-переменные = значения по умолчанию | Связка проходит; комиссия хука 300, доля протокола 3333, реферера 1000, окно 600, допуск 100; актив из файла и USDG из `VAULT_ALLOWED_ASSETS` разрешены; ProxyAdmin у `GEMOON_OWNER`; отчёт записан и содержит адаптер |
+
 ## test/fork/ControllerDevnetForkTest.sol
 
 Девнет: Sepolia-форк на anvil (chain id 1337) с каноническими Uniswap V4, mock USDG. Запуск `make devnet-tests`, без `DEVNET_RPC` пропускается.

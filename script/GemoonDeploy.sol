@@ -7,6 +7,9 @@ import {HookManager} from "../src/contracts/hooks/HookManager.sol";
 import {Vault} from "../src/contracts/vault/Vault.sol";
 import {UniswapV3SwapAdapter} from "../src/contracts/adapters/UniswapV3SwapAdapter.sol";
 import {GmoonReferrals} from "../src/contracts/Referrals.sol";
+import {IUniswapV3SwapAdapter} from "../src/contracts/interfaces/IUniswapV3SwapAdapter.sol";
+import {IUniswapV3Pool} from "@uniswap/v3-core/contracts/interfaces/IUniswapV3Pool.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
 import "@openzeppelin/contracts/proxy/transparent/ProxyAdmin.sol";
 import "@oz-upgrades/Upgrades.sol";
@@ -376,29 +379,47 @@ abstract contract GemoonDeployBase is Script {
     }
 }
 
-/// @notice Deploys Vault, HookManager and GemoonController and wires them in one run.
-/// @dev Order: vault -> controller -> hook (needs both in `initialize`) -> setters -> ownership. A half-finished run is safe: the controller reverts on `deployToken` until both hook
-/// and vault are set, the hook rejects pools of unregistered Memes and the vault accepts fees only
-/// from its hook.
+/// @notice Full Gemoon deployment in one run: Vault, GemoonController, GmoonReferrals, HookManager
+/// and UniswapV3SwapAdapter, wired together, the reward assets of `DEPLOY_ASSETS_FILE` allowed in
+/// the vault with their swap routes on the adapter, ownership handed over, and a report of what was
+/// deployed where and why.
+/// @dev Order (`deployFull`): vault -> controller -> referrals -> hook (takes vault, controller and
+/// referrals in `initialize`) -> setters -> adapter -> assets and routes -> ownership -> checks.
+/// The deployer owns vault, controller, referrals and adapter during the run so it can configure
+/// them; the hook is owned by the final owner right away. A half-finished run is safe: the
+/// controller reverts on `deployToken` until hook, vault and PositionManager are set, the hook
+/// rejects pools of unregistered Memes and the vault accepts fees only from its hook.
+///
+/// Reward assets: a row of the asset file is allowed and routed only if the asset has code, its
+/// pool is the factory USDG pool for the pool's fee tier and the pool can serve a TWAP over the
+/// adapter window. Other rows are skipped and listed in the report with the reason: an allowed
+/// asset without a route would make every conversion of its Memes fail.
+///
 /// Env:
 ///  - POOL_MANAGER               Uniswap V4 PoolManager (required)
 ///  - POSITION_MANAGER           Uniswap V4 PositionManager, mints the initial positions (required)
 ///  - PERMIT2                    Permit2 the PositionManager settles through (required)
 ///  - USDG_ADDRESS               pair token of every pool, fees are charged in it (required)
-///  - PROTOCOL_FEE_RECIPIENT     receives the protocol share of the swap fee (required)
 ///  - VAULT_CONVERSION_THRESHOLD pending USDG (in USDG units) that closes an epoch; 0 disables
 ///                               automatic conversion (required)
-///  - GEMOON_OWNER               final owner of the three contracts (default: broadcaster)
-///  - GEMOON_PROXY_ADMIN_OWNER   owner of the three ProxyAdmins, i.e. who can upgrade
+///  - UNISWAP_V3_FACTORY         Uniswap V3 factory of the USDG/asset pools (required)
+///  - GEMOON_OWNER               final owner of every contract (default: broadcaster)
+///  - GEMOON_PROXY_ADMIN_OWNER   owner of the ProxyAdmins, i.e. who can upgrade
 ///                               (default: GEMOON_OWNER)
 ///  - HOOK_TOTAL_FEE_BIPS        fallback swap fee in bips for Memes without their own fee
 ///                               (default: 125); every Meme gets its fee from `deployToken`
-///  - HOOK_PROTOCOL_SHARE_BIPS   protocol share of every fee, in bips of the fee (default: 3333, a third)
-///  - VAULT_SWAP_ADAPTER         USDG -> asset adapter (optional)
-///  - VAULT_ALLOWED_ASSETS       comma-separated reward asset allowlist (optional)
-/// After the run: GEMOON_OWNER calls `Vault.acceptOwnership` if it differs from the broadcaster.
-/// The hook and the controller are owned by GEMOON_OWNER right away. Put the logged addresses into
-/// *_PROXY_ADDRESS / *_PROXY_ADMIN_ADDRESS for the upgrade and verify scripts.
+///  - HOOK_PROTOCOL_SHARE_BIPS   protocol share of every fee, in bips of the fee (default: 3333)
+///  - REFERRALS_REF_SHARE_BIPS   referrer share of the protocol fee, in bips (default: 1000)
+///  - ADAPTER_TWAP_WINDOW        TWAP window of the adapter in seconds (default: 600)
+///  - ADAPTER_MAX_SLIPPAGE_BPS   allowed deviation from the TWAP per route (default: 100)
+///  - DEPLOY_ASSETS_FILE         reward asset list, `Ticker,Contract address,Uniswap V3 / USDG pool`
+///                               with a header line (default: tools/scripts/robinhood-assets.csv)
+///  - VAULT_ALLOWED_ASSETS       extra comma-separated assets allowed without a route, e.g. USDG
+///                               itself (optional)
+///  - DEPLOY_REPORT              file the report is written to (optional, it is logged anyway)
+/// The protocol share of the swap fee goes to the Referrals contract; its owner withdraws the
+/// protocol part with `withdrawProtocolFees`. After the run GEMOON_OWNER accepts the ownership of
+/// vault, referrals and adapter (Ownable2Step) if it differs from the broadcaster.
 contract DeployGemoon is GemoonDeployBase {
     struct Params {
         address owner;
@@ -421,37 +442,96 @@ contract DeployGemoon is GemoonDeployBase {
         GemoonController controller;
     }
 
-    /// @notice Result of the last `run`, for tests.
+    /// @notice One row of the reward asset file.
+    struct AssetRow {
+        string ticker;
+        address asset;
+        address pool;
+    }
+
+    /// @notice What the deployment did with a reward asset.
+    enum AssetStatus {
+        Routed, // allowed in the vault, route set on the adapter
+        PairToken, // USDG itself: allowed, credited without a swap, needs no route
+        NoCode, // skipped: the asset has no code on this network
+        NoPool, // skipped: the listed pool has no code
+        NotFactoryPool, // skipped: the pool is not factory.getPool(USDG, asset, pool.fee())
+        NoTwapHistory // skipped: the pool cannot serve a TWAP over the adapter window
+    }
+
+    struct AssetResult {
+        string ticker;
+        address asset;
+        address pool;
+        uint24 fee;
+        AssetStatus status;
+    }
+
+    /// @notice Parameters of `deployFull`. `core.protocolRecipient` and `core.swapAdapter` are
+    /// ignored: the referrals contract and the new adapter take their place.
+    struct FullParams {
+        Params core;
+        uint256 refShareBips;
+        address v3Factory;
+        uint32 twapWindow;
+        uint16 maxSlippageBps;
+        AssetRow[] assets;
+    }
+
+    struct FullDeployment {
+        Vault vault;
+        HookManager hook;
+        GemoonController controller;
+        GmoonReferrals referrals;
+        UniswapV3SwapAdapter adapter;
+        AssetResult[] assets;
+    }
+
+    error InvalidAssetRow(uint256 line);
+
+    string internal constant DEFAULT_ASSETS_FILE = "tools/scripts/robinhood-assets.csv";
+
+    /// @notice Core contracts of the last `run`, for tests.
     Deployment public deployed;
+    /// @notice Referrals of the last `run`, for tests.
+    GmoonReferrals public deployedReferrals;
+    /// @notice Swap adapter of the last `run`, for tests.
+    UniswapV3SwapAdapter public deployedAdapter;
 
     function run() external {
         vm.startBroadcast();
         (, address deployer,) = vm.readCallers();
-        Params memory params = paramsFromEnv(deployer);
-        Deployment memory d = deployAll(deployer, CREATE2_FACTORY, params);
+        FullParams memory params = fullParamsFromEnv(deployer);
+        FullDeployment memory d = deployFull(deployer, CREATE2_FACTORY, params);
         vm.stopBroadcast();
-        deployed = d;
 
-        console.log("DEPLOYER: ", deployer);
-        console.log("OWNER (vault pending until acceptOwnership): ", params.owner);
-        console.log("POOL MANAGER: ", params.poolManager);
-        console.log("POSITION MANAGER: ", params.positionManager);
-        console.log("PERMIT2: ", params.permit2);
-        console.log("USDG / PAIR TOKEN: ", params.usdg);
-        console.log("PROTOCOL FEE RECIPIENT: ", params.protocolRecipient);
-        console.log("HOOK TOTAL FEE BIPS: ", params.feeBips);
-        console.log("HOOK PROTOCOL SHARE BIPS: ", params.protocolShareBips);
-        console.log("VAULT CONVERSION THRESHOLD: ", params.conversionThreshold);
-        console.log("VAULT SWAP ADAPTER: ", params.swapAdapter);
-        for (uint256 i; i < params.allowedAssets.length; ++i) {
-            console.log("VAULT ALLOWED ASSET: ", params.allowedAssets[i]);
-        }
+        deployed = Deployment({vault: d.vault, hook: d.hook, controller: d.controller});
+        deployedReferrals = d.referrals;
+        deployedAdapter = d.adapter;
+
+        string memory report = buildReport(deployer, params, d);
+        console.log(report);
+
+        // Machine-readable lines, parsed by deploy.sh.
         _logProxy("VAULT", address(d.vault));
         _logProxy("HOOK", address(d.hook));
         _logProxy("CONTROLLER", address(d.controller));
+        _logProxy("REFERRALS", address(d.referrals));
+        console.log("SWAP ADAPTER: ", address(d.adapter));
+
+        string memory path = vm.envOr("DEPLOY_REPORT", string(""));
+        if (bytes(path).length != 0) {
+            vm.writeFile(path, report);
+            console.log(string.concat("REPORT: ", path));
+        }
     }
 
-    /// @notice Reads the deployment parameters from the environment.
+    // ---------------------------------------------------------------------------------------------
+    // Parameters
+    // ---------------------------------------------------------------------------------------------
+
+    /// @notice Reads the core deployment parameters from the environment.
+    /// @dev `protocolRecipient` and `swapAdapter` stay zero, `deployFull` sets them.
     /// @param deployer Broadcasting account, default owner.
     function paramsFromEnv(address deployer) public view returns (Params memory params) {
         address owner = _envAddressOr("GEMOON_OWNER", deployer);
@@ -462,26 +542,528 @@ contract DeployGemoon is GemoonDeployBase {
             positionManager: vm.envAddress("POSITION_MANAGER"),
             permit2: vm.envAddress("PERMIT2"),
             usdg: vm.envAddress("USDG_ADDRESS"),
-            protocolRecipient: vm.envAddress("PROTOCOL_FEE_RECIPIENT"),
+            protocolRecipient: address(0),
             feeBips: _envUintOr("HOOK_TOTAL_FEE_BIPS", 125),
             protocolShareBips: _envUintOr("HOOK_PROTOCOL_SHARE_BIPS", 3_333),
             conversionThreshold: vm.envUint("VAULT_CONVERSION_THRESHOLD"),
-            swapAdapter: _envAddressOr("VAULT_SWAP_ADAPTER", address(0)),
+            swapAdapter: address(0),
             allowedAssets: _envAddressList("VAULT_ALLOWED_ASSETS")
         });
     }
 
-    /// @notice Deploys and wires everything. Must be called by `deployer`.
-    /// @param deployer        Calling account; owns vault and controller during the run.
+    /// @notice Reads every parameter of `deployFull` from the environment, assets from the file.
+    /// @param deployer Broadcasting account, default owner.
+    function fullParamsFromEnv(address deployer) public view returns (FullParams memory params) {
+        string memory file = vm.envOr("DEPLOY_ASSETS_FILE", string(""));
+        if (bytes(file).length == 0) file = DEFAULT_ASSETS_FILE;
+
+        params = FullParams({
+            core: paramsFromEnv(deployer),
+            refShareBips: _envUintOr("REFERRALS_REF_SHARE_BIPS", 1_000),
+            v3Factory: vm.envAddress("UNISWAP_V3_FACTORY"),
+            twapWindow: SafeCast.toUint32(_envUintOr("ADAPTER_TWAP_WINDOW", 600)),
+            maxSlippageBps: SafeCast.toUint16(_envUintOr("ADAPTER_MAX_SLIPPAGE_BPS", 100)),
+            assets: parseAssets(vm.readFile(file))
+        });
+    }
+
+    /// @notice Parses the asset file: a header line, then `Ticker,Contract address,Pool` per row.
+    /// @dev Blank lines are skipped, an empty pool column becomes the zero address. Reverts with
+    /// the 1-based line number on a row without an address column or with a malformed address.
+    /// @param csv File contents.
+    /// @return rows Parsed rows in file order.
+    function parseAssets(string memory csv) public pure returns (AssetRow[] memory rows) {
+        string[] memory lines = vm.split(csv, "\n");
+        rows = new AssetRow[](lines.length);
+        uint256 count;
+        for (uint256 i = 1; i < lines.length; ++i) {
+            string memory line = vm.trim(lines[i]);
+            if (bytes(line).length == 0) continue;
+
+            string[] memory cols = vm.split(line, ",");
+            if (cols.length < 2) revert InvalidAssetRow(i + 1);
+            string memory pool = cols.length > 2 ? vm.trim(cols[2]) : "";
+            rows[count++] = AssetRow({
+                ticker: vm.trim(cols[0]),
+                asset: vm.parseAddress(vm.trim(cols[1])),
+                pool: bytes(pool).length == 0 ? address(0) : vm.parseAddress(pool)
+            });
+        }
+        assembly ("memory-safe") {
+            mstore(rows, count)
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Deployment
+    // ---------------------------------------------------------------------------------------------
+
+    /// @notice Deploys, wires and configures every contract. Must be called by `deployer`.
+    /// @param deployer        Calling account; owns vault, controller, referrals and adapter during
+    ///                        the run.
     /// @param create2Deployer Account CREATE2 is executed from, see `GemoonDeployBase`.
     /// @param params          Deployment parameters.
+    /// @return d              Deployed contracts and the outcome per reward asset.
+    function deployFull(address deployer, address create2Deployer, FullParams memory params)
+        public
+        returns (FullDeployment memory d)
+    {
+        Params memory core = params.core;
+
+        // 1. Vault and controller, kept by the deployer until they are configured.
+        (d.vault, d.controller) = _deployVaultAndController(deployer, core);
+
+        // 2. Referrals before the hook: the hook takes it as protocol recipient in `initialize`.
+        d.referrals = deployReferrals(
+            ReferralsDeployParams({
+                owner: deployer,
+                proxyAdminOwner: core.proxyAdminOwner,
+                pairToken: core.usdg,
+                controller: address(d.controller),
+                hook: address(0),
+                refShareBips: params.refShareBips
+            })
+        );
+
+        // 3. Hook, owned by the final owner right away.
+        core.protocolRecipient = address(d.referrals);
+        d.hook = _deployCoreHook(create2Deployer, core, d.vault, d.controller);
+
+        // 4. Wiring. Referrals first: `deployToken` opens with `setPositionManager` in `_wireCore`,
+        // a Meme deployed before `setReferrals` would never be attributed to a referrer.
+        d.controller.setReferrals(address(d.referrals));
+        d.referrals.setHook(address(d.hook));
+        _wireCore(d.vault, d.controller, d.hook, core);
+
+        // 5. Swap adapter, owned by the deployer until the routes are set.
+        d.adapter = new UniswapV3SwapAdapter(
+            deployer, params.v3Factory, address(d.vault), core.usdg, params.twapWindow
+        );
+        d.vault.setSwapAdapter(address(d.adapter));
+
+        // 6. Reward assets and their routes.
+        d.assets = configureAssets(d.vault, d.adapter, params.assets, params.maxSlippageBps);
+
+        // 7. Ownership. Controller is plain Ownable (immediate), the rest Ownable2Step (pending).
+        if (core.owner != deployer) {
+            d.vault.transferOwnership(core.owner);
+            d.controller.transferOwnership(core.owner);
+            d.referrals.transferOwnership(core.owner);
+            d.adapter.transferOwnership(core.owner);
+        }
+
+        // 8. Sanity.
+        checkWiring(d.controller, d.hook, d.vault);
+        checkReferralsWiring(d.controller, d.hook, d.referrals);
+        checkAdapterWiring(d.vault, d.adapter);
+        checkAssets(d.vault, d.adapter, d.assets);
+    }
+
+    /// @notice Deploys and wires vault, controller and hook only. Must be called by `deployer`.
+    /// @dev Used by tests that need the core without referrals and adapter.
+    /// @param deployer        Calling account; owns vault and controller during the run.
+    /// @param create2Deployer Account CREATE2 is executed from, see `GemoonDeployBase`.
+    /// @param params          Deployment parameters, `protocolRecipient` must be non-zero.
     /// @return d              Deployed proxies.
     function deployAll(address deployer, address create2Deployer, Params memory params)
         public
         returns (Deployment memory d)
     {
-        // 1. Vault, kept by the deployer until it is wired.
-        d.vault = deployVault(
+        (d.vault, d.controller) = _deployVaultAndController(deployer, params);
+        d.hook = _deployCoreHook(create2Deployer, params, d.vault, d.controller);
+        _wireCore(d.vault, d.controller, d.hook, params);
+
+        if (params.owner != deployer) {
+            d.vault.transferOwnership(params.owner);
+            d.controller.transferOwnership(params.owner);
+        }
+        checkWiring(d.controller, d.hook, d.vault);
+    }
+
+    /// @notice Allows every routable asset in the vault and sets its route on the adapter.
+    /// @dev Must be called by the owner of both. Rows that are not routable are skipped, see
+    /// `checkAsset`. An asset already allowed or routed the same way sends nothing.
+    /// @param vault          Vault the assets are allowed in.
+    /// @param adapter        Adapter the routes are set on.
+    /// @param rows           Asset rows.
+    /// @param maxSlippageBps Allowed deviation from the TWAP of every route.
+    /// @return results       Outcome per row, in row order.
+    function configureAssets(
+        Vault vault,
+        UniswapV3SwapAdapter adapter,
+        AssetRow[] memory rows,
+        uint16 maxSlippageBps
+    ) public returns (AssetResult[] memory results) {
+        results = new AssetResult[](rows.length);
+        for (uint256 i; i < rows.length; ++i) {
+            AssetRow memory row = rows[i];
+            (AssetStatus status, uint24 fee) = checkAsset(adapter, row);
+            results[i] = AssetResult({
+                ticker: row.ticker, asset: row.asset, pool: row.pool, fee: fee, status: status
+            });
+
+            if (status != AssetStatus.Routed && status != AssetStatus.PairToken) continue;
+            if (!vault.isAssetAllowed(row.asset)) vault.setAssetAllowed(row.asset, true);
+            if (status == AssetStatus.Routed) {
+                IUniswapV3SwapAdapter.Route memory current = adapter.routeOf(row.asset);
+                if (current.pool != row.pool || current.maxSlippageBps != maxSlippageBps) {
+                    adapter.setRoute(row.asset, fee, maxSlippageBps);
+                }
+            }
+        }
+    }
+
+    /// @notice Whether `row` can be routed through `adapter`, and the fee tier of its pool.
+    /// @dev Mirrors what `setRoute` requires, so a routable row never reverts there.
+    /// @param adapter Adapter the route would be set on.
+    /// @param row     Asset row.
+    /// @return status Routed if it can be routed, otherwise why not.
+    /// @return fee    Fee tier of the pool, zero unless the pool answered `fee()`.
+    function checkAsset(UniswapV3SwapAdapter adapter, AssetRow memory row)
+        public
+        view
+        returns (AssetStatus status, uint24 fee)
+    {
+        address usdg = adapter.i_usdg();
+        if (row.asset == usdg) return (AssetStatus.PairToken, 0);
+        if (row.asset.code.length == 0) return (AssetStatus.NoCode, 0);
+        if (row.pool.code.length == 0) return (AssetStatus.NoPool, 0);
+
+        try IUniswapV3Pool(row.pool).fee() returns (uint24 poolFee) {
+            fee = poolFee;
+        } catch {
+            return (AssetStatus.NoPool, 0);
+        }
+        if (adapter.i_factory().getPool(usdg, row.asset, fee) != row.pool) {
+            return (AssetStatus.NotFactoryPool, fee);
+        }
+
+        uint32[] memory secondsAgos = new uint32[](2);
+        secondsAgos[0] = adapter.twapWindow();
+        try IUniswapV3Pool(row.pool).observe(secondsAgos) returns (int56[] memory, uint160[] memory) {
+            return (AssetStatus.Routed, fee);
+        } catch {
+            return (AssetStatus.NoTwapHistory, fee);
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Checks
+    // ---------------------------------------------------------------------------------------------
+
+    /// @notice Reverts unless the vault uses `adapter` and the adapter serves this vault and USDG.
+    function checkAdapterWiring(Vault vault, UniswapV3SwapAdapter adapter) public view {
+        if (vault.swapAdapter() != address(adapter)) revert WiringMismatch("vault.swapAdapter");
+        if (adapter.i_vault() != address(vault)) revert WiringMismatch("adapter.vault");
+        if (adapter.i_usdg() != vault.usdg()) revert WiringMismatch("adapter.usdg");
+    }
+
+    /// @notice Reverts unless every routed asset is allowed and routed to its pool, and the pair
+    /// token, if listed, is allowed.
+    function checkAssets(Vault vault, UniswapV3SwapAdapter adapter, AssetResult[] memory results)
+        public
+        view
+    {
+        for (uint256 i; i < results.length; ++i) {
+            AssetResult memory r = results[i];
+            if (r.status != AssetStatus.Routed && r.status != AssetStatus.PairToken) continue;
+            if (!vault.isAssetAllowed(r.asset)) {
+                revert WiringMismatch(string.concat("asset not allowed: ", r.ticker));
+            }
+            if (r.status == AssetStatus.Routed && adapter.routeOf(r.asset).pool != r.pool) {
+                revert WiringMismatch(string.concat("route: ", r.ticker));
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Report
+    // ---------------------------------------------------------------------------------------------
+
+    /// @notice Human-readable report of a `deployFull` run: what was deployed where, why, how it is
+    /// wired and configured, who owns what, the outcome per reward asset and what is left to do.
+    /// @dev Reads the current state of the contracts, so it reflects the run it is built after.
+    function buildReport(address deployer, FullParams memory params, FullDeployment memory d)
+        public
+        view
+        returns (string memory)
+    {
+        return string.concat(
+            _reportHeader(deployer, params),
+            _reportContracts(params, d),
+            _reportWiring(d),
+            _reportConfig(params, d),
+            _reportOwnership(d),
+            _reportAssets(params, d),
+            _reportTodo(deployer, params, d)
+        );
+    }
+
+    function _reportHeader(address deployer, FullParams memory params)
+        internal
+        view
+        returns (string memory)
+    {
+        string memory mode = vm.isContext(VmSafe.ForgeContext.ScriptBroadcast)
+            ? "broadcast (report is built before the transactions are sent, deploy.sh appends the outcome)"
+            : vm.isContext(VmSafe.ForgeContext.ScriptDryRun)
+                ? "simulation, nothing was sent"
+                : "in-process (tests)";
+        return string.concat(
+            "# Gemoon deployment report\n\n",
+            "- Mode: ", mode, "\n",
+            "- Chain id: ", vm.toString(block.chainid), "\n",
+            "- Block: ", vm.toString(block.number), ", timestamp ", vm.toString(block.timestamp), "\n",
+            "- Deployer (sent every transaction): ", vm.toString(deployer), "\n",
+            "- Final owner: ", vm.toString(params.core.owner), "\n",
+            "- ProxyAdmin owner (can upgrade): ", vm.toString(params.core.proxyAdminOwner), "\n"
+        );
+    }
+
+    function _reportContracts(FullParams memory params, FullDeployment memory d)
+        internal
+        view
+        returns (string memory)
+    {
+        return string.concat(
+            "\n## Contracts\n\n",
+            "| Contract | Address | What it is for |\n|---|---|---|\n",
+            _proxyRows(
+                "Vault",
+                address(d.vault),
+                "Holds the creator part of every swap fee per Meme in USDG and converts it per epoch into the Meme's reward asset through the swap adapter; creators claim from it."
+            ),
+            _proxyRows(
+                "GemoonController",
+                address(d.controller),
+                "Entry point `deployToken`: deploys the Meme, its V4 pool with the hook, the initial position and the optional dev buy, registers the Meme in the vault and referrals."
+            ),
+            _proxyRows(
+                "GmoonReferrals",
+                address(d.referrals),
+                "Protocol fee recipient of the hook: credits the referrer share of every protocol fee to the referrer of the Meme creator, the owner withdraws the rest."
+            ),
+            _proxyRows(
+                "HookManager",
+                address(d.hook),
+                "Uniswap V4 hook of every Meme/USDG pool: charges the swap fee, pays the creator part to the vault and the protocol part to referrals. CREATE2-mined, the address carries the hook permission bits."
+            ),
+            _row(
+                "UniswapV3SwapAdapter",
+                address(d.adapter),
+                "Sells the vault's USDG for reward assets in Uniswap V3 USDG/asset pools, minimum output from the pool TWAP. Not upgradeable, replaced through `Vault.setSwapAdapter`."
+            ),
+            "\nExternal contracts used:\n\n",
+            "| Contract | Address | Role |\n|---|---|---|\n",
+            _row("Uniswap V4 PoolManager", params.core.poolManager, "Holds every Meme pool."),
+            _row("Uniswap V4 PositionManager", params.core.positionManager, "Mints the initial position of every Meme."),
+            _row("Permit2", params.core.permit2, "Token approvals of the PositionManager."),
+            _row("USDG (pair token)", params.core.usdg, "Pair token of every pool, fees are charged in it."),
+            _row("Uniswap V3 factory", params.v3Factory, "Source of the USDG/asset pools of the adapter.")
+        );
+    }
+
+    function _proxyRows(string memory name, address proxy, string memory purpose)
+        internal
+        view
+        returns (string memory)
+    {
+        address admin = Upgrades.getAdminAddress(proxy);
+        return string.concat(
+            _row(string.concat(name, " proxy"), proxy, string.concat(purpose, " Use this address.")),
+            _row(
+                string.concat(name, " implementation"),
+                Upgrades.getImplementationAddress(proxy),
+                "Code behind the proxy, initializers disabled. Never called directly."
+            ),
+            _row(
+                string.concat(name, " ProxyAdmin"),
+                admin,
+                string.concat("Upgrades the proxy, owned by ", vm.toString(ProxyAdmin(admin).owner()), ".")
+            )
+        );
+    }
+
+    function _reportWiring(FullDeployment memory d) internal view returns (string memory) {
+        return string.concat(
+            "\n## Wiring\n\n",
+            "| Setting | Points at | Why |\n|---|---|---|\n",
+            _row("controller.hook", d.controller.hook(), "Pools of new Memes are created with this hook."),
+            _row("controller.vault", address(d.controller.vault()), "New Memes are registered in this vault."),
+            _row("controller.positionManager", address(d.controller.positionManager()), "Mints the initial position."),
+            _row("controller.referrals", address(d.controller.referrals()), "New Memes are attributed to the referrer of their creator."),
+            _row("hook.vault", d.hook.vault(), "Receives the creator part of every fee."),
+            _row("hook.controller", d.hook.controller(), "The only caller of the hook's controller functions."),
+            _row("hook.protocolRecipient", d.hook.protocolRecipient(), "Receives the protocol part of every fee (referrals)."),
+            _row("vault.hook", d.vault.hook(), "The only source of fees the vault accepts."),
+            _row("vault.controller", d.vault.controller(), "The only caller that registers Memes."),
+            _row("vault.swapAdapter", d.vault.swapAdapter(), "Converts USDG into reward assets."),
+            _row("referrals.hook", d.referrals.hook(), "The only caller of `notifyFee`."),
+            _row("referrals.controller", d.referrals.controller(), "The only caller of `registerToken`."),
+            _row("adapter.vault", d.adapter.i_vault(), "The only caller of `swap` (immutable)."),
+            _row("adapter.factory", address(d.adapter.i_factory()), "Pools are looked up here, never taken from calldata (immutable).")
+        );
+    }
+
+    function _reportConfig(FullParams memory params, FullDeployment memory d)
+        internal
+        view
+        returns (string memory)
+    {
+        return string.concat(
+            "\n## Configuration\n\n",
+            "| Setting | Value | Meaning |\n|---|---|---|\n",
+            _rowStr("hook.TOTAL_FEE_BIPS", vm.toString(d.hook.TOTAL_FEE_BIPS()), "Fallback swap fee in bips of the trade, every Meme sets its own in `deployToken`."),
+            _rowStr("hook.PROTOCOL_SHARE_BIPS", vm.toString(d.hook.PROTOCOL_SHARE_BIPS()), "Protocol part of every fee in bips of the fee, the rest goes to the creator via the vault."),
+            _rowStr("referrals.refShareBips", vm.toString(d.referrals.refShareBips()), "Referrer part of the protocol fee, in bips."),
+            _rowStr("vault.conversionThreshold", vm.toString(d.vault.conversionThreshold()), "Pending USDG (raw units) of a Meme that closes its epoch and triggers the conversion; 0 disables it."),
+            _rowStr("adapter.twapWindow", string.concat(vm.toString(d.adapter.twapWindow()), " s"), "Window of the TWAP the minimum output is derived from."),
+            _rowStr("route maxSlippageBps", vm.toString(params.maxSlippageBps), "Allowed deviation from the TWAP output for every route set by this run.")
+        );
+    }
+
+    function _reportOwnership(FullDeployment memory d) internal view returns (string memory) {
+        return string.concat(
+            "\n## Ownership\n\n",
+            "| Contract | Owner | Pending owner |\n|---|---|---|\n",
+            _ownerRow("Vault", d.vault.owner(), d.vault.pendingOwner()),
+            _ownerRow("GemoonController", d.controller.owner(), address(0)),
+            _ownerRow("GmoonReferrals", d.referrals.owner(), d.referrals.pendingOwner()),
+            _ownerRow("HookManager", d.hook.owner(), d.hook.pendingOwner()),
+            _ownerRow("UniswapV3SwapAdapter", d.adapter.owner(), d.adapter.pendingOwner()),
+            "\nGemoonController is plain Ownable, ownership moves at once. The others are Ownable2Step: a pending owner becomes the owner only after calling `acceptOwnership()`.\n"
+        );
+    }
+
+    function _reportAssets(FullParams memory params, FullDeployment memory d)
+        internal
+        view
+        returns (string memory out)
+    {
+        uint256 routed;
+        uint256 skipped;
+        out = string.concat(
+            "\n## Reward assets\n\n",
+            "Source: the asset file (",
+            vm.toString(params.assets.length),
+            " rows). Allowed means creators can pick the asset in `deployToken`, the route is the pool the vault's fees are converted through.\n\n",
+            "| Ticker | Asset | Pool | Fee | Result |\n|---|---|---|---|---|\n"
+        );
+        for (uint256 i; i < d.assets.length; ++i) {
+            AssetResult memory r = d.assets[i];
+            if (r.status == AssetStatus.Routed || r.status == AssetStatus.PairToken) ++routed;
+            else ++skipped;
+            out = string.concat(
+                out,
+                "| ", r.ticker,
+                " | ", vm.toString(r.asset),
+                " | ", r.pool == address(0) ? "-" : vm.toString(r.pool),
+                " | ", r.fee == 0 ? "-" : vm.toString(uint256(r.fee)),
+                " | ", _statusText(r.status), " |\n"
+            );
+        }
+        out = string.concat(
+            out,
+            "\nAllowed: ", vm.toString(routed), " (routed or USDG), skipped: ", vm.toString(skipped), ".\n",
+            _reportExtraAssets(params, d),
+            "\nVault allowlist after the run: ", vm.toString(d.vault.allowedAssets().length), " assets.\n"
+        );
+    }
+
+    function _reportExtraAssets(FullParams memory params, FullDeployment memory d)
+        internal
+        view
+        returns (string memory out)
+    {
+        address[] memory extra = params.core.allowedAssets;
+        if (extra.length == 0) return "";
+        out = "\nAlso allowed from VAULT_ALLOWED_ASSETS (no route is set for them):\n\n";
+        for (uint256 i; i < extra.length; ++i) {
+            string memory note = extra[i] == params.core.usdg
+                ? "USDG, credited without a swap"
+                : d.adapter.routeOf(extra[i]).pool != address(0)
+                    ? "routed from the asset file"
+                    : "WARNING: no route, conversions of Memes with this asset will fail";
+            out = string.concat(out, "- ", vm.toString(extra[i]), ": ", note, "\n");
+        }
+    }
+
+    function _reportTodo(address deployer, FullParams memory params, FullDeployment memory d)
+        internal
+        view
+        returns (string memory out)
+    {
+        out = "\n## Left to do\n\n";
+        if (params.core.owner != deployer) {
+            out = string.concat(
+                out,
+                "- ", vm.toString(params.core.owner), " calls `acceptOwnership()` on Vault ",
+                vm.toString(address(d.vault)), ", GmoonReferrals ", vm.toString(address(d.referrals)),
+                " and UniswapV3SwapAdapter ", vm.toString(address(d.adapter)),
+                ". Until then the deployer keeps them.\n"
+            );
+        }
+        for (uint256 i; i < d.assets.length; ++i) {
+            if (d.assets[i].status != AssetStatus.NoTwapHistory) continue;
+            out = string.concat(
+                out,
+                "- Skipped assets without TWAP history: raise the pool observation cardinality (`increaseObservationCardinalityNext`), wait for the window to fill, then `make set-asset-allowed VAULT=",
+                vm.toString(address(d.vault)), " FILE=<asset file>` and `make set-route ADAPTER=",
+                vm.toString(address(d.adapter)), " FILE=<asset file>` as the owner.\n"
+            );
+            break;
+        }
+        out = string.concat(
+            out,
+            "- Verify the contracts in the explorer (see docs/DEPLOY.md).\n",
+            "- First `deployToken` by the team: `PositionCreated` must carry non-zero liquidity.\n"
+        );
+    }
+
+    function _statusText(AssetStatus status) internal pure returns (string memory) {
+        if (status == AssetStatus.Routed) return "allowed + routed";
+        if (status == AssetStatus.PairToken) return "allowed, USDG needs no route";
+        if (status == AssetStatus.NoCode) return "SKIPPED: asset has no code on this network";
+        if (status == AssetStatus.NoPool) return "SKIPPED: pool missing or not a V3 pool";
+        if (status == AssetStatus.NotFactoryPool) {
+            return "SKIPPED: pool is not the factory USDG pool of its fee tier";
+        }
+        return "SKIPPED: pool has no price history over the TWAP window";
+    }
+
+    function _row(string memory name, address addr, string memory note)
+        internal
+        pure
+        returns (string memory)
+    {
+        return _rowStr(name, vm.toString(addr), note);
+    }
+
+    function _rowStr(string memory name, string memory value, string memory note)
+        internal
+        pure
+        returns (string memory)
+    {
+        return string.concat("| ", name, " | ", value, " | ", note, " |\n");
+    }
+
+    function _ownerRow(string memory name, address owner, address pending)
+        internal
+        pure
+        returns (string memory)
+    {
+        return _rowStr(name, vm.toString(owner), pending == address(0) ? "-" : vm.toString(pending));
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Internals
+    // ---------------------------------------------------------------------------------------------
+
+    function _deployVaultAndController(address deployer, Params memory params)
+        internal
+        returns (Vault vault, GemoonController controller)
+    {
+        vault = deployVault(
             deployer,
             VaultDeployParams({
                 owner: deployer,
@@ -494,9 +1076,7 @@ contract DeployGemoon is GemoonDeployBase {
                 allowedAssets: params.allowedAssets
             })
         );
-
-        // 2. Controller, same pair token as the vault and the hook.
-        d.controller = deployController(
+        controller = deployController(
             deployer,
             ControllerDeployParams({
                 proxyAdminOwner: params.proxyAdminOwner,
@@ -504,9 +1084,15 @@ contract DeployGemoon is GemoonDeployBase {
                 pairToken: params.usdg
             })
         );
+    }
 
-        // 3. Hook, fully configured by `initialize`, owned by the final owner right away.
-        d.hook = deployHook(
+    function _deployCoreHook(
+        address create2Deployer,
+        Params memory params,
+        Vault vault,
+        GemoonController controller
+    ) internal returns (HookManager) {
+        return deployHook(
             create2Deployer,
             HookDeployParams({
                 owner: params.owner,
@@ -514,28 +1100,25 @@ contract DeployGemoon is GemoonDeployBase {
                 poolManager: params.poolManager,
                 pairToken: params.usdg,
                 protocolRecipient: params.protocolRecipient,
-                vault: address(d.vault),
-                controller: address(d.controller),
+                vault: address(vault),
+                controller: address(controller),
                 feeBips: params.feeBips,
                 protocolShareBips: params.protocolShareBips
             })
         );
+    }
 
-        // 4. Wiring.
-        d.vault.setHook(address(d.hook));
-        d.vault.setController(address(d.controller));
-        d.controller.setHook(address(d.hook));
-        d.controller.setVault(address(d.vault));
-        d.controller.setPositionManager(params.positionManager, params.permit2);
-
-        // 5. Ownership. Vault is Ownable2Step (pending), controller is plain Ownable (immediate).
-        if (params.owner != deployer) {
-            d.vault.transferOwnership(params.owner);
-            d.controller.transferOwnership(params.owner);
-        }
-
-        // 6. Sanity.
-        checkWiring(d.controller, d.hook, d.vault);
+    function _wireCore(
+        Vault vault,
+        GemoonController controller,
+        HookManager hook,
+        Params memory params
+    ) internal {
+        vault.setHook(address(hook));
+        vault.setController(address(controller));
+        controller.setHook(address(hook));
+        controller.setVault(address(vault));
+        controller.setPositionManager(params.positionManager, params.permit2);
     }
 }
 
@@ -787,6 +1370,17 @@ contract VerifyWiring is GemoonDeployBase {
             console.log("REFERRALS OWNER: ", referrals.owner());
             console.log("REFERRALS REF SHARE BIPS: ", referrals.refShareBips());
         }
+
+        address adapterAddress = vault.swapAdapter();
+        if (adapterAddress != address(0)) {
+            UniswapV3SwapAdapter adapter = UniswapV3SwapAdapter(adapterAddress);
+            if (adapter.i_vault() != address(vault)) revert WiringMismatch("adapter.vault");
+            if (adapter.i_usdg() != vault.usdg()) revert WiringMismatch("adapter.usdg");
+            console.log("SWAP ADAPTER: ", adapterAddress);
+            console.log("SWAP ADAPTER OWNER: ", adapter.owner());
+            console.log("SWAP ADAPTER PENDING OWNER: ", adapter.pendingOwner());
+        }
+        console.log("VAULT ALLOWED ASSETS: ", vault.allowedAssets().length);
         console.log("WIRING OK");
     }
 }

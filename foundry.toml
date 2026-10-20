@@ -9,6 +9,11 @@ ast = true
 build_info = true
 extra_output = ["storageLayout"]
 optimizer = true
+# DeployGemoon reads the reward asset list and writes its report into deploy-logs/ (gitignored).
+fs_permissions = [
+  { access = "read", path = "./tools/scripts" },
+  { access = "read-write", path = "./deploy-logs" }
+]
 
 
 
