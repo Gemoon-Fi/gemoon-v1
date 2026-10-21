@@ -1,6 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
+# Addresses for the README come from env/<ENVIRONMENT>.mk: make prepare-abi ENVIRONMENT=dev|prod.
+source ./tools/scripts/load-env.sh
+
 ABI_DIR="${PWD}/../abi"
 mkdir -p "${ABI_DIR}"
 
@@ -39,12 +42,12 @@ done
 rm -f "${ABI_DIR}/README.md"
 
 echo '# Addresses:' > "${ABI_DIR}/README.md"
-grep -Pi 'proxy_address=\K0x[A-Za-z0-9]{40}' ./.env | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> "${ABI_DIR}/README.md" || true
-grep -Pi 'UNISWAP_V3_FACTORY=\K0x[A-Za-z0-9]{40}' ./.env | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> "${ABI_DIR}/README.md" || true
-grep -Pi 'NATIVE_TOKEN_ADDRESS=\K0x[A-Za-z0-9]{40}' ./.env | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> "${ABI_DIR}/README.md" || true
-grep -Pi 'VAULT_SWAP_ADAPTER=\K0x[A-Za-z0-9]{40}' ./.env | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> "${ABI_DIR}/README.md" || true
-grep -Pi 'USDG_ADDRESS=\K0x[A-Za-z0-9]{40}' ./.env | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> "${ABI_DIR}/README.md" || true
-grep -Pi 'LENS_ADDRESS=\K0x[A-Za-z0-9]{40}' ./.env | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> "${ABI_DIR}/README.md" || true
+grep -Pi 'proxy_address=\K0x[A-Za-z0-9]{40}' "${ENV_FILE}" | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> "${ABI_DIR}/README.md" || true
+grep -Pi 'UNISWAP_V3_FACTORY=\K0x[A-Za-z0-9]{40}' "${ENV_FILE}" | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> "${ABI_DIR}/README.md" || true
+grep -Pi 'NATIVE_TOKEN_ADDRESS=\K0x[A-Za-z0-9]{40}' "${ENV_FILE}" | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> "${ABI_DIR}/README.md" || true
+grep -Pi 'VAULT_SWAP_ADAPTER=\K0x[A-Za-z0-9]{40}' "${ENV_FILE}" | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> "${ABI_DIR}/README.md" || true
+grep -Pi 'USDG_ADDRESS=\K0x[A-Za-z0-9]{40}' "${ENV_FILE}" | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> "${ABI_DIR}/README.md" || true
+grep -Pi 'LENS_ADDRESS=\K0x[A-Za-z0-9]{40}' "${ENV_FILE}" | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> "${ABI_DIR}/README.md" || true
 echo '## Usage:' >> "${ABI_DIR}/README.md"
 cat ./README-ABI.md >> "${ABI_DIR}/README.md"
 

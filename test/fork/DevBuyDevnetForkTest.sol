@@ -155,6 +155,7 @@ contract DevBuyDevnetForkTest is Test {
                 swapFeeBips: MEME_FEE_BIPS, creatorAddress: creator, rewardRecipient: address(0)
             }),
             vaultAssets: assets,
+            vaultCreatorShareBps: 1_000,
             devBuy: DevBuyConfig({memeAmount: DEV_BUY_AMOUNT, maxPairIn: CREATOR_BUDGET})
         });
     }
@@ -334,7 +335,7 @@ contract DevBuyDevnetForkTest is Test {
         (, uint256[] memory earnedAmounts) = vault.earned(l.token, creator);
         (, uint256[] memory creatorOwed) = vault.creatorAccrued(l.token);
         assertGt(earnedAmounts[0], 0, "staker rewards");
-        assertGe(creatorOwed[0], (vaultTotal * vault.CREATOR_SHARE_BPS()) / BIPS, "creator share");
+        assertGe(creatorOwed[0], (vaultTotal * vault.creatorShareBpsOf(l.token)) / BIPS, "creator share");
         // the only staker is owed everything not owed to the creator, up to rounding
         assertApproxEqAbs(earnedAmounts[0] + creatorOwed[0], vaultTotal, 2, "all fees owed");
 

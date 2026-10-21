@@ -88,7 +88,7 @@ contract VaultUpgradeTest is Test {
         assets[0] = AssetConfig({token: address(aapl), weightBps: 6_000});
         assets[1] = AssetConfig({token: address(usdg), weightBps: 4_000});
         vm.prank(controller);
-        vault.registerVault(address(meme), creator, assets);
+        vault.registerVault(address(meme), creator, 1_000, assets);
     }
 
     function _stake(address account, uint256 amount) internal {

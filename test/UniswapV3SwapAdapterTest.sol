@@ -632,7 +632,7 @@ contract UniswapV3SwapAdapterTest is Test {
         assets[0] = AssetConfig({token: address(assetHigh), weightBps: 6_000});
         assets[1] = AssetConfig({token: address(assetLow), weightBps: 4_000});
         vm.prank(controller);
-        realVault.registerVault(address(meme), creator, assets);
+        realVault.registerVault(address(meme), creator, 1_000, assets);
 
         // Threshold reached inside notifyFees: the epoch converts through the adapter.
         usdg.mint(address(realVault), 100e6);

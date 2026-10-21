@@ -35,6 +35,9 @@ struct DeployConfig {
     RewardsConfig rewardsConfig;
     /// @dev Reward assets of the Meme vault, chosen by the creator from the vault allowlist.
     AssetConfig[] vaultAssets;
+    /// @dev Share of every vault fee credited to `rewardRecipient`, in bps: 0..10_000
+    /// (1_000 = 10%), the rest goes to the stakers. Immutable after deployment.
+    uint16 vaultCreatorShareBps;
     DevBuyConfig devBuy;
 }
 

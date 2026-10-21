@@ -11,7 +11,10 @@ out/
 docs/*
 !docs/DEPLOY.md
 
-# Dotenv file and its backups made by deploy.sh (contain PRIVATE_KEY)
+# Environment files env/<dev|prod>.mk and their backups made by deploy.sh (contain PRIVATE_KEY).
+# Plus .env: forge loads it on its own, a leftover one would leak into every environment.
+env/*.mk
+env/*.mk.bak.*
 .env
 .env.bak.*
 

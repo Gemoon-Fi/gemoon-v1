@@ -3,19 +3,20 @@
 #   1. DeployGemoon (make deploy-gemoon): Vault, GemoonController, GmoonReferrals, HookManager and
 #      UniswapV3SwapAdapter, wired; reward assets of DEPLOY_ASSETS_FILE allowed in the vault with
 #      their swap routes; ownership handed to GEMOON_OWNER;
-#   2. addresses written into .env;
+#   2. addresses written into env/$ENVIRONMENT.mk;
 #   3. make verify-wiring (read-only, against the chain);
 #   4. GemoonLens (make deploy-lens), unless --no-lens;
 #   5. report: deploy-logs/deploy-<time>-report.md, what was deployed where and why, the outcome
 #      per reward asset, ownership and what is left to do. Printed at the end.
 #
 # Usage:
-#   ./deploy.sh              deploy everything
-#   ./deploy.sh --simulate   dry run of DeployGemoon, nothing is broadcast, report still written
-#   ./deploy.sh --no-lens    skip GemoonLens
+#   ENVIRONMENT=dev ./deploy.sh              deploy everything
+#   ENVIRONMENT=dev ./deploy.sh --simulate   dry run of DeployGemoon, nothing is broadcast, report still written
+#   ENVIRONMENT=dev ./deploy.sh --no-lens    skip GemoonLens
 #
-# Reads RPC, PRIVATE_KEY and the deploy variables from .env (see docs/DEPLOY.md). Backs up .env
-# before changing it (.env.bak.<time>, gitignored). Full forge output: deploy-logs/deploy-<time>.log.
+# ENVIRONMENT (dev|prod) is required. Reads RPC, PRIVATE_KEY and the deploy variables from
+# env/$ENVIRONMENT.mk (see docs/DEPLOY.md). Backs up that file before changing it
+# (env/$ENVIRONMENT.mk.bak.<time>, gitignored). Full forge output: deploy-logs/deploy-<time>.log.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -30,12 +31,8 @@ for arg in "$@"; do
     esac
 done
 
-ENV_FILE=.env
-[ -f "$ENV_FILE" ] || { echo "No $ENV_FILE in $(pwd)" >&2; exit 1; }
-set -a
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-set +a
+# shellcheck source=tools/scripts/load-env.sh
+source tools/scripts/load-env.sh
 
 for var in RPC PRIVATE_KEY POOL_MANAGER POSITION_MANAGER PERMIT2 USDG_ADDRESS \
     VAULT_CONVERSION_THRESHOLD UNISWAP_V3_FACTORY; do
@@ -76,7 +73,7 @@ extract() {
         | tail -n 1
 }
 
-# Sets KEY=VALUE in .env: replaces the existing line or appends one.
+# Sets KEY=VALUE in env/$ENVIRONMENT.mk: replaces the existing line or appends one.
 set_env() {
     local key="$1" value="$2" tmp
     tmp=$(mktemp)
@@ -102,7 +99,7 @@ report() { printf '%s\n' "$@" >> "$REPORT"; }
 # ------------------------------------------------------------------------------------------------
 # DeployGemoon
 # ------------------------------------------------------------------------------------------------
-# Every forge call goes through the Makefile. It includes .env, so a value this script sets is
+# Every forge call goes through the Makefile. It includes env/$ENVIRONMENT.mk, so a value this script sets is
 # passed on the make command line (command-line variables beat included ones and are exported to
 # the recipe).
 
@@ -176,7 +173,7 @@ for kv in "${ENV_KEYS[@]}"; do
 done
 echo "Addresses written to $ENV_FILE (previous version: $ENV_FILE.bak.$STAMP)"
 
-# .env now holds the new addresses, the next make targets read them from there.
+# env/$ENVIRONMENT.mk now holds the new addresses, the next make targets read them from there.
 echo "Checking wiring against the chain"
 WIRING="OK"
 if ! make -f ./Makefile verify-wiring 2>&1 | tee -a "$LOG"; then
@@ -215,7 +212,7 @@ report "" "## GemoonLens" "" \
 report "" "## Result" "" \
     "- Broadcast: OK, every transaction was sent (\`broadcast/GemoonDeploy.sol/$CHAIN_ID/run-latest.json\`)." \
     "- On-chain wiring check (\`make verify-wiring\`): $WIRING." \
-    "- \`.env\` updated (backup \`$ENV_FILE.bak.$STAMP\`):"
+    "- \`$ENV_FILE\` updated (backup \`$ENV_FILE.bak.$STAMP\`):"
 for kv in "${ENV_KEYS[@]}"; do
     report "  - \`${kv%%=*}\` = ${kv#*=}"
 done

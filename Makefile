@@ -1,10 +1,37 @@
-include .env
-export RPC ?= "https://rpc-testnet.gmoon.xyz"
-FORK_RPC ?= "https://ethereum-sepolia-rpc.publicnode.com"
+# Everything environment-specific (RPC, keys, owners, addresses) lives in env/<ENVIRONMENT>.mk,
+# never committed: make <target> ENVIRONMENT=dev|prod. Only the targets below run without it.
+ENV_FREE_TARGETS := clean compile unit-tests
+
+ifneq ($(filter-out $(ENV_FREE_TARGETS),$(or $(MAKECMDGOALS),deploy-gemoon)),)
+ifndef ENVIRONMENT
+$(error ENVIRONMENT is not set: make <target> ENVIRONMENT=dev|prod)
+endif
+ifeq ($(filter $(ENVIRONMENT),dev prod),)
+$(error Unknown ENVIRONMENT=$(ENVIRONMENT), expected dev or prod)
+endif
+ENV_FILE := env/$(ENVIRONMENT).mk
+ifeq ($(wildcard $(ENV_FILE)),)
+$(error No $(ENV_FILE))
+endif
+include $(ENV_FILE)
+# Every variable of the file reaches the recipes, so forge scripts read it via vm.env*.
+export $(shell sed -nE 's/^([A-Za-z_][A-Za-z0-9_]*)=.*/\1/p' $(ENV_FILE))
+export ENVIRONMENT
+
+# Prod never falls back to the deployer as owner.
+ifeq ($(ENVIRONMENT),prod)
+ifeq ($(strip $(GEMOON_OWNER)),)
+$(error GEMOON_OWNER is empty in $(ENV_FILE), required for prod)
+endif
+ifeq ($(strip $(GEMOON_PROXY_ADMIN_OWNER)),)
+$(error GEMOON_PROXY_ADMIN_OWNER is empty in $(ENV_FILE), required for prod)
+endif
+endif
+endif
 
 # Full deployment in one run: Vault, GemoonController, GmoonReferrals, HookManager, UniswapV3SwapAdapter,
 # wired; reward assets of DEPLOY_ASSETS_FILE allowed and routed; report into DEPLOY_REPORT. Prefer ./deploy.sh,
-# it also writes the addresses into .env, checks the wiring, deploys the Lens and completes the report.
+# it also writes the addresses into env/$(ENVIRONMENT).mk, checks the wiring, deploys the Lens and completes the report.
 deploy-gemoon:
 	forge script --via-ir ./script/GemoonDeploy.sol:DeployGemoon --slow --legacy -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
 
@@ -91,7 +118,7 @@ verify-wiring:
 unit-tests:
 	forge test --show-progress -vv --no-match-path "test/fork/*"
 
-# Fork tests against the devnet, need DEVNET_RPC (see .env.example).
+# Fork tests against the devnet, need DEVNET_RPC in env/dev.mk.
 devnet-tests:
 	DEVNET_RPC=$(DEVNET_RPC) DEVNET_BLOCK=$(DEVNET_BLOCK) OPERATOR_ADDRESS=$(OPERATOR_ADDRESS) forge test --match-path "test/fork/*" -vv
 

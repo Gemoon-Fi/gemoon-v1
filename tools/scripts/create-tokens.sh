@@ -11,7 +11,7 @@
 #
 #   count  number of Memes, default 10.
 #
-# From .env: RPC, PRIVATE_KEY, CONTROLLER_PROXY_ADDRESS. Not for mainnet: every Meme is a real pool.
+# From env/$ENVIRONMENT.mk: RPC, PRIVATE_KEY, CONTROLLER_PROXY_ADDRESS. Not for mainnet: every Meme is a real pool.
 set -euo pipefail
 
 usage() {
@@ -31,12 +31,8 @@ done
 
 cd "$(dirname "$0")/../.."
 
-ENV_FILE=.env
-[ -f "$ENV_FILE" ] || { echo "No $ENV_FILE in $(pwd)" >&2; exit 1; }
-set -a
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-set +a
+# shellcheck source=tools/scripts/load-env.sh
+source tools/scripts/load-env.sh
 for var in RPC PRIVATE_KEY CONTROLLER_PROXY_ADDRESS; do
     [ -n "${!var:-}" ] || { echo "$var is empty in $ENV_FILE" >&2; exit 1; }
 done
@@ -68,7 +64,7 @@ NOUNS=(Pepe Doge Cat Frog Shiba Ape Bull Bear Panda Whale Rocket Banana Penguin 
 TAGLINES=("to the moon" "community owned" "no roadmap just vibes" "the people's meme"
     "built different" "for degens by degens" "pure memetic energy" "wagmi" "send it")
 
-SIG="deployToken(((string,string,(string,string,string,string),string,string,(address,bool)[]),(uint256,address,address),(address,uint16)[],(uint256,uint256)))"
+SIG="deployToken(((string,string,(string,string,string,string),string,string,(address,bool)[]),(uint256,address,address),(address,uint16)[],uint16,(uint256,uint256)))"
 
 ok=0 failed=0
 for i in $(seq 1 "$COUNT"); do
@@ -80,6 +76,8 @@ for i in $(seq 1 "$COUNT"); do
     handle=$(echo "$adj$noun" | tr '[:upper:]' '[:lower:]')
     image="https://api.dicebear.com/9.x/shapes/svg?seed=$symbol"
     fee=$(rand "$MIN_FEE" "$MAX_FEE")
+    # Creator share of the vault fees: 0%..50% in 5% steps.
+    share=$(($(rand 0 10) * 500))
 
     # Distinct random assets, weights: random cuts of 10000 with every part at least 1.
     n=$(rand 1 "$MAX_PICK")
@@ -96,8 +94,8 @@ for i in $(seq 1 "$COUNT"); do
         assets="$assets${assets:+,}(${chosen[$j]},$w)"
     done
 
-    config="(($image,$description,(@$handle,@$handle,t.me/$handle,https://$handle.xyz),$name,$symbol,[($SENDER,true)]),($fee,$SENDER,$SENDER),[$assets],(0,0))"
-    label="[$i/$COUNT] $symbol \"$name\" fee $fee, $n asset(s)"
+    config="(($image,$description,(@$handle,@$handle,t.me/$handle,https://$handle.xyz),$name,$symbol,[($SENDER,true)]),($fee,$SENDER,$SENDER),[$assets],$share,(0,0))"
+    label="[$i/$COUNT] $symbol \"$name\" fee $fee, creator share $share, $n asset(s)"
     if [ "$DRY_RUN" = true ]; then
         echo "  $label: $config"
         continue

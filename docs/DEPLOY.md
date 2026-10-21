@@ -4,7 +4,14 @@
 
 ## 1. Перед запуском
 
-**Окружение.** Foundry установлен, `forge build` проходит. Переменные в `.env` в корне репозитория.
+**Окружение.** Foundry установлен, `forge build` проходит. Переменные окружения лежат в `env/<ENVIRONMENT>.mk`: `env/dev.mk` (девнет) и `env/prod.mk`
+(mainnet), оба не коммитятся. Окружение выбирается обязательной переменной `ENVIRONMENT=dev|prod`:
+`make <цель> ENVIRONMENT=dev`, `ENVIRONMENT=prod ./deploy.sh`. Без неё или с другим значением
+Makefile и скрипты из `tools/scripts` падают с ошибкой. Без `ENVIRONMENT` работают только `clean`,
+`compile` и `unit-tests`; `prepare-abi` берёт адреса для README ABI из `env/<ENVIRONMENT>.mk`. Для prod Makefile дополнительно требует непустые
+`GEMOON_OWNER` и `GEMOON_PROXY_ADMIN_OWNER`, деплоер как владелец по умолчанию там не подставляется.
+Формат файлов: строки `KEY=VALUE` без кавычек и `$`, их читают и make, и bash. Файла `.env` быть не
+должно: forge подгружает его сам, и значения из него попали бы в любое окружение.
 Пустое значение считается незаданным.
 
 | Переменная | Обязательна | Что это |
@@ -57,23 +64,24 @@ forge script --via-ir script/GemoonDeploy.sol:DeployGemoon --rpc-url $RPC --priv
 Рекомендуемый способ — `deploy.sh` в корне репозитория:
 
 ```sh
-./deploy.sh --simulate   # прогон без отправки транзакций, отчёт пишется
-./deploy.sh              # полный деплой
-./deploy.sh --no-lens    # то же без GemoonLens
+ENVIRONMENT=dev ./deploy.sh --simulate   # прогон без отправки транзакций, отчёт пишется
+ENVIRONMENT=dev ./deploy.sh              # полный деплой
+ENVIRONMENT=dev ./deploy.sh --no-lens    # то же без GemoonLens
+ENVIRONMENT=prod ./deploy.sh --simulate  # то же для mainnet, из env/prod.mk
 ```
 
 Что делает скрипт:
 
-1. Проверяет `.env`, файл активов и что у `POOL_MANAGER`, `POSITION_MANAGER`, `PERMIT2`,
+1. Проверяет `ENVIRONMENT` и `env/$ENVIRONMENT.mk`, файл активов и что у `POOL_MANAGER`, `POSITION_MANAGER`, `PERMIT2`,
    `USDG_ADDRESS`, `UNISWAP_V3_FACTORY` и CREATE2-деплоера есть код в сети.
 2. `make deploy-gemoon` (симуляция — `make simulate-gemoon`): весь деплой одним forge-скриптом,
    таблица шагов ниже.
-3. Читает из лога адреса и пишет их в `.env`: `VAULT_/HOOK_/CONTROLLER_/REFERRALS_PROXY_ADDRESS`,
+3. Читает из лога адреса и пишет их в `env/$ENVIRONMENT.mk`: `VAULT_/HOOK_/CONTROLLER_/REFERRALS_PROXY_ADDRESS`,
    `*_PROXY_ADMIN_ADDRESS`, `SWAP_ADAPTER`, `VAULT_SWAP_ADAPTER`. Перед правкой делает копию
-   `.env.bak.<время>`.
+   `env/$ENVIRONMENT.mk.bak.<время>`.
 4. `make verify-wiring`: read-only проверка связки по сети, включая рефералы и адаптер.
 5. `make deploy-lens`, адрес в `LENS_ADDRESS`.
-6. Дописывает в отчёт Lens и итог (broadcast, проверка связки, что записано в `.env`) и печатает
+6. Дописывает в отчёт Lens и итог (broadcast, проверка связки, что записано в `env/$ENVIRONMENT.mk`) и печатает
    отчёт.
 
 **Отчёт** `deploy-logs/deploy-<время>-report.md`: что задеплоено, куда и зачем. В нём:
@@ -90,8 +98,8 @@ forge script --via-ir script/GemoonDeploy.sol:DeployGemoon --rpc-url $RPC --priv
 отчёта строит forge-скрипт до отправки транзакций. Если broadcast упал, `deploy.sh` дописывает в
 отчёт раздел «Result» с пометкой FAILED.
 
-Без скрипта то же самое делается вручную: `make deploy-gemoon DEPLOY_REPORT=deploy-logs/report.md`,
-дальше адреса из лога переносятся в `.env` руками.
+Без скрипта то же самое делается вручную: `make deploy-gemoon ENVIRONMENT=dev DEPLOY_REPORT=deploy-logs/report.md`,
+дальше адреса из лога переносятся в `env/dev.mk` руками.
 
 Скрипт `DeployGemoon` делает всё в одном прогоне, транзакции уходят по очереди (`--slow`).
 Порядок и что происходит на каждом шаге:
@@ -126,7 +134,7 @@ forge script --via-ir script/GemoonDeploy.sol:DeployGemoon --rpc-url $RPC --priv
 ## 3. После деплоя
 
 1. Прочитать отчёт `deploy-logs/deploy-<время>-report.md`: раздел «Left to do» и строки
-   `SKIPPED` / `WARNING` в таблице активов. `deploy.sh` уже перенёс адреса в `.env`.
+   `SKIPPED` / `WARNING` в таблице активов. `deploy.sh` уже перенёс адреса в `env/$ENVIRONMENT.mk`.
 2. Если `GEMOON_OWNER` не деплоер, он принимает владение: `acceptOwnership()` на Vault,
    GmoonReferrals и UniswapV3SwapAdapter. До этого ими владеет деплоер. Хук и контроллер уже
    принадлежат `GEMOON_OWNER`.
@@ -232,7 +240,7 @@ make deploy-swap-adapter
 | `PERMIT2` | `0x000000000022D473030F116dDEE9F6B43aC78BA3` |
 | `USDG_ADDRESS` | `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168` (Global Dollar, 6 знаков) |
 
- Профинансированный аккаунт и ключ лежат в `.env` как
+ Профинансированный аккаунт и ключ лежат в `env/dev.mk` как
 `OPERATOR_ADDRESS` и `OPERATOR_PRIVATE_KEY`, форк-тесты и деплой берут их оттуда. Дефолтный
 anvil-аккаунт `0xf39F…2266` на девнете пуст, на него полагаться нельзя.
 
@@ -267,7 +275,7 @@ anvil-аккаунт `0xf39F…2266` на девнете пуст, на него
 
 ## 6. Чеклист
 
-- [ ] `.env` заполнен, `USDG_ADDRESS` указывает на существующий токен
+- [ ] `env/<ENVIRONMENT>.mk` заполнен, для prod заданы `GEMOON_OWNER` и `GEMOON_PROXY_ADMIN_OWNER`, `USDG_ADDRESS` указывает на существующий токен
 - [ ] CREATE2-деплоер есть в сети
 - [ ] симуляция `DeployGemoon` без broadcast прошла
 - [ ] `./deploy.sh --simulate`: в отчёте нет неожиданных SKIPPED / WARNING

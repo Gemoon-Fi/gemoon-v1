@@ -96,6 +96,7 @@ const config = {
     { token: "0x...", weightBps: 6000 },
     { token: "0x...", weightBps: 4000 },
   ],
+  vaultCreatorShareBps: 1000,         // доля создателя в комиссиях волта, 0..10000 (1000 = 10%)
   devBuy: {                           // первая покупка создателем, в той же транзакции
     memeAmount: 0n,                   // сколько мема купить, raw units (18 знаков). 0 = без dev buy
     maxPairIn: 0n,                    // максимум USDG с комиссией, иначе revert DevBuySlippage
@@ -106,6 +107,12 @@ const config = {
 Правила для `vaultAssets`: каждый актив должен быть в allowlist волта, без повторов. Весь
 allowlist отдаёт `Vault.allowedAssets()`, проверка одного актива — `Vault.isAssetAllowed(asset)`.
 Какие из них показывать в форме, см. `indexing.md`, раздел 2a. Набор активов после создания не меняется.
+
+`vaultCreatorShareBps` — доля каждой комиссии волта, которая идёт создателю (`rewardRecipient`),
+остальное получают стейкеры. От 0 до 10000 bips, больше — revert `InvalidCreatorShare`. После
+создания не меняется, читается через `Vault.creatorShareBpsOf(meme)`, `vaultInfo(meme).creatorShareBps`
+или `vault.creatorShareBps` в `GemoonLens.tokens`. Пока стейкеров нет, вся комиссия идёт создателю
+при любой доле.
 
 Контроллер и вызывающий адрес добавляются в админы токена автоматически и не удаляются.
 
@@ -220,6 +227,7 @@ HookManager для интеграций (`IHookManager.json`):
 ## Создатель
 
 - `creatorOf(meme)`: текущий создатель.
+- `creatorShareBpsOf(meme)`: доля создателя в каждой комиссии, bips (1000 = 10%). Задана в `deployToken`.
 - `creatorAccrued(meme) → (assets[], amounts[])`: доля создателя, готовая к выплате.
 - `claimCreatorRewards(meme)`: отправляет её создателю. Вызвать может любой адрес.
 - Передача роли в два шага: создатель зовёт `transferCreator(meme, newCreator)`, новый адрес
@@ -256,7 +264,7 @@ HookManager для интеграций (`IHookManager.json`):
 | Контракт | Событие | Смысл |
 |---|---|---|
 | Controller | `TokenCreated`, `PoolCreated`, `PositionCreated` | новый мем |
-| Vault | `VaultRegistered(meme, creator, assets)` | волт мема создан |
+| Vault | `VaultRegistered(meme, creator, creatorShareBps, assets)` | волт мема создан |
 | Vault | `FeesNotified(meme, toStakers, toCreator)` | пришла комиссия в USDG |
 | Vault | `FeesConverted(meme, epoch, usdgIn, toStakers[], toCreator[])` | USDG сконвертирован, награды стали claimable |
 | Vault | `Staked`, `Unstaked`, `RewardPaid`, `CreatorRewardPaid` | действия пользователей |
@@ -302,6 +310,7 @@ await referrals.paused();                      // true — выплаты вре
 | `InvalidMemeFeeBips(feeBips)` | `swapFeeBips` вне 100..1000 |
 | `Token symbol is required`, `Token name is required`, `Token image required.`, `At least one admin address is required.` | пустые поля конфига |
 | `AssetNotAllowed`, `DuplicateAsset`, `InvalidAssetsLength`, `InvalidWeights` | неверный `vaultAssets` |
+| `InvalidCreatorShare(creatorShareBps)` | `vaultCreatorShareBps` больше 10000 |
 | `VaultNotRegistered` | адрес не является мемом Gemoon |
 | `InsufficientStake` | снятие больше стейка |
 | `EnforcedPause` | волт на паузе: стейк, клейм и конвертация недоступны, вывод стейка работает |

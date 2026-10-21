@@ -17,7 +17,7 @@
 # (USDG, asset, pool fee) and has price history over the adapter TWAP window; other rows are
 # reported and skipped. Rows already routed to the same pool and slippage send nothing.
 #
-# From .env: RPC, PRIVATE_KEY, USDG_ADDRESS, UNISWAP_V3_FACTORY. The sender must be the adapter
+# From env/$ENVIRONMENT.mk: RPC, PRIVATE_KEY, USDG_ADDRESS, UNISWAP_V3_FACTORY. The sender must be the adapter
 # owner.
 set -euo pipefail
 
@@ -62,12 +62,8 @@ is_address "$ADAPTER" || { echo "adapter is not an address: $ADAPTER" >&2; usage
 [ -z "$ASSET" ] || is_address "$ASSET" || { echo "asset is not an address: $ASSET" >&2; usage; }
 [ -z "$FILE" ] || [ -f "$FILE" ] || { echo "No file $FILE" >&2; exit 1; }
 
-ENV_FILE=.env
-[ -f "$ENV_FILE" ] || { echo "No $ENV_FILE in $(pwd)" >&2; exit 1; }
-set -a
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-set +a
+# shellcheck source=tools/scripts/load-env.sh
+source tools/scripts/load-env.sh
 for var in RPC PRIVATE_KEY USDG_ADDRESS UNISWAP_V3_FACTORY; do
     [ -n "${!var:-}" ] || { echo "$var is empty in $ENV_FILE" >&2; exit 1; }
 done
@@ -98,7 +94,7 @@ if [ "$(lower "$OWNER")" != "$(lower "$SENDER")" ]; then
     [ "$DRY_RUN" = true ] || exit 1
 fi
 
-# The adapter looks pools up in its own immutable factory; it must be the one from .env.
+# The adapter looks pools up in its own immutable factory; it must be the one from env/$ENVIRONMENT.mk.
 ADAPTER_FACTORY=$(call "$ADAPTER" "i_factory()(address)")
 [ "$(lower "$ADAPTER_FACTORY")" = "$(lower "$UNISWAP_V3_FACTORY")" ] || {
     echo "Adapter uses factory $ADAPTER_FACTORY, UNISWAP_V3_FACTORY is $UNISWAP_V3_FACTORY" >&2

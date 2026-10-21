@@ -145,6 +145,7 @@ contract ReferralsIntegrationTest is Test {
                 swapFeeBips: FEE_BIPS, creatorAddress: msg.sender, rewardRecipient: address(0)
             }),
             vaultAssets: assets,
+            vaultCreatorShareBps: 1_000,
             devBuy: DevBuyConfig({memeAmount: 0, maxPairIn: 0})
         });
     }

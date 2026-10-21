@@ -90,7 +90,6 @@ contract Vault is
     uint64 public constant VAULT_VERSION = 1;
 
     uint256 public constant BPS = 10_000;
-    uint256 public constant CREATOR_SHARE_BPS = 1_000; // 10%
     uint256 public constant MAX_ASSETS = 8;
     uint256 public constant PRECISION = 1e36;
     uint256 public constant CONVERSION_COOLDOWN = 1 minutes;
@@ -201,10 +200,12 @@ contract Vault is
     function registerVault(
         address meme,
         address creator,
+        uint16 creatorShareBps,
         AssetConfig[] calldata assets
     ) external onlyController {
         if (meme == address(0) || creator == address(0)) revert ZeroAddress();
         if (meme == address(s_usdg)) revert AssetNotAllowed(meme);
+        if (creatorShareBps > BPS) revert InvalidCreatorShare(creatorShareBps);
 
         VaultInfo storage v = s_vaults[meme];
         if (v.registeredAt != 0) revert VaultAlreadyRegistered(meme);
@@ -228,8 +229,9 @@ contract Vault is
 
         v.creator = creator;
         v.registeredAt = uint64(block.timestamp);
+        v.creatorShareBps = creatorShareBps;
 
-        emit VaultRegistered(meme, creator, assets);
+        emit VaultRegistered(meme, creator, creatorShareBps, assets);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -252,7 +254,7 @@ contract Vault is
         s_accounted[usdg_] = accounted_ + usdgAmount;
 
         VaultInfo storage v = s_vaults[meme];
-        uint256 toCreator = (usdgAmount * CREATOR_SHARE_BPS) / BPS;
+        uint256 toCreator = (usdgAmount * v.creatorShareBps) / BPS;
         uint256 toStakers = usdgAmount - toCreator;
 
         uint256 accDelta = v.totalStaked == 0
@@ -588,6 +590,11 @@ contract Vault is
     /// @inheritdoc IVault
     function creatorOf(address meme) external view returns (address) {
         return s_vaults[meme].creator;
+    }
+
+    /// @inheritdoc IVault
+    function creatorShareBpsOf(address meme) external view returns (uint256) {
+        return s_vaults[meme].creatorShareBps;
     }
 
     /// @inheritdoc IVault

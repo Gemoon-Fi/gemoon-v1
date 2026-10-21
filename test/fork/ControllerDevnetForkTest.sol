@@ -142,6 +142,7 @@ contract ControllerDevnetForkTest is Test {
                 swapFeeBips: 125, creatorAddress: creator, rewardRecipient: address(0)
             }),
             vaultAssets: assets,
+            vaultCreatorShareBps: 1_000,
             devBuy: DevBuyConfig({memeAmount: 0, maxPairIn: 0})
         });
     }

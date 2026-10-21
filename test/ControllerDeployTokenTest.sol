@@ -23,7 +23,7 @@ import {IGemoonController} from "../src/contracts/interfaces/IGemoon.sol";
 import {HookManager} from "../src/contracts/hooks/HookManager.sol";
 import {IHookManager} from "../src/contracts/interfaces/IHookManager.sol";
 import {Vault} from "../src/contracts/vault/Vault.sol";
-import {AssetConfig} from "../src/contracts/interfaces/IVault.sol";
+import {AssetConfig, IVault} from "../src/contracts/interfaces/IVault.sol";
 import {
     DeployConfig,
     DevBuyConfig,
@@ -124,6 +124,7 @@ contract ControllerDeployTokenTest is Test {
                 swapFeeBips: swapFeeBips, creatorAddress: creator, rewardRecipient: address(0)
             }),
             vaultAssets: assets,
+            vaultCreatorShareBps: 1_000,
             devBuy: DevBuyConfig({memeAmount: 0, maxPairIn: 0})
         });
     }
@@ -659,6 +660,23 @@ contract ControllerDeployTokenTest is Test {
         vm.prank(creator);
         vm.expectRevert(abi.encodeWithSelector(IHookManager.InvalidMemeFeeBips.selector, 1_001));
         controller.deployToken(_config(1_001));
+    }
+
+    function test_DeployToken_CreatorShare_StoredInVault() external {
+        DeployConfig memory config = _config();
+        config.vaultCreatorShareBps = 3_500;
+        vm.prank(creator);
+        address token = controller.deployToken(config);
+        assertEq(vault.creatorShareBpsOf(token), 3_500);
+        assertEq(vault.vaultInfo(token).creatorShareBps, 3_500);
+    }
+
+    function test_DeployToken_CreatorShareAboveBps_Revert() external {
+        DeployConfig memory config = _config();
+        config.vaultCreatorShareBps = 10_001;
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(IVault.InvalidCreatorShare.selector, 10_001));
+        controller.deployToken(config);
     }
 
     /// @dev 10% fee: the protocol gets a third of it (~3.33% of the volume), the vault the rest.

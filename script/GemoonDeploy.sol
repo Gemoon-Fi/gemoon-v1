@@ -1311,14 +1311,15 @@ contract ProxyHookUpgrade is GemoonDeployBase {
 }
 
 /// @notice Upgrades the GemoonController proxy and re-runs its initializer.
-/// @dev Env: MULTISIG_OWNER_ADDRESS, NATIVE_TOKEN_ADDRESS, POOL_MANAGER, CONTROLLER_PROXY_ADDRESS,
+/// @dev Env: GEMOON_OWNER, NATIVE_TOKEN_ADDRESS, POOL_MANAGER, CONTROLLER_PROXY_ADDRESS,
 /// CONTROLLER_PROXY_ADMIN_ADDRESS. `reinitialize` is guarded by `reinitializer(GEMOON_VERSION)`,
-/// so it only succeeds when the new implementation bumps the version.
+/// so it only succeeds when the new implementation bumps the version. `reinitialize` sets the
+/// owner again, so GEMOON_OWNER is required here: no fallback to the broadcaster.
 contract ProxyGemoonControllerUpgrade is Script {
     function run() external {
         vm.startBroadcast();
 
-        address multisigOwner = vm.envAddress("MULTISIG_OWNER_ADDRESS");
+        address owner = vm.envAddress("GEMOON_OWNER");
         address nativeToken = vm.envAddress("NATIVE_TOKEN_ADDRESS");
         address uniswapPoolManager = vm.envAddress("POOL_MANAGER");
         address proxyAddress = vm.envAddress("CONTROLLER_PROXY_ADDRESS");
@@ -1329,7 +1330,7 @@ contract ProxyGemoonControllerUpgrade is Script {
         ProxyAdmin(proxyAdmin).upgradeAndCall(
             ITransparentUpgradeableProxy(proxyAddress),
             controllerImpl,
-            abi.encodeCall(GemoonController.reinitialize, (uniswapPoolManager, nativeToken, multisigOwner))
+            abi.encodeCall(GemoonController.reinitialize, (uniswapPoolManager, nativeToken, owner))
         );
 
         vm.stopBroadcast();

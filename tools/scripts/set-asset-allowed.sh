@@ -15,7 +15,7 @@
 # and its memes keep fees in USDG. --without-pool allows such assets anyway. --dry-run checks
 # everything and sends nothing.
 #
-# From .env: RPC, PRIVATE_KEY, USDG_ADDRESS, UNISWAP_V3_FACTORY (file mode). The sender must be the
+# From env/$ENVIRONMENT.mk: RPC, PRIVATE_KEY, USDG_ADDRESS, UNISWAP_V3_FACTORY (file mode). The sender must be the
 # vault owner.
 set -euo pipefail
 
@@ -56,12 +56,8 @@ is_address "$VAULT" || { echo "vault is not an address: $VAULT" >&2; usage; }
 [ -z "$ASSET" ] || is_address "$ASSET" || { echo "asset is not an address: $ASSET" >&2; usage; }
 [ -z "$FILE" ] || [ -f "$FILE" ] || { echo "No file $FILE" >&2; exit 1; }
 
-ENV_FILE=.env
-[ -f "$ENV_FILE" ] || { echo "No $ENV_FILE in $(pwd)" >&2; exit 1; }
-set -a
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-set +a
+# shellcheck source=tools/scripts/load-env.sh
+source tools/scripts/load-env.sh
 for var in RPC PRIVATE_KEY USDG_ADDRESS; do
     [ -n "${!var:-}" ] || { echo "$var is empty in $ENV_FILE" >&2; exit 1; }
 done

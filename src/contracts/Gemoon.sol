@@ -230,6 +230,7 @@ contract GemoonController is
         vault_.registerVault(
             deployedToken,
             config.rewardsConfig.rewardRecipient,
+            config.vaultCreatorShareBps,
             config.vaultAssets
         );
 

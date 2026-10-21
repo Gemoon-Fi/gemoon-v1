@@ -47,7 +47,8 @@ HookManager
 
 Vault
   AssetAllowedUpdated(address indexed asset, bool allowed)  // allowlist наградных активов
-  VaultRegistered(address indexed meme, address indexed creator, AssetConfig[] assets)
+  VaultRegistered(address indexed meme, address indexed creator, uint16 creatorShareBps,
+                  AssetConfig[] assets)
   FeesNotified(address indexed meme, uint256 toStakers, uint256 toCreator)
   FeesConverted(address indexed meme, uint64 indexed epoch, uint256 usdgIn,
                 uint256[] toStakers, uint256[] toCreator)

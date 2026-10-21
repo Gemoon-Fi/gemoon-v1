@@ -14,7 +14,7 @@
 # implementation that does not notify yet). An EOA is accepted as is. --dry-run checks everything
 # and sends nothing.
 #
-# From .env: RPC, PRIVATE_KEY, HOOK_PROXY_ADDRESS / REFERRALS_PROXY_ADDRESS (defaults). The sender
+# From env/$ENVIRONMENT.mk: RPC, PRIVATE_KEY, HOOK_PROXY_ADDRESS / REFERRALS_PROXY_ADDRESS (defaults). The sender
 # must be the hook owner.
 set -euo pipefail
 
@@ -41,12 +41,8 @@ done
 
 cd "$(dirname "$0")/../.."
 
-ENV_FILE=.env
-[ -f "$ENV_FILE" ] || { echo "No $ENV_FILE in $(pwd)" >&2; exit 1; }
-set -a
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-set +a
+# shellcheck source=tools/scripts/load-env.sh
+source tools/scripts/load-env.sh
 for var in RPC PRIVATE_KEY; do
     [ -n "${!var:-}" ] || { echo "$var is empty in $ENV_FILE" >&2; exit 1; }
 done

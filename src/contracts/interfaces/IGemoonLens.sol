@@ -85,6 +85,7 @@ interface IGemoonLens {
     /// @param pendingStakerUSDG     USDG credited to stakers in the open epoch, not converted yet.
     /// @param pendingCreatorUSDG    USDG credited to the creator in the open epoch.
     /// @param lastConversionFailure Timestamp of the last failed automatic conversion, zero if none.
+    /// @param creatorShareBps       Share of every vault fee credited to the creator, in bps.
     /// @param assets                Reward assets with weights, symbols and decimals.
     struct VaultPublic {
         bool registered;
@@ -95,6 +96,7 @@ interface IGemoonLens {
         uint256 pendingStakerUSDG;
         uint256 pendingCreatorUSDG;
         uint64 lastConversionFailure;
+        uint16 creatorShareBps;
         Asset[] assets;
     }
 

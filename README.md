@@ -1,4 +1,4 @@
-# Gemoon
+ `upgrade-controller-proxy` требует `GEMOON_OWNER` явно: `reinitialize` заново назначает владельца контроллера.# Gemoon
 
 Протокол запуска мем-токенов на Uniswap V4. Один вызов контроллера создаёт токен, пул Meme/USDG
 с хуком и одностороннюю позицию со всей эмиссией. Хук берёт комиссию с каждого свопа в USDG,
@@ -75,7 +75,8 @@ PositionManager, хук не пускает пулы незарегистрир�
    своп проходит, сумма остаётся начисленной. Забрать её потом может кто угодно через
    `HookManager.distribute(meme)`, или это сделает следующий своп.
 
-4. **Учёт в волте.** `notifyFees` делит пришедший USDG: 10% создателю, остальное pro rata текущим
+4. **Учёт в волте.** `notifyFees` делит пришедший USDG: долю `creatorShareBps` создателю (0..100%,
+   выбирает создатель в `deployToken`, `config.vaultCreatorShareBps`), остальное pro rata текущим
    стейкерам мема. Если стейкеров нет, всё создателю. Стейкер зарабатывает только на комиссиях,
    пришедших пока он застейкан. Начисления копятся в USDG внутри открытой эпохи.
 
@@ -237,14 +238,14 @@ hooks = HookManager}`, `poolId = keccak256(abi.encode(key))`, цена из slot
 
 **Деплой.** `make deploy-lens` (`script/DeployLens.s.sol`): берёт `CONTROLLER_PROXY_ADDRESS`,
 `VAULT_PROXY_ADDRESS`, `HOOK_PROXY_ADDRESS`, `POOL_MANAGER` и `LENS_SALT` (по умолчанию 0) из
-`.env`, проверяет, что контроллер, волт, хук и PoolManager указывают друг на друга, и деплоит через
+`env/<ENVIRONMENT>.mk`, проверяет, что контроллер, волт, хук и PoolManager указывают друг на друга, и деплоит через
 CREATE2-фабрику `0x4e59b44847b379578588920cA78FbF26c0B4956C`. Адрес зависит только от соли,
 аргументов и байткода, поэтому после сброса форка та же команда поднимает Lens по тому же адресу,
 а если он уже есть, ничего не отправляет. Байткод меняется при любой правке контракта или настроек
 компилятора — тогда меняется и адрес. Обычная транзакция, без `anvil_*`.
 
 Devnet (chain 1488): `0xf5e9342Ffe373D9a3B4a986870cbC6E66dDCbF15`, блок 84351591
-(tx `0xefea4f43376ea117553188d801761d721830cbe6c80b8597c4dfa8aa54940e10`), в `.env` — `LENS_ADDRESS`.
+(tx `0xefea4f43376ea117553188d801761d721830cbe6c80b8597c4dfa8aa54940e10`), в `env/dev.mk` — `LENS_ADDRESS`.
 Первая версия без соцсетей, флагов ассетов и `creators` осталась на `0x43A7E53e63A834c3FB7FcE55d84F2879cB5A82Ec` (блок 84351590),
 у неё другой ABI.
 
@@ -262,7 +263,7 @@ Devnet (chain 1488): `0xf5e9342Ffe373D9a3B4a986870cbC6E66dDCbF15`, блок 8435
 | Резервная комиссия | 1.25% для мемов, о которых контроллер не сообщил | `TOTAL_FEE_BIPS`, `HookManager.initialize` |
 | Анти-снайп комиссия | 80% в момент создания пула, линейно до базовой за 30 секунд; dev buy платит базовую | `MAX_FEE_BIPS`, `DYNAMIC_FEE_THRESHOLD`, `HookManager.sol` |
 | Dev buy | до 80% эмиссии, exact output, в транзакции `deployToken` | `MAX_DEV_BUY_BIPS`, `MAX_DEV_BUY_X18`, `IGemoon.sol` |
-| Доля создателя | 10% от каждой комиссии | `CREATOR_SHARE_BPS`, `Vault.sol` |
+| Доля создателя | 0..100% от каждой комиссии волта, выбирает создатель в `deployToken`, после регистрации не меняется | `VaultInfo.creatorShareBps`, `creatorShareBpsOf`, `Vault.sol` |
 | Реферальная доля | 10% (1000 bips) протокольной доли мема реферала, задаётся владельцем, не больше 100% | `refShareBips`, `Referrals.sol` |
 | Реферальный код | 1..32 символа `[a-z0-9_-]` | `MAX_CODE_LENGTH`, `Referrals.sol` |
 | Наградных активов на волт | до 5 | `MAX_ASSETS`, `Vault.sol` |
@@ -274,7 +275,15 @@ Devnet (chain 1488): `0xf5e9342Ffe373D9a3B4a986870cbC6E66dDCbF15`, блок 8435
 
 ## Развёртывание
 
-Переменные окружения лежат в `.env`, файл не коммитится. Пустое значение считается незаданным.
+Переменные окружения лежат в `env/<ENVIRONMENT>.mk`: `env/dev.mk` (девнет) и `env/prod.mk`
+(mainnet), оба не коммитятся. Окружение выбирается обязательной переменной `ENVIRONMENT=dev|prod`:
+`make <цель> ENVIRONMENT=dev`, `ENVIRONMENT=prod ./deploy.sh`. Без неё или с другим значением
+Makefile и скрипты из `tools/scripts` падают с ошибкой. Без `ENVIRONMENT` работают только `clean`,
+`compile` и `unit-tests`; `prepare-abi` берёт адреса для README ABI из `env/<ENVIRONMENT>.mk`. Для prod Makefile дополнительно требует непустые
+`GEMOON_OWNER` и `GEMOON_PROXY_ADMIN_OWNER`, деплоер как владелец по умолчанию там не подставляется.
+Формат файлов: строки `KEY=VALUE` без кавычек и `$`, их читают и make, и bash. Файла `.env` быть не
+должно: forge подгружает его сам, и значения из него попали бы в любое окружение.
+Пустое значение считается незаданным.
 
 | Переменная | Назначение |
 |---|---|
@@ -294,8 +303,9 @@ Devnet (chain 1488): `0xf5e9342Ffe373D9a3B4a986870cbC6E66dDCbF15`, блок 8435
 | `*_PROXY_ADDRESS`, `*_PROXY_ADMIN_ADDRESS` | Заполняются из логов деплоя, нужны апгрейдам и проверке. |
 
 ```sh
-./deploy.sh [--simulate] [--no-lens]  # полный деплой: все контракты, активы и маршруты, .env, Lens, отчёт
-make deploy-gemoon            # то же без .env и Lens: Vault, Controller, Referrals, Hook, Adapter, активы, владение
+# Все цели ниже, кроме тестов и сборки, запускаются с ENVIRONMENT=dev|prod, например make verify-wiring ENVIRONMENT=dev
+ENVIRONMENT=dev ./deploy.sh [--simulate] [--no-lens]  # полный деплой: все контракты, активы и маршруты, env/dev.mk, Lens, отчёт
+make deploy-gemoon            # то же без записи адресов и Lens: Vault, Controller, Referrals, Hook, Adapter, активы, владение
 make verify-wiring            # read-only проверка, что контракты указывают друг на друга
 make upgrade-vault-proxy      # новая имплементация волта
 make upgrade-hook-proxy       # новая имплементация хука, адрес майнится под биты разрешений
@@ -334,8 +344,8 @@ CREATE2-деплоер `0x4e59b44847b379578588920cA78FbF26c0B4956C`.
 
 ```sh
 make unit-tests     # всё, кроме test/fork
-make devnet-tests   # форк девнета, нужен DEVNET_RPC
-forge test          # всё вместе; если DEVNET_RPC задан в .env, форк-тесты тоже запустятся
+make devnet-tests ENVIRONMENT=dev  # форк девнета, нужен DEVNET_RPC в env/dev.mk
+forge test          # всё вместе; форк-тесты запустятся, только если DEVNET_RPC есть в окружении
 ```
 
 - `test/VaultTest.sol`, `test/VaultUpgradeTest.sol`: волт, включая автоконверсию по порогу,

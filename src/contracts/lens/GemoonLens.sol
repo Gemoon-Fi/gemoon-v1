@@ -316,6 +316,7 @@ contract GemoonLens is IGemoonLens {
             p.pendingStakerUSDG = info.pendingStakerUSDG;
             p.pendingCreatorUSDG = info.pendingCreatorUSDG;
             p.lastConversionFailure = info.lastConversionFailure;
+            p.creatorShareBps = info.creatorShareBps;
         } catch {}
         try i_vault.getAssets(meme) returns (AssetConfig[] memory configs) {
             p.assets = new Asset[](configs.length);

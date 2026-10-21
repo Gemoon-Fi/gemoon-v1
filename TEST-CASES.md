@@ -4,7 +4,7 @@
 должен получиться. При добавлении или изменении теста обновлять соответствующую строку.
 
 - Юнит и end-to-end: `forge test --no-match-path "test/fork/*"` (`make unit-tests`).
-- Форк девнета: `make devnet-tests`, нужны `DEVNET_RPC`, `DEVNET_BLOCK`, `OPERATOR_ADDRESS` в `.env`.
+- Форк девнета: `make devnet-tests ENVIRONMENT=dev`, нужны `DEVNET_RPC`, `DEVNET_BLOCK`, `OPERATOR_ADDRESS` в `env/dev.mk`.
 - Пометка (fuzz) — fuzz-тест, invariant — инвариант-тест Foundry.
 
 ## test/ControllerDeployTokenTest.sol
@@ -72,6 +72,8 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | `test_DeployToken_SwapFee_StoredInHook` | Ставка 10% | Ставка создателя доходит до хука | `memeFeeBips` и `currentFeeBips` после окна = 1000 |
 | `test_DeployToken_SwapFeeBelowOnePercent_Revert` | Ставка 0.99% | Нижняя граница 1% | revert `InvalidMemeFeeBips(99)` |
 | `test_DeployToken_SwapFeeAboveTenPercent_Revert` | Ставка 10.01% | Верхняя граница 10% | revert `InvalidMemeFeeBips(1001)` |
+| `test_DeployToken_CreatorShare_StoredInVault` | `vaultCreatorShareBps = 3500` | Доля создателя из конфига доходит до волта | `creatorShareBpsOf(token)` и `vaultInfo(token).creatorShareBps` = 3500 |
+| `test_DeployToken_CreatorShareAboveBps_Revert` | `vaultCreatorShareBps = 10001` | Доля создателя ≤ 100% | revert `InvalidCreatorShare(10001)`, мем не создан |
 | `test_Swap_TenPercentFee_ProtocolGetsOneThirdVaultRest` | Две покупки при 10% | Протокол получает треть комиссии, волт остальное | Протокол ~3.33% объёма, волт остальное, сумма = 10% объёма |
 | `test_Swap_ProtocolShare_OneThirdOfAnyMemeFee` | Покупка на 1000 USDG при ставках 1%, 3%, 10% | Треть комиссии протоколу при любой ставке | Протокол/волт ≈ 1/3 и 2/3 комиссии: при 3% ~1%/~2% объёма |
 | `testFuzz_Swap_AnySwapFee_ProtocolGetsOneThirdFeeConserved` (fuzz) | Любая ставка 1%..10% | Комиссия сохраняется; протокол получает 3333 bips каждой комиссии с округлением вниз, не больше трети | Протокол + волт + начислено = вся комиссия; протокол = Σ floor(fee × 3333 / 10000) |
@@ -166,7 +168,7 @@ End-to-end в процессе теста: настоящие PoolManager/Positi
 |---|---|---|---|
 | `test_Constructor_ZeroAddress_Revert` | Нулевой адрес в конструкторе | Lens не создаётся над пустыми адресами | revert `ZeroAddress` для каждого из четырёх параметров |
 | `test_Constructor_StoresAddresses` | Адреса конструктора | Lens читает тот деплой, для которого создан | `controller()`, `vault()`, `protocol().hook/poolManager` = переданным |
-| `test_Tokens_RegisteredMemeNoAccount_MatchesDirectReads` (1) | Мем с 5 ассетами и соцсетями после двух покупок и сжигания на `0xdEaD`, без аккаунта | L3, L4 | meta/market/vault равны `name/symbol/decimals/description/imageAddress/creator/getSocialMedia`, `totalSupply`, `balanceOf(0x0)+balanceOf(dEaD)`, `getSlot0(poolId)`, `pendingFees`, `vaultInfo`, `getAssets` + symbol/decimals ассетов; все флаги `true`; `position` нулевая |
+| `test_Tokens_RegisteredMemeNoAccount_MatchesDirectReads` (1) | Мем с 5 ассетами и соцсетями после двух покупок и сжигания на `0xdEaD`, без аккаунта | L3, L4 | meta/market/vault равны `name/symbol/decimals/description/imageAddress/creator/getSocialMedia`, `totalSupply`, `balanceOf(0x0)+balanceOf(dEaD)`, `getSlot0(poolId)`, `pendingFees`, `vaultInfo` (включая `creatorShareBps` = 1000), `getAssets` + symbol/decimals ассетов; все флаги `true`; `position` нулевая |
 | `test_Tokens_FeeAccruedInHook_PendingFeesMatchHook` | Первая покупка, комиссия осталась в хуке | L3 | `market.pendingFees` = `hook.pendingFees(meme)` > 0 |
 | `test_Tokens_AssetWithBrokenMetadata_AssetFlagsFalse` | Ассет из allowlist с ревертящим `symbol()` и `decimals()` = 256 | L4 | У сломанного ассета `symbolOk`/`decimalsOk` = `false`, нули; у USDG флаги `true`, decimals 6 |
 | `test_Tokens_HookPendingFeesReverts_PendingFeesOkFalse` | `hook.pendingFees` ревертит (mock) | L4 | `pendingFeesOk = false`, `pendingFees` = 0, остальное читается |
@@ -326,7 +328,7 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 
 ## test/VaultTest.sol
 
-Фикстура: USDG (6 dec), MEME, AAPL (1 USDG → 2 AAPL), WBTC (1 USDG → 1 WBTC). Веса по умолчанию 60/40 (AAPL/WBTC). Доля создателя при наличии стейкеров — 10%.
+Фикстура: USDG (6 dec), MEME, AAPL (1 USDG → 2 AAPL), WBTC (1 USDG → 1 WBTC). Веса по умолчанию 60/40 (AAPL/WBTC). Доля создателя по умолчанию (`CREATOR_SHARE_BPS` фикстуры) — 10%; тесты ниже задают её явно при регистрации.
 
 ### Регистрация хранилища
 
@@ -339,6 +341,9 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 | `test_RegisterVault_AssetNotAllowed_Reverts` | Актив не из белого списка (сам MEME). | Только разрешённые активы | Revert `AssetNotAllowed(meme)` |
 | `test_RegisterVault_DuplicateAsset_Reverts` | Один актив указан дважды. | Активы хранилища уникальны | Revert `DuplicateAsset(aapl)` |
 | `test_RegisterVault_NoAssets_Reverts` | Пустой список активов. | Хотя бы один актив | Revert `InvalidAssetsLength` |
+| `test_RegisterVault_CreatorShare_StoredAndEmitted` | Регистрация с долей создателя 25%. | Доля создателя хранится per-vault | `VaultRegistered(meme, creator, 2500, assets)`, `creatorShareBpsOf` и `vaultInfo.creatorShareBps` = 2500 |
+| `test_RegisterVault_CreatorShareAboveBps_Reverts` | Доля 10 001 bps. | Доля создателя ≤ BPS | Revert `InvalidCreatorShare(10001)` |
+| `test_CreatorShareBpsOf_Unregistered_ReturnsZero` | Доля для незарегистрированного мема. | — | 0 |
 
 ### Приём комиссий
 
@@ -349,7 +354,11 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 | `test_NotifyFees_WithoutTransfer_Reverts` | Уведомление без фактического перевода USDG. | Учтённое ≤ реальный баланс | Revert `UnaccountedBalanceTooLow(0, 1e6)` |
 | `test_NotifyFees_SameTransferTwice_Reverts` | Повторное уведомление на тот же перевод. | Один перевод учитывается один раз | Revert `UnaccountedBalanceTooLow(0, 1e6)` |
 | `test_NotifyFees_NoStakers_AllToCreator` | Комиссия при отсутствии стейкеров. | Без стейкеров всё идёт создателю | `pendingCreatorUSDG = 100e6`, `pendingStakerUSDG = 0` |
-| `test_NotifyFees_WithStakers_TenPercentToCreator` | Комиссия при наличии стейкера. | Сплит 10% создателю / 90% стейкерам | Создатель 10e6, стейкеры 90e6, `pendingCreditOf(alice) = 90e6` |
+| `test_NotifyFees_WithStakers_TenPercentToCreator` | Комиссия при наличии стейкера, доля 10%. | Сплит 10% создателю / 90% стейкерам | Создатель 10e6, стейкеры 90e6, `pendingCreditOf(alice) = 90e6` |
+| `test_NotifyFees_ZeroCreatorShare_AllToStakers` | Доля 0%, есть стейкер. | При доле 0 всё стейкерам | Создатель 0, стейкеры 100e6, `pendingCreditOf(alice) = 100e6` |
+| `test_NotifyFees_FullCreatorShare_AllToCreator` | Доля 100%, есть стейкер. | При доле 100% стейкерам ничего, аккумулятор не растёт | Создатель 100e6, стейкеры 0, `accUsdPerShare = 0`, credit alice 0 |
+| `test_NotifyFees_ZeroCreatorShareNoStakers_AllToCreator` | Доля 0%, стейкеров нет. | Без стейкеров всё создателю при любой доле | `pendingCreatorUSDG = 100e6` |
+| `testFuzz_NotifyFees_AnyCreatorShare_SplitConserved` (fuzz) | Любая доля 0..10000, любой объём и стейк. | toCreator + toStakers = комиссия; toCreator = floor(amount × share / BPS); credit единственного стейкера ≤ доли стейкеров (±1); доля неизменна | Все равенства выполняются |
 
 ### Конвертация
 
@@ -452,6 +461,7 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 |---|---|---|---|
 | `invariant_Pending_StaysBelowThreshold` | pending после любой последовательности действий. | pending всегда < порога | `pendingUSDG < 5e14` |
 | `invariant_TotalStaked_EqualsSumOfStakes` | Сумма стейков акторов. | `totalStaked` = Σ стейков | Равенство |
+| `invariant_CreatorShare_Immutable` | Доля создателя после любой последовательности действий. | `creatorShareBps` не меняется после регистрации | `creatorShareBpsOf(meme)` = 1000 |
 | `invariant_Balances_CoverAccounted` | Балансы хранилища против учёта. | Баланс ≥ учтённого; баланс MEME = `totalStaked` | `usdg ≥ accounted`, `meme ≥ accounted`, `meme == totalStaked` |
 | `invariant_Claimable_NeverExceedsNotified` | pending + выплаченное + начисленное (стейкеры + создатель). | Сумма наград ≤ всей пришедшей комиссии | ≤ `ghostNotified` |
 | `invariant_Accounted_CoversClaimable` | Все обязательства против учтённого USDG. | Учтённое покрывает все долги | pending + earned + creatorAccrued ≤ `accounted(usdg)` |

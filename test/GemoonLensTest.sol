@@ -161,6 +161,7 @@ abstract contract GemoonLensTestBase is Test {
                 swapFeeBips: 125, creatorAddress: creator, rewardRecipient: address(0)
             }),
             vaultAssets: assets,
+            vaultCreatorShareBps: 1_000,
             devBuy: DevBuyConfig({memeAmount: 0, maxPairIn: 0})
         });
         vm.prank(creator);
@@ -325,6 +326,8 @@ contract GemoonLensTest is GemoonLensTestBase {
         assertEq(v.vault.pendingCreatorUSDG, info.pendingCreatorUSDG);
         assertGt(v.vault.pendingCreatorUSDG, 0);
         assertEq(v.vault.lastConversionFailure, info.lastConversionFailure);
+        assertEq(v.vault.creatorShareBps, info.creatorShareBps);
+        assertEq(v.vault.creatorShareBps, 1_000);
 
         AssetConfig[] memory configs = vault.getAssets(meme);
         assertEq(v.vault.assets.length, 5);

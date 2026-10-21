@@ -10,7 +10,7 @@ struct AssetConfig {
 }
 
 /// @notice Aggregated state of one Meme vault.
-/// @param creator            Receives CREATOR_SHARE_BPS of every fee, or all of it while nobody stakes.
+/// @param creator            Receives `creatorShareBps` of every fee, or all of it while nobody stakes.
 /// @param pendingCreator     Nominee of a two-step creator transfer, zero if none.
 /// @param registeredAt       Registration timestamp, zero if the vault does not exist.
 /// @param epoch              Index of the open conversion epoch. Every `convertFees` closes it.
@@ -20,6 +20,8 @@ struct AssetConfig {
 /// @param pendingCreatorUSDG USDG credited to the creator in the open epoch, not yet converted.
 /// @param lastConversionFailure Timestamp of the last failed automatic conversion, zero if none.
 ///                              Automatic conversion is not retried for CONVERSION_COOLDOWN after it.
+/// @param creatorShareBps    Share of every fee credited to the creator, 0..BPS. Chosen by the
+///                           creator at deployment, immutable after registration.
 struct VaultInfo {
     address creator;
     address pendingCreator;
@@ -30,15 +32,18 @@ struct VaultInfo {
     uint256 pendingStakerUSDG;
     uint256 pendingCreatorUSDG;
     uint64 lastConversionFailure;
+    // Appended: struct values of a mapping, so new fields go to the end only.
+    uint16 creatorShareBps;
 }
 
 /// @title Gemoon fee vault.
 /// @notice Single contract holding one logical vault per Meme token.
 ///
 /// Flow:
-///  1. `registerVault` - controller, on Meme deployment: fixes creator and reward assets.
+///  1. `registerVault` - controller, on Meme deployment: fixes creator, creator share and reward
+///                       assets.
 ///  2. `notifyFees`    - hook, right after every swap in the Meme/USDG pool (1% of volume).
-///                       The fee is credited in USDG immediately: CREATOR_SHARE_BPS to the creator,
+///                       The fee is credited in USDG immediately: `creatorShareBps` to the creator,
 ///                       the rest pro rata to current stakers. If nobody stakes, all of it goes
 ///                       to the creator. So a staker earns only fees that arrive while staked, and
 ///                       the reward rate follows pool volume.
@@ -60,6 +65,8 @@ struct VaultInfo {
 ///  - Sum of stakers' USDG credits of an epoch <= pendingStakerUSDG of that epoch, so the sum of
 ///    claimable rewards never exceeds what the conversion bought.
 ///  - Sum of AssetConfig.weightBps of every registered vault == BPS.
+///  - creatorShareBps of every registered vault <= BPS and never changes; toCreator + toStakers of
+///    every `notifyFees` == the notified amount.
 ///  - Stakers can always withdraw principal via `unstake`, even when paused.
 ///  - `notifyFees` never reverts because of the automatic conversion: a failing conversion is
 ///    caught, the credited USDG stays pending and is converted later.
@@ -81,6 +88,7 @@ interface IVault {
     error DuplicateAsset(address asset);
     error InvalidAssetsLength();
     error InvalidWeights();
+    error InvalidCreatorShare(uint256 creatorShareBps);
     error AssetNotInVault(address meme, address asset);
     error InsufficientStake(uint256 staked, uint256 requested);
     error UnaccountedBalanceTooLow(uint256 unaccounted, uint256 notified);
@@ -101,6 +109,7 @@ interface IVault {
     event VaultRegistered(
         address indexed meme,
         address indexed creator,
+        uint16 creatorShareBps,
         AssetConfig[] assets
     );
     event FeesNotified(
@@ -158,14 +167,18 @@ interface IVault {
     // ---------------------------------------------------------------------------------------------
 
     /// @notice Creates the vault of a freshly deployed Meme token.
-    /// @dev Only controller. Assets are immutable after registration.
-    /// Reverts if any asset is not allowlisted, duplicated, or weights do not sum to BPS.
-    /// @param meme    Meme token, also the staking token of this vault.
-    /// @param creator Receives the creator share of fees.
-    /// @param assets  Reward assets and their weights, 1..MAX_ASSETS entries.
+    /// @dev Only controller. Creator share and assets are immutable after registration.
+    /// Reverts if `creatorShareBps` > BPS, any asset is not allowlisted, duplicated, or weights do
+    /// not sum to BPS.
+    /// @param meme            Meme token, also the staking token of this vault.
+    /// @param creator         Receives the creator share of fees.
+    /// @param creatorShareBps Share of every fee credited to the creator, 0..BPS (1_000 = 10%).
+    ///                        While nobody stakes the creator gets the whole fee regardless.
+    /// @param assets          Reward assets and their weights, 1..MAX_ASSETS entries.
     function registerVault(
         address meme,
         address creator,
+        uint16 creatorShareBps,
         AssetConfig[] calldata assets
     ) external;
 
@@ -302,9 +315,6 @@ interface IVault {
     /// @notice Basis points denominator (10_000).
     function BPS() external view returns (uint256);
 
-    /// @notice Share of every fee credited to the creator (1_000 = 10%).
-    function CREATOR_SHARE_BPS() external view returns (uint256);
-
     /// @notice Maximum number of reward assets per vault.
     function MAX_ASSETS() external view returns (uint256);
 
@@ -348,6 +358,9 @@ interface IVault {
     ) external view returns (AssetConfig[] memory);
 
     function creatorOf(address meme) external view returns (address);
+
+    /// @notice Share of every fee of `meme` credited to its creator, in BPS. Zero if no vault.
+    function creatorShareBpsOf(address meme) external view returns (uint256);
 
     function totalStaked(address meme) external view returns (uint256);
 

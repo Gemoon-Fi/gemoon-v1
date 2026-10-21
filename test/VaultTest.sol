@@ -88,6 +88,9 @@ abstract contract VaultFixture is Test {
     address alice = makeAddr("alice");
     address bob = makeAddr("bob");
 
+    /// @dev Creator share of the default vault: 10%.
+    uint16 constant CREATOR_SHARE_BPS = 1_000;
+
     function _deployVault() internal {
         usdg = new MockToken("USDG", 6);
         meme = new MockToken("MEME", 18);
@@ -133,7 +136,7 @@ abstract contract VaultFixture is Test {
 
     function _register(AssetConfig[] memory assets) internal {
         vm.prank(controller);
-        vault.registerVault(address(meme), creator, assets);
+        vault.registerVault(address(meme), creator, CREATOR_SHARE_BPS, assets);
     }
 
     function _notify(uint256 amount) internal {
@@ -177,7 +180,7 @@ contract VaultTest is VaultFixture {
 
     function test_RegisterVault_NotController_Reverts() external {
         vm.expectRevert(IVault.NotController.selector);
-        vault.registerVault(address(meme), creator, _assets6040());
+        vault.registerVault(address(meme), creator, CREATOR_SHARE_BPS, _assets6040());
     }
 
     function test_RegisterVault_Valid_StoresConfig() external {
@@ -199,7 +202,7 @@ contract VaultTest is VaultFixture {
                 address(meme)
             )
         );
-        vault.registerVault(address(meme), creator, _assets6040());
+        vault.registerVault(address(meme), creator, CREATOR_SHARE_BPS, _assets6040());
     }
 
     function test_RegisterVault_WeightsNotBps_Reverts() external {
@@ -207,7 +210,7 @@ contract VaultTest is VaultFixture {
         assets[1].weightBps = 3_999;
         vm.prank(controller);
         vm.expectRevert(IVault.InvalidWeights.selector);
-        vault.registerVault(address(meme), creator, assets);
+        vault.registerVault(address(meme), creator, CREATOR_SHARE_BPS, assets);
     }
 
     function test_RegisterVault_AssetNotAllowed_Reverts() external {
@@ -220,7 +223,7 @@ contract VaultTest is VaultFixture {
                 address(meme)
             )
         );
-        vault.registerVault(address(meme), creator, assets);
+        vault.registerVault(address(meme), creator, CREATOR_SHARE_BPS, assets);
     }
 
     function test_RegisterVault_DuplicateAsset_Reverts() external {
@@ -233,13 +236,35 @@ contract VaultTest is VaultFixture {
                 address(aapl)
             )
         );
-        vault.registerVault(address(meme), creator, assets);
+        vault.registerVault(address(meme), creator, CREATOR_SHARE_BPS, assets);
     }
 
     function test_RegisterVault_NoAssets_Reverts() external {
         vm.prank(controller);
         vm.expectRevert(IVault.InvalidAssetsLength.selector);
-        vault.registerVault(address(meme), creator, new AssetConfig[](0));
+        vault.registerVault(address(meme), creator, CREATOR_SHARE_BPS, new AssetConfig[](0));
+    }
+
+    function test_RegisterVault_CreatorShare_StoredAndEmitted() external {
+        AssetConfig[] memory assets = _assets6040();
+        vm.expectEmit(address(vault));
+        emit IVault.VaultRegistered(address(meme), creator, 2_500, assets);
+        vm.prank(controller);
+        vault.registerVault(address(meme), creator, 2_500, assets);
+        assertEq(vault.creatorShareBpsOf(address(meme)), 2_500);
+        assertEq(vault.vaultInfo(address(meme)).creatorShareBps, 2_500);
+    }
+
+    function test_RegisterVault_CreatorShareAboveBps_Reverts() external {
+        vm.prank(controller);
+        vm.expectRevert(
+            abi.encodeWithSelector(IVault.InvalidCreatorShare.selector, 10_001)
+        );
+        vault.registerVault(address(meme), creator, 10_001, _assets6040());
+    }
+
+    function test_CreatorShareBpsOf_Unregistered_ReturnsZero() external view {
+        assertEq(vault.creatorShareBpsOf(address(meme)), 0);
     }
 
     // ------------------------------------------------------------------ fee intake
@@ -305,6 +330,64 @@ contract VaultTest is VaultFixture {
         assertEq(info.pendingCreatorUSDG, 10e6);
         assertEq(info.pendingStakerUSDG, 90e6);
         assertEq(vault.pendingCreditOf(address(meme), alice), 90e6);
+    }
+
+    function test_NotifyFees_ZeroCreatorShare_AllToStakers() external {
+        vm.prank(controller);
+        vault.registerVault(address(meme), creator, 0, _assets6040());
+        _stake(alice, 1_000e18);
+        _notify(100e6);
+        VaultInfo memory info = vault.vaultInfo(address(meme));
+        assertEq(info.pendingCreatorUSDG, 0);
+        assertEq(info.pendingStakerUSDG, 100e6);
+        assertEq(vault.pendingCreditOf(address(meme), alice), 100e6);
+    }
+
+    function test_NotifyFees_FullCreatorShare_AllToCreator() external {
+        vm.prank(controller);
+        vault.registerVault(address(meme), creator, 10_000, _assets6040());
+        _stake(alice, 1_000e18);
+        _notify(100e6);
+        VaultInfo memory info = vault.vaultInfo(address(meme));
+        assertEq(info.pendingCreatorUSDG, 100e6);
+        assertEq(info.pendingStakerUSDG, 0);
+        assertEq(info.accUsdPerShare, 0);
+        assertEq(vault.pendingCreditOf(address(meme), alice), 0);
+    }
+
+    function test_NotifyFees_ZeroCreatorShareNoStakers_AllToCreator() external {
+        vm.prank(controller);
+        vault.registerVault(address(meme), creator, 0, _assets6040());
+        _notify(100e6);
+        assertEq(vault.vaultInfo(address(meme)).pendingCreatorUSDG, 100e6);
+    }
+
+    function testFuzz_NotifyFees_AnyCreatorShare_SplitConserved(
+        uint16 shareBps,
+        uint256 amount,
+        uint256 staked
+    ) external {
+        shareBps = uint16(bound(shareBps, 0, 10_000));
+        amount = bound(amount, 1, 1e18);
+        staked = bound(staked, 1, 1e30);
+        vm.prank(controller);
+        vault.registerVault(address(meme), creator, shareBps, _assets6040());
+        _stake(alice, staked);
+        _notify(amount);
+
+        VaultInfo memory info = vault.vaultInfo(address(meme));
+        assertEq(info.pendingCreatorUSDG + info.pendingStakerUSDG, amount, "conserved");
+        if (info.pendingStakerUSDG != 0) {
+            assertEq(info.pendingCreatorUSDG, (amount * shareBps) / 10_000, "creator share");
+            // the only staker is credited all stakers' USDG, up to rounding down
+            uint256 credit = vault.pendingCreditOf(address(meme), alice);
+            assertLe(credit, info.pendingStakerUSDG, "credit <= stakers' part");
+            assertApproxEqAbs(credit, info.pendingStakerUSDG, 1, "credit ~ stakers' part");
+        } else {
+            // share 100% or too small to move the accumulator: everything to the creator
+            assertEq(info.pendingCreatorUSDG, amount);
+        }
+        assertEq(vault.creatorShareBpsOf(address(meme)), shareBps, "immutable");
     }
 
     // ------------------------------------------------------------------ conversion
@@ -1179,6 +1262,10 @@ contract VaultInvariantTest is VaultFixture {
 
     function invariant_Pending_StaysBelowThreshold() external view {
         assertLt(vault.pendingUSDG(address(meme)), THRESHOLD);
+    }
+
+    function invariant_CreatorShare_Immutable() external view {
+        assertEq(vault.creatorShareBpsOf(address(meme)), CREATOR_SHARE_BPS);
     }
 
     function invariant_TotalStaked_EqualsSumOfStakes() external view {
