@@ -42,6 +42,8 @@ contract HookFeeMathTest is Test {
         );
         window = hook.DYNAMIC_FEE_THRESHOLD();
 
+        // The hook only accepts a creation time up to the current block.
+        vm.warp(CREATED_AT);
         vm.prank(controller);
         hook.notifyPoolCreated(meme, CREATED_AT, MEME_FEE);
     }

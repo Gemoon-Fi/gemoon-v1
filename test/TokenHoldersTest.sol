@@ -3,7 +3,7 @@ pragma solidity ^0.8.21;
 
 import "forge-std/Test.sol";
 import {GemoonToken} from "../src/contracts/Token.sol";
-import {TokenConfig, SocialMedia} from "../src/contracts/interfaces/IToken.sol";
+import {TokenConfig, SocialMedia, FeeInfo} from "../src/contracts/interfaces/IToken.sol";
 import {AdminConfig} from "../src/contracts/utils/Admin.sol";
 
 function _newToken() returns (GemoonToken) {
@@ -18,7 +18,8 @@ function _newToken() returns (GemoonToken) {
             symbol: "MEME",
             admins: admins
         }),
-        address(0xC0FFEE)
+        address(0xC0FFEE),
+        FeeInfo({totalPpm: 0, creatorPpm: 0, vaultPpm: 0, protocolPpm: 0})
     );
 }
 

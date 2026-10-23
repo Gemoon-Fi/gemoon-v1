@@ -1,8 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-# Addresses for the README come from env/<ENVIRONMENT>.mk: make prepare-abi ENVIRONMENT=dev|prod.
-source ./tools/scripts/load-env.sh
+# Addresses for the README come from both env/dev.mk and env/prod.mk, so ENVIRONMENT is not needed.
+# A missing file or an empty value is shown as "—".
+ENV_FILES="env/dev.mk env/prod.mk"
 
 ABI_DIR="${PWD}/../abi"
 mkdir -p "${ABI_DIR}"
@@ -39,17 +40,48 @@ for i in $(ls ./src/contracts/interfaces) ${external_interfaces}; do
 done
 
 # Update README:
-rm -f "${ABI_DIR}/README.md"
+# Prints the value of KEY from an env file (plain KEY=VALUE lines) or "—" when it is absent.
+env_value() {
+	local file="$1" key="$2" value=""
+	[ -f "${file}" ] && value=$(sed -nE "s/^${key}=(0x[0-9A-Fa-f]{40})[[:space:]]*$/\1/p" "${file}" | tail -n 1)
+	if [ -n "${value}" ]; then echo "\`${value}\`"; else echo "—"; fi
+}
 
-echo '# Addresses:' > "${ABI_DIR}/README.md"
-grep -Pi 'proxy_address=\K0x[A-Za-z0-9]{40}' "${ENV_FILE}" | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> "${ABI_DIR}/README.md" || true
-grep -Pi 'UNISWAP_V3_FACTORY=\K0x[A-Za-z0-9]{40}' "${ENV_FILE}" | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> "${ABI_DIR}/README.md" || true
-grep -Pi 'NATIVE_TOKEN_ADDRESS=\K0x[A-Za-z0-9]{40}' "${ENV_FILE}" | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> "${ABI_DIR}/README.md" || true
-grep -Pi 'VAULT_SWAP_ADAPTER=\K0x[A-Za-z0-9]{40}' "${ENV_FILE}" | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> "${ABI_DIR}/README.md" || true
-grep -Pi 'USDG_ADDRESS=\K0x[A-Za-z0-9]{40}' "${ENV_FILE}" | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> "${ABI_DIR}/README.md" || true
-grep -Pi 'LENS_ADDRESS=\K0x[A-Za-z0-9]{40}' "${ENV_FILE}" | awk -F'\n' '{print NR". - ""`"$0"`""\n"}' >> "${ABI_DIR}/README.md" || true
-echo '## Usage:' >> "${ABI_DIR}/README.md"
-cat ./README-ABI.md >> "${ABI_DIR}/README.md"
+# Contract | ABI | env variable holding the address
+address_rows=(
+	"GemoonController|\`IGemoonController.json\`|CONTROLLER_PROXY_ADDRESS"
+	"Vault|\`IVault.json\`|VAULT_PROXY_ADDRESS"
+	"HookManager|\`IHookManager.json\`|HOOK_PROXY_ADDRESS"
+	"GmoonReferrals|\`IReferrals.json\`|REFERRALS_PROXY_ADDRESS"
+	"GemoonLens (батч-чтения)|\`GemoonLens.json\`|LENS_ADDRESS"
+	"UniswapV3SwapAdapter|\`IUniswapV3SwapAdapter.json\`|VAULT_SWAP_ADAPTER"
+	"PoolManager (Uniswap V4)|\`IPoolManager.json\`|POOL_MANAGER"
+	"UniswapV3Factory|—|UNISWAP_V3_FACTORY"
+	"USDG (pair-токен)|стандартный ERC20|USDG_ADDRESS"
+)
+
+addresses_table() {
+	echo "| Контракт | ABI | dev | prod |"
+	echo "|---|---|---|---|"
+	local row name abi key
+	for row in "${address_rows[@]}"; do
+		IFS='|' read -r name abi key <<< "${row}"
+		echo "| ${name} | ${abi} | $(env_value env/dev.mk "${key}") | $(env_value env/prod.mk "${key}") |"
+	done
+	echo "| Токен мема | \`IGemoonToken.json\` | адрес из \`TokenCreated\` | адрес из \`TokenCreated\` |"
+}
+
+for f in ${ENV_FILES}; do
+	[ -f "${f}" ] || echo "No ${f}, its addresses are shown as —."
+done
+
+# README-ABI.md keeps the marker line where the generated table goes.
+marker='<!-- ADDRESSES -->'
+grep -qxF "${marker}" ./README-ABI.md || { echo "No ${marker} line in README-ABI.md" >&2; exit 1; }
+table=$(addresses_table)
+while IFS= read -r line; do
+	if [ "${line}" == "${marker}" ]; then echo "${table}"; else echo "${line}"; fi
+done < ./README-ABI.md > "${ABI_DIR}/README.md"
 
 # Update indexing.md:
 cp ./indexing.md "${ABI_DIR}/indexing.md"

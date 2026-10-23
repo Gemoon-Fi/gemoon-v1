@@ -31,15 +31,23 @@ contract GemoonToken is
     uint256 private _holders;
     /// @dev Custom ERC-1046 URI set by an admin; empty = on-chain JSON.
     string private _tokenURI;
+    /// @dev Swap fee split fixed at deployment.
+    FeeInfo private _feeInfo;
 
     constructor(
         TokenConfig memory config,
-        address creator_
+        address creator_,
+        FeeInfo memory feeInfo_
     )
         ERC20(config.name, config.symbol)
         ERC20Permit(config.name)
         Admin(config.admins)
     {
+        if (
+            uint256(feeInfo_.creatorPpm) + feeInfo_.vaultPpm + feeInfo_.protocolPpm !=
+            feeInfo_.totalPpm
+        ) revert InvalidFeeInfo();
+        _feeInfo = feeInfo_;
         _imgUrl = config.imgUrl;
         _description = config.description;
         _decimals = DECIMALS;
@@ -79,6 +87,11 @@ contract GemoonToken is
         return _creator;
     }
 
+    /// @inheritdoc IGemoonToken
+    function feeInfo() external view override returns (FeeInfo memory) {
+        return _feeInfo;
+    }
+
     function decimals() public view override returns (uint8) {
         return _decimals;
     }
@@ -101,7 +114,9 @@ contract GemoonToken is
     ///         otherwise built on-chain from the current token data:
     ///         `data:application/json;base64,<json>` with
     ///         `{"name","symbol","decimals","description","image",
-    ///         "socialMedia":{"farcaster","twitterX","telegram","website"}}`.
+    ///         "socialMedia":{"farcaster","twitterX","telegram","website"},
+    ///         "fees":{"totalPercent","creatorPercent","vaultPercent","protocolPercent"}}`.
+    ///         Fees are JSON numbers in percent of the swap amount, up to 4 decimals (`1.25`).
     /// @dev The on-chain JSON is always in sync with `updateImage` / `changeDescription`
     /// (`UpdateImage`, `UpdateDescription` signal a change). Creator-chosen strings are
     /// JSON-escaped, so they cannot break out of their field. A custom URI is returned as is.
@@ -176,8 +191,44 @@ contract GemoonToken is
                 Json.escape(_imgUrl),
                 '","socialMedia":',
                 socials,
+                ',"fees":',
+                _feesJson(),
                 "}"
             );
+    }
+
+    /// @dev `fees` object of the metadata JSON.
+    function _feesJson() internal view returns (string memory) {
+        FeeInfo memory fees = _feeInfo;
+        return
+            string.concat(
+                '{"totalPercent":',
+                _percent(fees.totalPpm),
+                ',"creatorPercent":',
+                _percent(fees.creatorPpm),
+                ',"vaultPercent":',
+                _percent(fees.vaultPpm),
+                ',"protocolPercent":',
+                _percent(fees.protocolPpm),
+                "}"
+            );
+    }
+
+    /// @dev Parts per million as a JSON number in percent: 12_500 -> `1.25`, 4_166 -> `0.4166`,
+    /// 10_000 -> `1`. Exact, trailing zeros of the fraction dropped.
+    function _percent(uint256 ppm) internal pure returns (string memory) {
+        string memory whole = Strings.toString(ppm / 10_000);
+        uint256 frac = ppm % 10_000;
+        if (frac == 0) return whole;
+
+        uint256 digits = 4;
+        while (frac % 10 == 0) {
+            frac /= 10;
+            --digits;
+        }
+        string memory fracStr = Strings.toString(frac);
+        while (bytes(fracStr).length < digits) fracStr = string.concat("0", fracStr);
+        return string.concat(whole, ".", fracStr);
     }
 
     function showAdmins() public view override returns (address[] memory) {

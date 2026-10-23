@@ -17,6 +17,8 @@ import {IHooks} from "@uniswap-v4-core/interfaces/IHooks.sol";
 import {IPoolManager} from "@uniswap-v4-core/interfaces/IPoolManager.sol";
 import {Hooks} from "@uniswap-v4-core/libraries/Hooks.sol";
 import {Currency} from "@uniswap-v4-core/types/Currency.sol";
+import {TimelockController} from "@openzeppelin/contracts/governance/TimelockController.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 
 /// @notice Shared deployment and upgrade logic of the Gemoon contracts.
 /// @dev Every contract lives behind a TransparentUpgradeableProxy. The proxy creates its own
@@ -1311,26 +1313,36 @@ contract ProxyHookUpgrade is GemoonDeployBase {
 }
 
 /// @notice Upgrades the GemoonController proxy and re-runs its initializer.
-/// @dev Env: GEMOON_OWNER, NATIVE_TOKEN_ADDRESS, POOL_MANAGER, CONTROLLER_PROXY_ADDRESS,
+/// @dev Env: GEMOON_OWNER, USDG_ADDRESS, POOL_MANAGER, CONTROLLER_PROXY_ADDRESS,
 /// CONTROLLER_PROXY_ADMIN_ADDRESS. `reinitialize` is guarded by `reinitializer(GEMOON_VERSION)`,
 /// so it only succeeds when the new implementation bumps the version. `reinitialize` sets the
 /// owner again, so GEMOON_OWNER is required here: no fallback to the broadcaster.
+/// `reinitialize` also rewrites the pair token, so USDG_ADDRESS must match the pair token of the
+/// hook already wired to the controller.
 contract ProxyGemoonControllerUpgrade is Script {
-    function run() external {
-        vm.startBroadcast();
+    error PairTokenMismatch(address expected, address actual);
 
+    function run() external {
         address owner = vm.envAddress("GEMOON_OWNER");
-        address nativeToken = vm.envAddress("NATIVE_TOKEN_ADDRESS");
+        address pairToken = vm.envAddress("USDG_ADDRESS");
         address uniswapPoolManager = vm.envAddress("POOL_MANAGER");
         address proxyAddress = vm.envAddress("CONTROLLER_PROXY_ADDRESS");
         address proxyAdmin = vm.envAddress("CONTROLLER_PROXY_ADMIN_ADDRESS");
+
+        address hook = GemoonController(payable(proxyAddress)).hook();
+        if (hook != address(0)) {
+            address hookPairToken = Currency.unwrap(HookManager(payable(hook)).pairToken());
+            if (hookPairToken != pairToken) revert PairTokenMismatch(hookPairToken, pairToken);
+        }
+
+        vm.startBroadcast();
 
         address controllerImpl = address(new GemoonController());
 
         ProxyAdmin(proxyAdmin).upgradeAndCall(
             ITransparentUpgradeableProxy(proxyAddress),
             controllerImpl,
-            abi.encodeCall(GemoonController.reinitialize, (uniswapPoolManager, nativeToken, owner))
+            abi.encodeCall(GemoonController.reinitialize, (uniswapPoolManager, pairToken, owner))
         );
 
         vm.stopBroadcast();
@@ -1552,5 +1564,119 @@ contract ProxyReferralsUpgrade is GemoonDeployBase {
                 || referrals.owner() != ownerBefore || referrals.pairToken() != pairTokenBefore
                 || referrals.totalPending() != pendingBefore
         ) revert StateChanged();
+    }
+}
+
+/// @notice Moves control of a deployment from the deployer to governance: a TimelockController run
+///         by a Safe for everything that can change trading (upgrades, hook and controller
+///         settings), the Safe itself for the operational owners (vault, referrals, adapter).
+/// @dev Env:
+///  - GOVERNANCE_SAFE                Safe: proposer and executor of the timelock, owner of the rest (required)
+///  - TIMELOCK_ADDRESS               existing TimelockController to reuse (optional: deploys one)
+///  - TIMELOCK_MIN_DELAY             delay of a new timelock in seconds (optional, default 48 hours)
+///  - CONTROLLER/HOOK/VAULT_PROXY_ADDRESS and their *_PROXY_ADMIN_ADDRESS (required)
+///  - REFERRALS_PROXY_ADDRESS, REFERRALS_PROXY_ADMIN_ADDRESS, SWAP_ADAPTER (optional: skipped if empty)
+/// The broadcaster must own every contract and ProxyAdmin it touches. To the timelock: every
+/// ProxyAdmin and the controller (one-step, effective at once) and the hook (Ownable2Step: pending
+/// until the timelock runs `acceptOwnership`, scheduled by the Safe, executable after the delay).
+/// To the Safe: vault, referrals and adapter (Ownable2Step: the Safe calls `acceptOwnership`).
+/// The new timelock has no admin: its roles can only change through its own delayed operations.
+contract TransferToGovernance is GemoonDeployBase {
+    uint256 public constant DEFAULT_TIMELOCK_DELAY = 48 hours;
+
+    error ZeroAddress();
+    /// @dev The Safe has no code on this chain (a typo, an EOA or a Safe of another chain): the
+    /// timelock would be run by nobody and the protocol could never be upgraded again.
+    error SafeHasNoCode(address safe);
+    /// @dev Contract `what` is not owned by the broadcaster.
+    error NotOwner(string what, address owner, address sender);
+
+    struct Targets {
+        address controller;
+        address hook;
+        address vault;
+        address referrals; // zero = skip
+        address adapter; // zero = skip
+        address controllerProxyAdmin;
+        address hookProxyAdmin;
+        address vaultProxyAdmin;
+        address referralsProxyAdmin; // zero = skip
+    }
+
+    function run() external {
+        address safe = vm.envAddress("GOVERNANCE_SAFE");
+        address existingTimelock = _envAddressOr("TIMELOCK_ADDRESS", address(0));
+        uint256 delay = _envUintOr("TIMELOCK_MIN_DELAY", DEFAULT_TIMELOCK_DELAY);
+        Targets memory t = Targets({
+            controller: vm.envAddress("CONTROLLER_PROXY_ADDRESS"),
+            hook: vm.envAddress("HOOK_PROXY_ADDRESS"),
+            vault: vm.envAddress("VAULT_PROXY_ADDRESS"),
+            referrals: _envAddressOr("REFERRALS_PROXY_ADDRESS", address(0)),
+            adapter: _envAddressOr("SWAP_ADAPTER", address(0)),
+            controllerProxyAdmin: vm.envAddress("CONTROLLER_PROXY_ADMIN_ADDRESS"),
+            hookProxyAdmin: vm.envAddress("HOOK_PROXY_ADMIN_ADDRESS"),
+            vaultProxyAdmin: vm.envAddress("VAULT_PROXY_ADMIN_ADDRESS"),
+            referralsProxyAdmin: _envAddressOr("REFERRALS_PROXY_ADMIN_ADDRESS", address(0))
+        });
+
+        vm.startBroadcast();
+        (, address sender,) = vm.readCallers();
+        TimelockController timelock = existingTimelock == address(0)
+            ? deployTimelock(safe, delay)
+            : TimelockController(payable(existingTimelock));
+        transferToGovernance(sender, t, safe, address(timelock));
+        vm.stopBroadcast();
+
+        console.log("GOVERNANCE SAFE: ", safe);
+        console.log("TIMELOCK: ", address(timelock));
+        console.log("TIMELOCK MIN DELAY: ", timelock.getMinDelay());
+        console.log("Left to do, by the Safe:");
+        console.log("  acceptOwnership() on the vault, referrals and adapter");
+        console.log("  timelock.schedule(hook, 0, acceptOwnership(), 0, 0, delay), then execute after the delay");
+        console.log("  HOOK acceptOwnership() CALLDATA: ");
+        console.logBytes(abi.encodeWithSignature("acceptOwnership()"));
+    }
+
+    /// @notice Deploys a TimelockController run by `safe`: sole proposer, executor and canceller,
+    ///         no admin.
+    function deployTimelock(address safe, uint256 delay) public returns (TimelockController) {
+        if (safe == address(0)) revert ZeroAddress();
+        if (safe.code.length == 0) revert SafeHasNoCode(safe);
+        address[] memory members = new address[](1);
+        members[0] = safe;
+        return new TimelockController(delay, members, members, address(0));
+    }
+
+    /// @notice Hands every owner role of `t` to governance, see the contract doc. Must be called by
+    ///         `sender`, the current owner of everything it touches.
+    function transferToGovernance(address sender, Targets memory t, address safe, address timelock)
+        public
+    {
+        if (safe == address(0) || timelock == address(0)) revert ZeroAddress();
+        if (safe.code.length == 0) revert SafeHasNoCode(safe);
+
+        _transferProxyAdmin(sender, t.controller, t.controllerProxyAdmin, timelock);
+        _transferProxyAdmin(sender, t.hook, t.hookProxyAdmin, timelock);
+        _transferProxyAdmin(sender, t.vault, t.vaultProxyAdmin, timelock);
+        if (t.referrals != address(0)) {
+            _transferProxyAdmin(sender, t.referrals, t.referralsProxyAdmin, timelock);
+        }
+
+        _transferOwnable(sender, "CONTROLLER", t.controller, timelock);
+        _transferOwnable(sender, "HOOK", t.hook, timelock);
+        _transferOwnable(sender, "VAULT", t.vault, safe);
+        if (t.referrals != address(0)) _transferOwnable(sender, "REFERRALS", t.referrals, safe);
+        if (t.adapter != address(0)) _transferOwnable(sender, "SWAP ADAPTER", t.adapter, safe);
+    }
+
+    function _transferProxyAdmin(address sender, address proxy, address proxyAdmin, address to) internal {
+        _checkProxyAdmin(sender, proxy, proxyAdmin);
+        ProxyAdmin(proxyAdmin).transferOwnership(to);
+    }
+
+    function _transferOwnable(address sender, string memory what, address target, address to) internal {
+        address current = OwnableUpgradeable(target).owner();
+        if (current != sender) revert NotOwner(what, current, sender);
+        OwnableUpgradeable(target).transferOwnership(to);
     }
 }

@@ -35,6 +35,12 @@ interface IHookManager is IGemoonable {
     /// reverted so that gas estimation raises the limit. `needed` is the gas required at the
     /// check, `available` what was left.
     error NotEnoughGasForConversion(uint256 needed, uint256 available);
+    /// @dev `notifyPoolCreated` for a Meme whose pool was already reported: the anti-snipe ramp
+    /// runs once per Meme and cannot be restarted.
+    error PoolAlreadyNotified(address meme);
+    /// @dev `notifyPoolCreated` with a zero creation time or one after the current block: the ramp
+    /// cannot be stretched into the future.
+    error InvalidPoolTimestamp(uint256 timestamp);
 
     // ---------------------------------------------------------------------------------------------
     // Events
@@ -205,6 +211,12 @@ interface IHookManager is IGemoonable {
     /// @notice Gas of a payout on top of the vault conversion, reserved by swaps that trigger it.
     function PAYOUT_GAS_OVERHEAD() external view returns (uint256);
 
+    /// @notice Cap on the conversion gas a vault can demand from a swap.
+    function MAX_CONVERSION_GAS() external view returns (uint256);
+
+    /// @notice Gas the vault's `conversionGasRequired` view is called with.
+    function CONVERSION_QUERY_GAS() external view returns (uint256);
+
     /// @notice Base fee of `meme` chosen by its creator, in bips of the swap, zero if never
     ///         reported.
     function memeFeeBips(address meme) external view returns (uint256);
@@ -237,6 +249,8 @@ interface IHookManager is IGemoonable {
     // Utils
     // ------
     /// @notice Records when the pool of `meme` was created and the fee its creator chose.
-    ///         Only controller. Reverts with `InvalidMemeFeeBips` outside 1%..10%.
+    ///         Only controller, once per Meme (`PoolAlreadyNotified`), with
+    ///         `0 < timestamp <= block.timestamp` (`InvalidPoolTimestamp`). Reverts with
+    ///         `InvalidMemeFeeBips` outside 1%..10%.
     function notifyPoolCreated(address meme, uint256 timestamp, uint256 feeBips) external;
 }

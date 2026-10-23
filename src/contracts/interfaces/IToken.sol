@@ -23,6 +23,20 @@ struct TokenConfig {
     AdminConfig[] admins;
 }
 
+/// @dev Swap fee split of a Meme, fixed at deployment, in parts per million of the swap amount
+/// (1_000_000 = 100%, 12_500 = 1.25%). Base fee only, without the anti-snipe excess of the first
+/// seconds. `creatorPpm + vaultPpm + protocolPpm == totalPpm`.
+struct FeeInfo {
+    /// @dev Whole swap fee of the Meme.
+    uint32 totalPpm;
+    /// @dev Part credited to the creator (reward recipient) in the vault.
+    uint32 creatorPpm;
+    /// @dev Part left in the vault for the stakers.
+    uint32 vaultPpm;
+    /// @dev Part paid to the protocol (Referrals contract).
+    uint32 protocolPpm;
+}
+
 /// @dev Also ERC-1046 (`tokenURI()`, metadata built on-chain) and ERC-165: `supportsInterface`
 /// reports IERC165, IERC20, IERC20Metadata and IERC1046.
 interface IGemoonToken is IERC20, IERC1046 {
@@ -47,6 +61,13 @@ interface IGemoonToken is IERC20, IERC1046 {
 
     /// @notice Number of addresses holding a non-zero balance, contracts included.
     function totalHolders() external view returns (uint256);
+
+    /// @notice Swap fee split fixed at deployment, also in the `fees` field of `tokenURI()`.
+    /// @return Fee split in parts per million of the swap amount.
+    function feeInfo() external view returns (FeeInfo memory);
+
+    /// @dev Constructor got a fee split whose parts do not add up to the total.
+    error InvalidFeeInfo();
 
     event UpdateImage(string newAddress);
 

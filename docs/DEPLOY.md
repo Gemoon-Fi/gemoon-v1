@@ -84,6 +84,13 @@ ENVIRONMENT=prod ./deploy.sh --simulate  # то же для mainnet, из env/pr
 6. Дописывает в отчёт Lens и итог (broadcast, проверка связки, что записано в `env/$ENVIRONMENT.mk`) и печатает
    отчёт.
 
+**Цена газа.** Все цели Makefile с `--broadcast` шлют legacy-транзакции с явной ценой: текущий base fee
+× `GAS_PRICE_MULTIPLIER` (по умолчанию 2), base fee читается в момент запуска цели. Оценка forge не
+подходит: `eth_gasPrice` Robinhood Chain возвращает меньше base fee, и нода отвечает
+`max fee per gas less than block base fee`. Переопределить: `make deploy-gemoon GAS_PRICE=<wei>` или
+`GAS_PRICE_MULTIPLIER=3`. Лимит газа каждой транзакции — оценка forge × `GAS_ESTIMATE_MULTIPLIER`%
+(по умолчанию 200, у forge 130): со 130% `setRoute` падал с OutOfGas на `observe` пула Uniswap V3.
+
 **Отчёт** `deploy-logs/deploy-<время>-report.md`: что задеплоено, куда и зачем. В нём:
 
 - все контракты: прокси, имплементация, ProxyAdmin с владельцем, назначение каждого; внешние
@@ -143,7 +150,17 @@ ENVIRONMENT=prod ./deploy.sh --simulate  # то же для mainnet, из env/pr
 4. Пропущенные активы, если есть: исправить пул (см. 3a), затем `make set-asset-allowed` и
    `make set-route` от владельца.
 5. Контракты верифицируются в эксплорере, см. п. 6.
-6. Верифицировать контракты в эксплорере. Аргументы конструкторов:
+6. Верифицировать контракты в эксплорере. Для хука есть готовые цели в `verify.mk` (Blockscout PRO API,
+   ключ `BLOCKSCOUT_API_KEY` в `env/$ENVIRONMENT.mk`; аргументы конструкторов собираются из env):
+   `make -f verify.mk verify-hook ENVIRONMENT=prod` — имплементация и прокси;
+   `make -f verify.mk standard-json-hook ENVIRONMENT=prod` — standard JSON input в
+   `deploy-logs/standard-json/` для ручной верификации, ничего не отправляет. Запускать с коммита,
+   с которого шёл деплой. Если Blockscout отвечает `Unable to verify`, есть Sourcify (Blockscout
+   показывает его верификации): `make -f verify.mk verify-hook-impl-sourcify ENVIRONMENT=prod`.
+   Токены мемов: `make -f verify.mk verify-tokens-sourcify ENVIRONMENT=prod [SOURCE_REF=<коммит>]`
+   верифицирует в Sourcify все токены из событий `TokenCreated` контроллера одним standard JSON
+   (исходники в версии `SOURCE_REF`, по умолчанию `HEAD`), уже верифицированные пропускает, так что
+   запускать можно повторно для новых токенов. Остальные контракты вручную, аргументы конструкторов:
 
 ```sh
 # имплементации волта и контроллера: без аргументов
@@ -204,6 +221,30 @@ make deploy-swap-adapter
 отклонение спота от TWAP больше допуска, `RouteNotSet` это забытый `setRoute`. Любой может
 дёрнуть `Vault.convertFees(meme)` вручную, когда причина устранена.
 
+## 3b. Передача владения governance
+
+После деплоя всем владеет EOA деплоера. Сканеры (Serialized, GMGN) помечают это как critical:
+владелец может заменить код хука или перенаправить комиссии. `TransferToGovernance` передаёт:
+
+| Что | Кому | Как вступает в силу |
+|---|---|---|
+| 4 ProxyAdmin (апгрейды), контроллер | `TimelockController` | сразу |
+| хук (`setVault`, `setProtocolRecipient`, `setController`) | `TimelockController` | после `acceptOwnership` через таймлок (schedule → задержка → execute) |
+| Vault, GmoonReferrals, UniswapV3SwapAdapter | Safe | после `acceptOwnership()` из Safe |
+
+Таймлок новый: задержка `TIMELOCK_MIN_DELAY` (по умолчанию 172800 = 48 ч), proposer, executor и
+canceller — только `GOVERNANCE_SAFE`, админа нет. Повторно использовать таймлок: `TIMELOCK_ADDRESS`.
+
+```sh
+# в env/$ENVIRONMENT.mk: GOVERNANCE_SAFE=<адрес Safe в этой сети>
+make simulate-governance ENVIRONMENT=prod     # ничего не отправляет
+make transfer-to-governance ENVIRONMENT=prod
+```
+
+Порядок: всё, что нужно сделать от деплоера (апгрейды, настройка активов), — до передачи. После
+неё каждый апгрейд идёт через таймлок с задержкой: Safe ставит `ProxyAdmin.upgradeAndCall` в
+`schedule`, через 48 ч — `execute`.
+
 ## 4. Апгрейды
 
 Общее для всех трёх:
@@ -220,7 +261,7 @@ make deploy-swap-adapter
 |---|---|---|
 | `make upgrade-vault-proxy` | новая имплементация, `upgradeAndCall` | если `VAULT_VERSION` вырос, атомарно зовётся `reinitialize()`, иначе апгрейд без вызова. После проверяет владельца, USDG и адрес имплементации |
 | `make upgrade-hook-proxy` | новая имплементация через CREATE2, `upgradeAndCall` | адрес имплементации снова майнится под биты разрешений. При росте `HOOK_MANAGER_VERSION` зовётся `reinitialize` с текущими владельцем, получателем, волтом, контроллером и комиссиями. После проверяет, что адрес прокси всё ещё подходит под разрешения новой имплементации |
-| `make upgrade-controller-proxy` | новая имплементация, `upgradeAndCall` с `reinitialize` | `reinitialize` защищён `reinitializer(GEMOON_VERSION)`, а версия равна 1, которую занял `initialize`. Пока версия не поднята, апгрейд с вызовом упадёт. Для апгрейда без вызова поднять версию или отправить `upgradeAndCall` с пустыми данными |
+| `make upgrade-controller-proxy` | новая имплементация, `upgradeAndCall` с `reinitialize` | `reinitialize` защищён `reinitializer(GEMOON_VERSION)`, а версия равна 1, которую занял `initialize`. Пока версия не поднята, апгрейд с вызовом упадёт. Для апгрейда без вызова поднять версию или отправить `upgradeAndCall` с пустыми данными. Pair-токен берётся из `USDG_ADDRESS`; до отправки скрипт сверяет его с `pairToken()` текущего хука контроллера и падает при расхождении |
 
 **Апгрейд существующего контроллера на 2.0.** После смены имплементации владелец контроллера
 обязан вызвать `setHook`, `setVault` и `setPositionManager(positionManager, permit2)`, иначе

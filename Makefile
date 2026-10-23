@@ -1,6 +1,6 @@
 # Everything environment-specific (RPC, keys, owners, addresses) lives in env/<ENVIRONMENT>.mk,
 # never committed: make <target> ENVIRONMENT=dev|prod. Only the targets below run without it.
-ENV_FREE_TARGETS := clean compile unit-tests
+ENV_FREE_TARGETS := clean compile unit-tests prepare-abi
 
 ifneq ($(filter-out $(ENV_FREE_TARGETS),$(or $(MAKECMDGOALS),deploy-gemoon)),)
 ifndef ENVIRONMENT
@@ -29,21 +29,31 @@ endif
 endif
 endif
 
+# Gas price of every broadcast. eth_gasPrice of Robinhood Chain comes back below the base fee, so forge's own
+# estimate gets rejected ("max fee per gas less than block base fee"). Default: current base fee times
+# GAS_PRICE_MULTIPLIER, read when the recipe starts. Override with GAS_PRICE=<wei>.
+GAS_PRICE_MULTIPLIER ?= 2
+GAS_PRICE ?= $$(cast base-fee --rpc-url $(RPC) | awk '{ printf "%d", $$1 * $(GAS_PRICE_MULTIPLIER) }')
+# Gas limit margin over forge's estimate, in percent (forge default 130). Uniswap V3 `observe` in setRoute
+# reads cold observation slots on chain and ran out of gas with the default.
+GAS_ESTIMATE_MULTIPLIER ?= 200
+GAS_FLAGS = --legacy --with-gas-price $(GAS_PRICE) --gas-estimate-multiplier $(GAS_ESTIMATE_MULTIPLIER)
+
 # Full deployment in one run: Vault, GemoonController, GmoonReferrals, HookManager, UniswapV3SwapAdapter,
 # wired; reward assets of DEPLOY_ASSETS_FILE allowed and routed; report into DEPLOY_REPORT. Prefer ./deploy.sh,
 # it also writes the addresses into env/$(ENVIRONMENT).mk, checks the wiring, deploys the Lens and completes the report.
 deploy-gemoon:
-	forge script --via-ir ./script/GemoonDeploy.sol:DeployGemoon --slow --legacy -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
+	forge script --via-ir ./script/GemoonDeploy.sol:DeployGemoon --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
 
 # Same as deploy-gemoon without --broadcast: simulation against $(RPC), nothing is sent.
 simulate-gemoon:
 	forge script --via-ir ./script/GemoonDeploy.sol:DeployGemoon -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY)
 
 deploy-vault:
-	forge script --via-ir ./script/GemoonDeploy.sol:DeployVault --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
+	forge script --via-ir ./script/GemoonDeploy.sol:DeployVault --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
 
 deploy-swap-adapter:
-	forge script --via-ir ./script/GemoonDeploy.sol:DeployUniswapV3SwapAdapter --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
+	forge script --via-ir ./script/GemoonDeploy.sol:DeployUniswapV3SwapAdapter --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
 
 set-swap-adapter:
 	cast send $(VAULT_PROXY_ADDRESS) "setSwapAdapter(address)" $(SWAP_ADAPTER) --rpc-url $(RPC) --private-key $(PRIVATE_KEY)
@@ -52,7 +62,7 @@ set-swap-adapter:
 # [HOOK_PROXY_ADDRESS], [GEMOON_OWNER], [GEMOON_PROXY_ADMIN_OWNER]. Then put the logged proxy into
 # REFERRALS_PROXY_ADDRESS and run wire-referrals.
 deploy-referrals:
-	forge script --via-ir ./script/GemoonDeploy.sol:DeployReferrals --slow --legacy -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
+	forge script --via-ir ./script/GemoonDeploy.sol:DeployReferrals --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
 
 # Same as deploy-referrals without --broadcast.
 simulate-referrals:
@@ -61,10 +71,10 @@ simulate-referrals:
 # controller.setReferrals + hook.setProtocolRecipient(referrals), then checks the wiring.
 # Needs REFERRALS_PROXY_ADDRESS, CONTROLLER_PROXY_ADDRESS, HOOK_PROXY_ADDRESS; signer owns controller and hook.
 wire-referrals:
-	forge script --via-ir ./script/GemoonDeploy.sol:WireReferrals --slow --legacy -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
+	forge script --via-ir ./script/GemoonDeploy.sol:WireReferrals --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
 
 upgrade-referrals-proxy:
-	forge script --via-ir ./script/GemoonDeploy.sol:ProxyReferralsUpgrade --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
+	forge script --via-ir ./script/GemoonDeploy.sol:ProxyReferralsUpgrade --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
 
 # Hook protocol recipient (default REFERRALS_PROXY_ADDRESS on HOOK_PROXY_ADDRESS), owner of the hook:
 # make set-protocol-recipient [RECIPIENT=0x..] [HOOK=0x..] [DRY_RUN=1] [FORCE=1]
@@ -80,13 +90,13 @@ withdraw-protocol-fees:
 	cast send $(REFERRALS_PROXY_ADDRESS) "withdrawProtocolFees(address)" $(TO) --rpc-url $(RPC) --private-key $(PRIVATE_KEY)
 
 upgrade-vault-proxy:
-	forge script --via-ir ./script/GemoonDeploy.sol:ProxyVaultUpgrade --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
+	forge script --via-ir ./script/GemoonDeploy.sol:ProxyVaultUpgrade --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
 
 upgrade-hook-proxy:
-	forge script --via-ir ./script/GemoonDeploy.sol:ProxyHookUpgrade --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
+	forge script --via-ir ./script/GemoonDeploy.sol:ProxyHookUpgrade --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
 
 upgrade-controller-proxy:
-	forge script --via-ir ./script/GemoonDeploy.sol:ProxyGemoonControllerUpgrade --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
+	forge script --via-ir ./script/GemoonDeploy.sol:ProxyGemoonControllerUpgrade --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
 
 # Vault allowlist of reward assets: make set-asset-allowed VAULT=0x.. ASSET=0x.. [ALLOWED=false]
 # or a list: make set-asset-allowed VAULT=0x.. FILE=tools/scripts/robinhood-assets.csv [DRY_RUN=1]
@@ -105,7 +115,7 @@ create-tokens:
 # GemoonLens (read-only batch reader) via CREATE2: CONTROLLER/VAULT/HOOK_PROXY_ADDRESS, POOL_MANAGER,
 # [LENS_SALT]. Repeatable: same address every run, nothing is sent if it is already deployed.
 deploy-lens:
-	forge script ./script/DeployLens.s.sol:DeployLens --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) --broadcast
+	forge script ./script/DeployLens.s.sol:DeployLens --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
 
 # Same as deploy-lens without --broadcast.
 simulate-lens:
@@ -114,6 +124,15 @@ simulate-lens:
 # Read-only: checks that controller, hook and vault point at each other.
 verify-wiring:
 	forge script --via-ir ./script/GemoonDeploy.sol:VerifyWiring -vvvv --rpc-url=$(RPC)
+
+# Ownership to governance: TimelockController run by GOVERNANCE_SAFE (ProxyAdmins, hook, controller),
+# the Safe itself (vault, referrals, adapter). [TIMELOCK_ADDRESS] reuses a timelock, [TIMELOCK_MIN_DELAY]
+# (seconds, default 48h) sets a new one. Simulate first: nothing is sent.
+simulate-governance:
+	forge script --via-ir ./script/GemoonDeploy.sol:TransferToGovernance -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY)
+
+transfer-to-governance:
+	forge script --via-ir ./script/GemoonDeploy.sol:TransferToGovernance --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
 
 unit-tests:
 	forge test --show-progress -vv --no-match-path "test/fork/*"

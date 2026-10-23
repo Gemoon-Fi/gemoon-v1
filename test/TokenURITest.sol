@@ -8,13 +8,13 @@ import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import {ERC165Checker} from "@openzeppelin/contracts/utils/introspection/ERC165Checker.sol";
 import {Base64} from "@openzeppelin/contracts/utils/Base64.sol";
 import {GemoonToken} from "../src/contracts/Token.sol";
-import {TokenConfig, SocialMedia, IGemoonToken} from "../src/contracts/interfaces/IToken.sol";
+import {TokenConfig, SocialMedia, IGemoonToken, FeeInfo} from "../src/contracts/interfaces/IToken.sol";
 import {IERC1046} from "../src/contracts/interfaces/IERC1046.sol";
 import {AdminConfig} from "../src/contracts/utils/Admin.sol";
 import {Json} from "../src/contracts/utils/Json.sol";
 
 /// @notice ERC-1046 `tokenURI` of GemoonToken: `data:application/json;base64,` of a JSON built
-/// on-chain from name, symbol, decimals, description, image and social links. Every test decodes
+/// on-chain from name, symbol, decimals, description, image, social links and the fee split. Every test decodes
 /// the URI and reads the fields back with `vm.parseJson`, so the JSON must stay valid whatever the
 /// creator put into the strings.
 contract TokenURITest is Test {
@@ -23,11 +23,26 @@ contract TokenURITest is Test {
     address admin = makeAddr("admin");
     address stranger = makeAddr("stranger");
 
+    /// @dev 1.25% fee: a third (3333 bips) to the protocol, 10% of the vault part to the creator.
+    function _fees() internal pure returns (FeeInfo memory) {
+        return FeeInfo({totalPpm: 12_500, creatorPpm: 833, vaultPpm: 7_501, protocolPpm: 4_166});
+    }
+
     function _deploy(
         string memory name_,
         string memory description_,
         string memory image_,
         SocialMedia memory social_
+    ) internal returns (GemoonToken) {
+        return _deployWithFees(name_, description_, image_, social_, _fees());
+    }
+
+    function _deployWithFees(
+        string memory name_,
+        string memory description_,
+        string memory image_,
+        SocialMedia memory social_,
+        FeeInfo memory fees_
     ) internal returns (GemoonToken) {
         AdminConfig[] memory admins = new AdminConfig[](1);
         admins[0] = AdminConfig({admin: admin, removable: false});
@@ -40,7 +55,8 @@ contract TokenURITest is Test {
                 symbol: "MEME",
                 admins: admins
             }),
-            address(0xC0FFEE)
+            address(0xC0FFEE),
+            fees_
         );
     }
 
@@ -133,7 +149,8 @@ contract TokenURITest is Test {
             _json(_deployDefault()),
             '{"name":"Meme","symbol":"MEME","decimals":18,"description":"a meme","image":"ipfs://image",'
             '"socialMedia":{"farcaster":"https://warpcast.com/meme","twitterX":"https://x.com/meme",'
-            '"telegram":"https://t.me/meme","website":"https://meme.xyz"}}'
+            '"telegram":"https://t.me/meme","website":"https://meme.xyz"},'
+            '"fees":{"totalPercent":1.25,"creatorPercent":0.0833,"vaultPercent":0.7501,"protocolPercent":0.4166}}'
         );
     }
 
@@ -146,6 +163,99 @@ contract TokenURITest is Test {
         string memory json = _json(token);
         assertEq(vm.parseJsonString(json, ".image"), "ipfs://new-image");
         assertEq(vm.parseJsonString(json, ".description"), "new description");
+    }
+
+    // ------------------------------------------------------------------ fees
+
+    function test_TokenURI_Fees_PercentOfSwap() external {
+        string memory json = _json(_deployDefault());
+        assertEq(vm.parseJsonString(json, ".fees.totalPercent"), "1.25");
+        assertEq(vm.parseJsonString(json, ".fees.creatorPercent"), "0.0833");
+        assertEq(vm.parseJsonString(json, ".fees.vaultPercent"), "0.7501");
+        assertEq(vm.parseJsonString(json, ".fees.protocolPercent"), "0.4166");
+    }
+
+    function test_FeeInfo_Getter_ReturnsConstructorValue() external {
+        FeeInfo memory fees = _deployDefault().feeInfo();
+        assertEq(fees.totalPpm, 12_500);
+        assertEq(fees.creatorPpm, 833);
+        assertEq(fees.vaultPpm, 7_501);
+        assertEq(fees.protocolPpm, 4_166);
+    }
+
+    /// @dev Whole percents print without a fraction, leading zeros of the fraction are kept.
+    function test_TokenURI_FeesFormatting_WholeAndLeadingZeros() external {
+        string memory json = _json(
+            _deployWithFees(
+                "Meme",
+                "d",
+                "i",
+                _social(),
+                FeeInfo({totalPpm: 100_000, creatorPpm: 66_664, vaultPpm: 3, protocolPpm: 33_333})
+            )
+        );
+        assertEq(vm.parseJsonString(json, ".fees.totalPercent"), "10");
+        assertEq(vm.parseJsonString(json, ".fees.creatorPercent"), "6.6664");
+        assertEq(vm.parseJsonString(json, ".fees.vaultPercent"), "0.0003");
+        assertEq(vm.parseJsonString(json, ".fees.protocolPercent"), "3.3333");
+    }
+
+    function test_Constructor_FeePartsNotSummingToTotal_Reverts() external {
+        AdminConfig[] memory admins = new AdminConfig[](1);
+        admins[0] = AdminConfig({admin: admin, removable: false});
+        TokenConfig memory config = TokenConfig({
+            imgUrl: "i",
+            description: "d",
+            socialMedia: _social(),
+            name: "Meme",
+            symbol: "MEME",
+            admins: admins
+        });
+        vm.expectRevert(IGemoonToken.InvalidFeeInfo.selector);
+        new GemoonToken(
+            config,
+            address(0xC0FFEE),
+            FeeInfo({totalPpm: 12_500, creatorPpm: 833, vaultPpm: 7_500, protocolPpm: 4_166})
+        );
+    }
+
+    /// @dev Any fee split whose parts add up: the JSON stays valid and every percent reads back as
+    /// ppm / 10_000 exactly.
+    function testFuzz_TokenURI_Fees_ExactPercent(uint32 creator, uint32 vault, uint32 protocol) external {
+        creator = uint32(bound(creator, 0, 1_000_000));
+        vault = uint32(bound(vault, 0, 1_000_000));
+        protocol = uint32(bound(protocol, 0, 1_000_000));
+        uint32 total = creator + vault + protocol;
+        string memory json = _json(
+            _deployWithFees(
+                "Meme",
+                "d",
+                "i",
+                _social(),
+                FeeInfo({totalPpm: total, creatorPpm: creator, vaultPpm: vault, protocolPpm: protocol})
+            )
+        );
+        assertEq(_ppm(vm.parseJsonString(json, ".fees.totalPercent")), total);
+        assertEq(_ppm(vm.parseJsonString(json, ".fees.creatorPercent")), creator);
+        assertEq(_ppm(vm.parseJsonString(json, ".fees.vaultPercent")), vault);
+        assertEq(_ppm(vm.parseJsonString(json, ".fees.protocolPercent")), protocol);
+    }
+
+    /// @dev Percent string with up to 4 decimals back to ppm.
+    function _ppm(string memory percent) internal pure returns (uint256 ppm) {
+        bytes memory b = bytes(percent);
+        uint256 decimals;
+        bool dot;
+        for (uint256 i; i < b.length; ++i) {
+            if (b[i] == ".") {
+                dot = true;
+                continue;
+            }
+            ppm = ppm * 10 + (uint8(b[i]) - 48);
+            if (dot) ++decimals;
+        }
+        require(decimals <= 4, "too many decimals");
+        ppm *= 10 ** (4 - decimals);
     }
 
     // ------------------------------------------------------------------ escaping

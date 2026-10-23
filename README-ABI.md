@@ -5,16 +5,10 @@
 
 ## Адреса
 
-| Контракт | ABI | Адрес |
-|---|---|---|
-| GemoonController | `IGemoonController.json` | |
-| Vault | `IVault.json` | |
-| HookManager | `IHookManager.json` | |
-| GmoonReferrals | `IReferrals.json` | |
-| PoolManager (Uniswap V4) | `IPoolManager.json` | |
-| USDG (pair-токен) | стандартный ERC20 | |
-| Токен мема | `IGemoonToken.json` | адрес из `TokenCreated` |
-| GemoonLens (батч-чтения) | `GemoonLens.json` | `0xf5e9342Ffe373D9a3B4a986870cbC6E66dDCbF15` (devnet 1488, блок 84351591) |
+Таблицу подставляет `prepare-abi.sh` из `env/dev.mk` (devnet, chain id 1488) и `env/prod.mk`
+(mainnet). Прочерк значит, что в этом окружении контракт ещё не задеплоен.
+
+<!-- ADDRESSES -->
 
 Все контракты, кроме токенов мемов и GemoonLens, стоят за прокси: адреса постоянные, версия читается через
 `getVersion()` (`IGemoonable.json`). GemoonLens без прокси: новая версия получает новый адрес.
@@ -164,7 +158,8 @@ allowlist отдаёт `Vault.allowedAssets()`, проверка одного а
 откатывается с ошибкой `NotEnoughGasForConversion(needed, available)` хука (внутри
 `WrappedError` PoolManager). Кошельки и агрегаторы, которые считают газ симуляцией
 (`eth_estimateGas`, 0x), заложат его сами; при ручном лимите брать с запасом. Размер запаса:
-`Vault.conversionGasRequired(meme)` (0, если автоконвертация выключена).
+`Vault.conversionGasRequired(meme)` (0, если автоконвертация выключена), но не больше
+`HookManager.MAX_CONVERSION_GAS()` (3 000 000): хук ограничивает ответ волта этим значением.
 Ключ пула:
 
 | Поле | Значение |
@@ -239,6 +234,12 @@ HookManager для интеграций (`IHookManager.json`):
 `IGemoonToken`: ERC20 плюс permit и burn.
 
 - Чтение: `creator()`, `imageAddress()`, `description()`, `getSocialMedia()`, `showAdmins()`.
+- `feeInfo()`: распределение комиссии свопа, зафиксированное при деплое мема, в миллионных долях
+  суммы свопа (1 000 000 = 100%, 12 500 = 1.25%): `totalPpm` — вся комиссия, `creatorPpm` —
+  создателю (получателю наград) через волт, `vaultPpm` — стейкерам в волте, `protocolPpm` —
+  протоколу (контракт рефералов). `creatorPpm + vaultPpm + protocolPpm == totalPpm`. Это базовая
+  комиссия, без повышенной антиснайп-комиссии первых 30 секунд. Значения не меняются, даже если
+  позже поменять долю протокола в хуке. Есть только у мемов, созданных после этого обновления.
 - `totalHolders()`: число адресов с ненулевым балансом. Считаются все адреса, включая контракты:
   PoolManager (ликвидность пула), контроллер (пыль после минта позиции), волт (стейки). Есть
   только у мемов, созданных после этого обновления: у старых токенов вызов откатится.
@@ -247,9 +248,12 @@ HookManager для интеграций (`IHookManager.json`):
   `changeDescription` URI меняется сам. JSON:
   ```json
   {"name":"Meme","symbol":"MEME","decimals":18,"description":"...","image":"ipfs://...",
-   "socialMedia":{"farcaster":"...","twitterX":"...","telegram":"...","website":"..."}}
+   "socialMedia":{"farcaster":"...","twitterX":"...","telegram":"...","website":"..."},
+   "fees":{"totalPercent":1.25,"creatorPercent":0.0833,"vaultPercent":0.7501,"protocolPercent":0.4166}}
   ```
-  Строки экранированы по JSON, кавычки и переводы строк в описании безопасны.
+  Строки экранированы по JSON, кавычки и переводы строк в описании безопасны. `fees` — то же, что
+  `feeInfo()`, но числами в процентах от суммы свопа, до 4 знаков после точки, без хвостовых нулей
+  (`10`, `1.25`, `0.0833`).
   `supportsInterface(0x3c130d90)` (ERC-165) возвращает `true`; также `true` для IERC165, IERC20,
   IERC20Metadata. Есть только у мемов, созданных после этого обновления.
 - Только админ: `updateImage(url)`, `changeDescription(text)`, `setTokenURI(uri)`. `setTokenURI`

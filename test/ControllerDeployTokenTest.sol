@@ -37,7 +37,13 @@ import {
 import {PriceMath} from "../src/contracts/utils/Price.sol";
 import {StateLibrary} from "@uniswap-v4-core/libraries/StateLibrary.sol";
 import {PoolIdLibrary} from "@uniswap-v4-core/types/PoolId.sol";
-import {TokenConfig, SocialMedia, AdminConfig} from "../src/contracts/interfaces/IToken.sol";
+import {
+    TokenConfig,
+    SocialMedia,
+    AdminConfig,
+    FeeInfo,
+    IGemoonToken
+} from "../src/contracts/interfaces/IToken.sol";
 import {IERC1046} from "../src/contracts/interfaces/IERC1046.sol";
 import {MintableToken} from "./mocks/MintableToken.sol";
 
@@ -679,6 +685,56 @@ contract ControllerDeployTokenTest is Test {
         controller.deployToken(config);
     }
 
+    /// @dev A creator share far above 100% still fails with the vault error: the fee split written
+    /// into the token is capped and never reverts first.
+    function test_DeployToken_CreatorShareMaxUint16_RevertsWithVaultError() external {
+        DeployConfig memory config = _config();
+        config.vaultCreatorShareBps = type(uint16).max;
+        vm.prank(creator);
+        vm.expectRevert(
+            abi.encodeWithSelector(IVault.InvalidCreatorShare.selector, type(uint16).max)
+        );
+        controller.deployToken(config);
+    }
+
+    /// @dev 1.25% fee, a third to the protocol, 10% of the vault part to the creator.
+    function test_DeployToken_FeeInfo_WrittenIntoToken() external {
+        (address token,) = _deployMeme();
+        FeeInfo memory fees = IGemoonToken(token).feeInfo();
+        assertEq(fees.totalPpm, 12_500, "total 1.25%");
+        assertEq(fees.protocolPpm, 4_166, "protocol 0.4166%");
+        assertEq(fees.creatorPpm, 833, "creator 0.0833%");
+        assertEq(fees.vaultPpm, 7_501, "stakers 0.7501%");
+    }
+
+    /// @dev Invariant: the split in the token mirrors the payout rules (protocol share of the
+    /// fee from the hook, creator share of the vault part from the vault) and its parts add up to
+    /// the base fee of the hook.
+    function testFuzz_DeployToken_FeeInfo_MirrorsHookAndVault(uint256 swapFeeBips, uint16 creatorShareBps)
+        external
+    {
+        swapFeeBips = bound(swapFeeBips, hook.MIN_MEME_FEE_BIPS(), hook.MAX_MEME_FEE_BIPS());
+        creatorShareBps = uint16(bound(creatorShareBps, 0, 10_000));
+        DeployConfig memory config = _config(swapFeeBips);
+        config.vaultCreatorShareBps = creatorShareBps;
+        vm.prank(creator);
+        address token = controller.deployToken(config);
+
+        FeeInfo memory fees = IGemoonToken(token).feeInfo();
+        assertEq(fees.totalPpm, hook.baseFeeBips(token) * 100, "total = hook base fee");
+        assertEq(
+            fees.protocolPpm, (uint256(fees.totalPpm) * hook.PROTOCOL_SHARE_BIPS()) / 10_000, "protocol"
+        );
+        assertEq(
+            fees.creatorPpm,
+            (uint256(fees.totalPpm - fees.protocolPpm) * vault.creatorShareBpsOf(token)) / 10_000,
+            "creator"
+        );
+        assertEq(
+            uint256(fees.creatorPpm) + fees.vaultPpm + fees.protocolPpm, fees.totalPpm, "parts sum to total"
+        );
+    }
+
     /// @dev 10% fee: the protocol gets a third of it (~3.33% of the volume), the vault the rest.
     function test_Swap_TenPercentFee_ProtocolGetsOneThirdVaultRest() external {
         address token = _deployMemeWithFee(1_000);
@@ -1146,6 +1202,53 @@ contract ControllerDeployTokenTest is Test {
         assertEq(_hookRevertSelector(reason), IHookManager.NotEnoughGasForConversion.selector);
     }
 
+    /// @dev A vault reporting an absurd conversion gas cannot block trading: the hook caps it at
+    /// `MAX_CONVERSION_GAS`, so a swap with a normal limit still goes through.
+    function test_Swap_VaultReportsHugeConversionGas_CappedSwapSucceeds() external {
+        address token = _memeAboutToConvert();
+        vm.mockCall(
+            address(vault),
+            abi.encodeWithSelector(IVault.conversionGasRequired.selector, token),
+            abi.encode(type(uint256).max)
+        );
+
+        (bool ok,) = _buyWithGas(token, 100 * PAIR_UNIT, 5_000_000);
+
+        assertTrue(ok, "swap not blocked by the vault answer");
+    }
+
+    /// @dev The audit scenario in full: the owner points the hook at a vault that burns every bit of
+    /// gas it gets, in the gas view and in the payout. The hook bounds both calls, so a swap with a
+    /// normal limit still trades; the payout fails inside its try/catch and the fee stays accrued.
+    function test_Swap_VaultBurnsAllGas_SwapStillSucceeds() external {
+        address token = _memeAboutToConvert();
+        address burner = address(new GasBurningVault());
+        vm.prank(hook.owner());
+        hook.setVault(burner);
+        uint256 accruedBefore = hook.pendingFees(token);
+
+        vm.recordLogs();
+        (bool ok,) = _buyWithGas(token, 100 * PAIR_UNIT, 5_000_000);
+
+        assertTrue(ok, "swap not blocked by a gas-burning vault");
+        assertGt(hook.pendingFees(token), accruedBefore, "fee charged and kept accrued");
+    }
+
+    /// @dev Invariant: whatever the vault reports, the gas a swap must carry never exceeds what the
+    /// cap requires, so 5M gas is always enough to trade.
+    function testFuzz_Swap_AnyReportedConversionGas_SwapWithCapGasSucceeds(uint256 reported) external {
+        address token = _memeAboutToConvert();
+        vm.mockCall(
+            address(vault),
+            abi.encodeWithSelector(IVault.conversionGasRequired.selector, token),
+            abi.encode(reported)
+        );
+
+        (bool ok,) = _buyWithGas(token, 100 * PAIR_UNIT, 5_000_000);
+
+        assertTrue(ok, "swap succeeds with 5M gas");
+    }
+
     /// @dev With automatic conversion off (threshold 0) nothing extra is required.
     function test_Swap_ConversionOff_LowGas_Succeeds() external {
         address token = _memeAboutToConvert();
@@ -1217,5 +1320,12 @@ contract ControllerDeployTokenTest is Test {
             assertEq(vault.vaultInfo(token).epoch, 0, "reverted swap changes nothing");
             assertEq(hook.pendingFees(token), accruedBefore, "no fee charged");
         }
+    }
+}
+
+/// @dev Vault that answers every call by burning all the gas it is given.
+contract GasBurningVault {
+    fallback() external {
+        while (true) {}
     }
 }

@@ -37,6 +37,8 @@ import {TickMath} from "@uniswap-v4-core/libraries/TickMath.sol";
 import {
     SafeERC20
 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 contract GemoonController is
     Initializable,
@@ -224,7 +226,14 @@ contract GemoonController is
         tokenConfig.admins = newAdmins;
 
         // The whole supply is minted to this contract and goes into the position below.
-        address deployedToken = Deployer.deployToken(tokenConfig);
+        address deployedToken = Deployer.deployToken(
+            tokenConfig,
+            _feeInfo(
+                config.rewardsConfig.swapFeeBips,
+                IHookManager(hook_).PROTOCOL_SHARE_BIPS(),
+                config.vaultCreatorShareBps
+            )
+        );
 
         // The hook accepts the pool only if the vault of the Meme already exists.
         vault_.registerVault(
@@ -264,6 +273,34 @@ contract GemoonController is
         );
 
         return deployedToken;
+    }
+
+    /// @dev Fee split written into the Meme at deployment, in parts per million of the swap. Mirrors
+    /// the payout: the hook gives the protocol `protocolShareBips` of the fee, the vault the rest,
+    /// and the vault credits `creatorShareBps` of its part to the creator, the rest to the stakers.
+    /// Each part rounds down like the payout, the stakers part takes the dust, so the parts always
+    /// add up to the total. Out-of-range inputs are not checked here: they are capped so this
+    /// never reverts, and the vault (`InvalidCreatorShare`) or the hook (`InvalidMemeFeeBips`)
+    /// reverts the deployment right after with its own error.
+    /// @param swapFeeBips       Base fee of the Meme, bips of the swap.
+    /// @param protocolShareBips Protocol share of the fee, bips of the fee.
+    /// @param creatorShareBps   Creator share of the vault part, bps of that part.
+    function _feeInfo(
+        uint256 swapFeeBips,
+        uint256 protocolShareBips,
+        uint256 creatorShareBps
+    ) private pure returns (FeeInfo memory) {
+        uint256 total = Math.min(swapFeeBips, type(uint16).max) * 100; // bips -> ppm
+        uint256 protocol = (total * protocolShareBips) / 10_000;
+        uint256 vaultPart = total - protocol;
+        uint256 creatorPart = (vaultPart * Math.min(creatorShareBps, 10_000)) / 10_000;
+        return
+            FeeInfo({
+                totalPpm: SafeCast.toUint32(total),
+                creatorPpm: SafeCast.toUint32(creatorPart),
+                vaultPpm: SafeCast.toUint32(vaultPart - creatorPart),
+                protocolPpm: SafeCast.toUint32(protocol)
+            });
     }
 
     /// @dev Initializes the Meme/pair pool with the hook and mints the whole Meme supply into a

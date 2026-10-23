@@ -74,6 +74,9 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | `test_DeployToken_SwapFeeAboveTenPercent_Revert` | Ставка 10.01% | Верхняя граница 10% | revert `InvalidMemeFeeBips(1001)` |
 | `test_DeployToken_CreatorShare_StoredInVault` | `vaultCreatorShareBps = 3500` | Доля создателя из конфига доходит до волта | `creatorShareBpsOf(token)` и `vaultInfo(token).creatorShareBps` = 3500 |
 | `test_DeployToken_CreatorShareAboveBps_Revert` | `vaultCreatorShareBps = 10001` | Доля создателя ≤ 100% | revert `InvalidCreatorShare(10001)`, мем не создан |
+| `test_DeployToken_CreatorShareMaxUint16_RevertsWithVaultError` | `vaultCreatorShareBps = 65535` | Расчёт `feeInfo` не падает раньше волта на неверной доле | revert `InvalidCreatorShare(65535)` |
+| `test_DeployToken_FeeInfo_WrittenIntoToken` | `feeInfo()` мема с комиссией 1.25%, доля протокола 3333, доля создателя 1000 | Распределение записано в токен при деплое | total 12 500, protocol 4 166, creator 833, vault 7 501 ppm |
+| `testFuzz_DeployToken_FeeInfo_MirrorsHookAndVault` (fuzz) | Любая комиссия 100..1000 bips и доля создателя 0..10 000 | total = `baseFeeBips` хука × 100; protocol = total × `PROTOCOL_SHARE_BIPS` / 10 000; creator = (total − protocol) × доля создателя волта / 10 000; части в сумме = total | все равенства выполняются |
 | `test_Swap_TenPercentFee_ProtocolGetsOneThirdVaultRest` | Две покупки при 10% | Протокол получает треть комиссии, волт остальное | Протокол ~3.33% объёма, волт остальное, сумма = 10% объёма |
 | `test_Swap_ProtocolShare_OneThirdOfAnyMemeFee` | Покупка на 1000 USDG при ставках 1%, 3%, 10% | Треть комиссии протоколу при любой ставке | Протокол/волт ≈ 1/3 и 2/3 комиссии: при 3% ~1%/~2% объёма |
 | `testFuzz_Swap_AnySwapFee_ProtocolGetsOneThirdFeeConserved` (fuzz) | Любая ставка 1%..10% | Комиссия сохраняется; протокол получает 3333 bips каждой комиссии с округлением вниз, не больше трети | Протокол + волт + начислено = вся комиссия; протокол = Σ floor(fee × 3333 / 10000) |
@@ -107,6 +110,9 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | `test_Swap_SellLowGas_RevertsWithNotEnoughGasForConversion` | Продажа с лимитом 300k | Проверка газа действует и на продажи | Revert `NotEnoughGasForConversion` |
 | `test_Swap_BelowThreshold_LowGas_RevertsToo` | Лимит 300k, порог далеко | Требование действует и до порога | Revert `NotEnoughGasForConversion` |
 | `test_Swap_ConversionOff_LowGas_Succeeds` | Лимит 300k, порог 0 | Без автоконвертации лишнего газа не нужно | Своп прошёл |
+| `test_Swap_VaultReportsHugeConversionGas_CappedSwapSucceeds` | Волт сообщает `type(uint256).max` газа под конвертацию, своп с лимитом 5M | Ответ волта не может заблокировать торговлю (`MAX_CONVERSION_GAS`) | Своп прошёл |
+| `test_Swap_VaultBurnsAllGas_SwapStillSucceeds` | Владелец ставит хуку vault, который сжигает весь газ (и в `conversionGasRequired`, и в выплате); своп с лимитом 5M | Ни один ответ или поведение vault не блокирует торговлю: вызовы vault ограничены по газу | Своп прошёл, выплата упала внутри try/catch, комиссия осталась накопленной |
+| `testFuzz_Swap_AnyReportedConversionGas_SwapWithCapGasSucceeds` (fuzz) | Любой ответ `conversionGasRequired`, лимит 5M | Требуемый газ ограничен капом при любом ответе волта | Своп всегда проходит |
 | `test_Swap_EstimatedBelowThreshold_OthersFillIt_EstimateStillEnough` | Газ оценён при далёком пороге (минимальный лимит, как `eth_estimateGas`), затем чужая сделка набирает порог почти до конца, наш своп его пересекает | Оценка газа не устаревает из-за чужих сделок | Своп с прежней оценкой прошёл и закрыл эпоху |
 | `testFuzz_Swap_CrossesThreshold_AnyGas_ConvertsOrReverts` (fuzz) | Любой лимит 150k..3M | Своп, пересёкший порог, либо закрывает эпоху, либо откатывается целиком | Успех ⇒ `epoch` = 1 и нет `ConversionFailed`; откат ⇒ состояние не изменилось |
 
@@ -567,9 +573,14 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
-| `test_NotifyPoolCreated_FromController_StoresTimestamp` | Контроллер сообщает о создании пула. | — | `poolTimestamps(meme) == 1_700_000_000` |
-| `testFuzz_NotifyPoolCreated_FromController_StoresPerMeme` (fuzz) | Запись времени для случайного meme и любого timestamp. | Запись изолирована по meme | `poolTimestamps(meme) == timestamp`, у другого meme 0 |
-| `test_NotifyPoolCreated_CalledTwice_OverwritesTimestamp` | Два вызова для одного meme. | — | Сохранено последнее значение 200 |
+| `test_NotifyPoolCreated_FromController_StoresTimestamp` | Контроллер сообщает о создании пула в текущем блоке. | — | `poolTimestamps(meme) == 1_700_000_000` |
+| `testFuzz_NotifyPoolCreated_FromController_StoresPerMeme` (fuzz) | Запись времени для случайного meme и любого timestamp ≤ блока. | Запись изолирована по meme | `poolTimestamps(meme) == timestamp`, у другого meme 0 |
+| `test_NotifyPoolCreated_CalledTwice_RevertsPoolAlreadyNotified` | Второй вызов для того же meme с другим временем и ставкой. | Окно 80% запускается один раз на мем | Откат `PoolAlreadyNotified(meme)`, время 100 и ставка 100 прежние |
+| `test_NotifyPoolCreated_TimestampAfterBlock_RevertsInvalidPoolTimestamp` | Время создания на 1 с позже блока. | Окно нельзя сдвинуть в будущее | Откат `InvalidPoolTimestamp(1001)`, время не записано |
+| `test_NotifyPoolCreated_ZeroTimestamp_RevertsInvalidPoolTimestamp` | Время создания 0. | 0 значит «не сообщён», записать его нельзя | Откат `InvalidPoolTimestamp(0)` |
+| `test_NotifyPoolCreated_OwnerAsController_CannotRestartRamp` | Сценарий аудита: владелец делает себя контроллером и пытается перезапустить окно сейчас и через год с другой ставкой. | Даже владелец хука не поднимет комиссию живого мема | Оба вызова — `PoolAlreadyNotified`, комиссия остаётся базовой |
+| `testFuzz_NotifyPoolCreated_AfterFirst_AnyReport_RampUnchanged` (fuzz) | Любой повторный вызов в любой момент с любым временем и ставкой. | После первого сообщения время и ставка мема неизменны; через 30 с комиссия базовая | Откат `PoolAlreadyNotified`, `poolTimestamps`/`memeFeeBips` прежние |
+| `testFuzz_NotifyPoolCreated_TimestampAfterBlock_Revert` (fuzz) | Любое время позже текущего блока. | Окно нельзя растянуть | Откат `InvalidPoolTimestamp(timestamp)` |
 | `test_NotifyPoolCreated_FromOwner_Revert` | Вызов от владельца hook. | Уведомлять может только контроллер | Откат `NotController` |
 | `test_NotifyPoolCreated_FromVault_Revert` | Вызов от vault. | Уведомлять может только контроллер | Откат `NotController` |
 | `test_NotifyPoolCreated_FromNewController_AfterSetController_Stores` | Новый контроллер после `setController`. | Права переходят к новому контроллеру | `poolTimestamps(meme) == 42` |
@@ -643,7 +654,7 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 
 ## test/TokenURITest.sol
 
-ERC-1046 `tokenURI` токена: свой URI админа (`setTokenURI`), если задан, иначе `data:application/json;base64,` от JSON, собранного ончейн из name, symbol, decimals, description, image и ссылок на соцсети. Каждый тест декодирует base64 и читает поля через `vm.parseJson`.
+ERC-1046 `tokenURI` токена: свой URI админа (`setTokenURI`), если задан, иначе `data:application/json;base64,` от JSON, собранного ончейн из name, symbol, decimals, description, image, ссылок на соцсети и распределения комиссии (`fees`). Каждый тест декодирует base64 и читает поля через `vm.parseJson`.
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
@@ -651,7 +662,12 @@ ERC-1046 `tokenURI` токена: свой URI админа (`setTokenURI`), е�
 | `test_TokenURI_Fields_MatchTokenData` | Основные поля | JSON = данные токена | name, symbol, decimals 18, description, image |
 | `test_TokenURI_SocialMedia_AllFourLinks` | Соцсети | Все 4 ссылки в `socialMedia` | farcaster, twitterX, telegram, website |
 | `test_TokenURI_EmptySocialMedia_EmptyStrings` | Пустые соцсети | JSON валиден и без ссылок | пустые строки |
-| `test_TokenURI_Json_ExactLayout` | Точная раскладка JSON | Формат стабилен для фронта | строка совпадает байт в байт |
+| `test_TokenURI_Json_ExactLayout` | Точная раскладка JSON | Формат стабилен для фронта | строка совпадает байт в байт, включая `fees` |
+| `test_TokenURI_Fees_PercentOfSwap` | `fees` в JSON | Проценты от суммы свопа = ppm / 10 000 | 1.25, 0.0833, 0.7501, 0.4166 |
+| `test_FeeInfo_Getter_ReturnsConstructorValue` | `feeInfo()` | Геттер отдаёт значение из конструктора | 12 500, 833, 7 501, 4 166 |
+| `test_TokenURI_FeesFormatting_WholeAndLeadingZeros` | Целые проценты и нули в дробной части | Целое без точки, ведущие нули дроби сохраняются, хвостовые отброшены | `10`, `6.6664`, `0.0003`, `3.3333` |
+| `test_Constructor_FeePartsNotSummingToTotal_Reverts` | Части не дают в сумме total | В токене не бывает несходящегося распределения | revert `InvalidFeeInfo` |
+| `testFuzz_TokenURI_Fees_ExactPercent` (fuzz) | Любые части 0..100% | JSON валиден, каждый процент читается обратно в тот же ppm без потерь | совпадает |
 | `test_TokenURI_AfterUpdateImageAndDescription_Reflected` | После смены метаданных админом | URI всегда отражает текущие данные | новые image и description |
 | `test_TokenURI_QuoteInDescription_NoInjection` | Кавычки в описании | Создатель не может подменить поля JSON | description как есть, image прежний |
 | `test_TokenURI_ControlCharsAndBackslash_RoundTrip` | `\`, `"`, `\n`, `\r`, `\t`, 0x01, 0x1f | Экранирование по RFC 8259 | строки возвращаются без изменений |
@@ -718,3 +734,19 @@ ERC-1046 `tokenURI` токена: свой URI админа (`setTokenURI`), е�
 |---|---|---|---|
 | `testControllerOwner` | Владелец `GemoonController` за `TransparentUpgradeableProxy` после `initialize` | Владелец задаётся при инициализации прокси | `owner()` = msg.sender |
 | `testControllerProxyChangeAdmin` | Владелец передаёт владение через прокси | Только владелец передаёт владение | `owner()` = 0x1234 |
+
+## test/TransferToGovernanceTest.sol
+
+Передача владения: ProxyAdmin, контроллер и хук под `TimelockController`, которым управляет Safe; волт (и рефералы, адаптер) — Safe. Деплой настоящий (`DeployGemoon.deployAll`), владелец всего — скрипт, как деплоер в сети.
+
+| Тест | Что проверяет | Инварианты | Ожидаемый результат |
+|---|---|---|---|
+| `test_DeployTimelock_SafeOnlyRoles_NoAdmin` | Роли нового таймлока | Предлагать, исполнять и отменять может только Safe; админа нет | задержка 48 ч, роли у Safe, `DEFAULT_ADMIN_ROLE` ни у кого |
+| `test_TransferToGovernance_Owners_TimelockAndSafe` | Владельцы после передачи | Апгрейды и торговые настройки — за таймлоком, операционные — у Safe | ProxyAdmin ×3 и контроллер — таймлок, хук — pending таймлок, волт — pending Safe |
+| `test_TransferToGovernance_Deployer_CannotUpgrade` | Деплоер после передачи | У деплоера нет права на апгрейд | `upgradeAndCall` от деплоера — `OwnableUnauthorizedAccount` |
+| `test_TransferToGovernance_HookAccept_OnlyAfterDelay` | Принятие хука через таймлок | Ничего не исполняется раньше задержки | `execute` до 48 ч откатывается, после — владелец хука таймлок |
+| `test_TransferToGovernance_SafeAcceptsVault` | Safe принимает волт | Ownable2Step завершается новым владельцем | владелец волта — Safe |
+| `testFuzz_Timelock_NotSafe_CannotSchedule` (fuzz) | `schedule` от любого адреса, кроме Safe | Ставить операции в таймлок может только Safe | откат |
+| `test_TransferToGovernance_NotOwner_Reverts` | Отправитель не владелец | Передать может только текущий владелец | откат |
+| `test_TransferToGovernance_SafeWithoutCode_Reverts` | Safe без кода (опечатка, EOA, другая сеть) | Таймлок не может остаться без управляющего | `SafeHasNoCode` и при деплое таймлока, и при передаче |
+| `test_TransferToGovernance_ZeroSafe_Reverts` | Safe = 0 | Владение не уходит в нулевой адрес | `ZeroAddress` |

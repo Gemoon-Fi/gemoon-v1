@@ -6,6 +6,11 @@ import "../src/contracts/utils/Admin.sol";
 import "../src/contracts/interfaces/IToken.sol";
 import {console} from "forge-std/console.sol";
 
+/// @dev 1.25% fee, a third to the protocol, 10% of the vault part to the creator.
+function FEES() pure returns (FeeInfo memory) {
+    return FeeInfo({totalPpm: 12_500, creatorPpm: 833, vaultPpm: 7_501, protocolPpm: 4_166});
+}
+
 contract TokenTest is Test {
     address internal constant CREATOR = address(0xC0FFEE);
 
@@ -29,7 +34,8 @@ contract TokenTest is Test {
                 symbol: "TEST",
                 admins: initAdminsStruct(initAdmins, removables)
             }),
-            CREATOR
+            CREATOR,
+            FEES()
         );
 
         assertEq(token.creator(), CREATOR);
@@ -58,7 +64,8 @@ contract TokenTest is Test {
                 symbol: "TEST",
                 admins: initAdminsStruct(initAdmins, removables)
             }),
-            CREATOR
+            CREATOR,
+            FEES()
         );
 
         assertEq(Admin(token).getAdmins().length, 2, "Not enough admins");
@@ -107,7 +114,8 @@ contract TokenTest is Test {
                 symbol: "TEST",
                 admins: initAdminsStruct(initAdmins, removables)
             }),
-            CREATOR
+            CREATOR,
+            FEES()
         );
 
         assertEq(Admin(token).isAdmin(msg.sender), true, "Should be admin");
@@ -136,7 +144,8 @@ contract TokenTest is Test {
                 symbol: "TEST",
                 admins: initAdminsStruct(initAdmins, removables)
             }),
-            CREATOR
+            CREATOR,
+            FEES()
         );
 
         assertEq(Admin(token).isAdmin(address(this)), true, "Should be admin");
@@ -168,7 +177,8 @@ contract TokenTest is Test {
                 symbol: "TEST",
                 admins: initAdminsStruct(initAdmins, removables)
             }),
-            CREATOR
+            CREATOR,
+            FEES()
         );
 
         assertEq(Admin(token).isAdmin(address(this)), false, "Should be admin");
@@ -199,7 +209,8 @@ contract TokenTest is Test {
                 symbol: "TEST",
                 admins: initAdminsStruct(initAdmins, removables)
             }),
-            CREATOR
+            CREATOR,
+            FEES()
         );
 
         token.changeDescription("New description");
@@ -228,7 +239,8 @@ contract TokenTest is Test {
                 symbol: "TEST",
                 admins: initAdminsStruct(initAdmins, removables)
             }),
-            CREATOR
+            CREATOR,
+            FEES()
         );
 
         vm.expectRevert(bytes("Caller is not an admin"));
@@ -258,7 +270,8 @@ contract TokenTest is Test {
                 symbol: "TEST",
                 admins: initAdminsStruct(initAdmins, removables)
             }),
-            CREATOR
+            CREATOR,
+            FEES()
         );
 
         assertEq(token.description(), "A test token", "Invalid description");
