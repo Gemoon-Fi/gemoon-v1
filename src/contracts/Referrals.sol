@@ -68,6 +68,10 @@ contract GmoonReferrals is
     mapping(address referrer => uint256) private s_pending;
     mapping(address referrer => uint256) private s_earned;
     uint256 private s_totalPending;
+    /// @dev Every hook ever set, the current one included: the pools of older Memes keep paying
+    /// the protocol fee through the hook they were created with. A proxy upgraded from a version
+    /// without it starts empty: `onlyHook` also accepts `s_hook`.
+    mapping(address hook => bool) private s_isHook;
 
     // ---------------------------------------------------------------------------------------------
     // Modifiers
@@ -79,7 +83,7 @@ contract GmoonReferrals is
     }
 
     modifier onlyHook() {
-        if (msg.sender != s_hook) revert NotHook();
+        if (!isHook(msg.sender)) revert NotHook();
         _;
     }
 
@@ -285,6 +289,11 @@ contract GmoonReferrals is
     }
 
     /// @inheritdoc IReferrals
+    function isHook(address account) public view returns (bool) {
+        return account == s_hook || s_isHook[account];
+    }
+
+    /// @inheritdoc IReferrals
     function paused()
         public
         view
@@ -371,6 +380,10 @@ contract GmoonReferrals is
 
     function _setHook(address hook_) internal {
         if (hook_ == address(0)) revert ZeroAddress();
+        // The previous hook keeps notifying the fees of the Memes whose pools use it.
+        address previous = s_hook;
+        if (previous != address(0)) s_isHook[previous] = true;
+        s_isHook[hook_] = true;
         s_hook = hook_;
         emit HookUpdated(hook_);
     }

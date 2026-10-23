@@ -27,7 +27,7 @@ import {HookManager} from "../src/contracts/hooks/HookManager.sol";
 import {IHookManager} from "../src/contracts/interfaces/IHookManager.sol";
 import {Vault} from "../src/contracts/vault/Vault.sol";
 import {GmoonReferrals} from "../src/contracts/Referrals.sol";
-import {IReferrals} from "../src/contracts/interfaces/IReferrals.sol";
+import {IReferrals, IProtocolFeeReceiver} from "../src/contracts/interfaces/IReferrals.sol";
 import {AssetConfig} from "../src/contracts/interfaces/IVault.sol";
 import {
     DeployConfig, DevBuyConfig, RewardsConfig, TICK_SPACING
@@ -280,8 +280,12 @@ contract ReferralsIntegrationTest is Test {
         address token = _deployMeme(bob);
         _buy(token, 1_000 * PAIR_UNIT);
 
-        vm.prank(refOwner);
-        referrals.setHook(makeAddr("otherHook"));
+        // Referrals reject the notification (e.g. a broken upgrade): the whole payout rolls back.
+        vm.mockCallRevert(
+            address(referrals),
+            abi.encodeWithSelector(IProtocolFeeReceiver.notifyFee.selector),
+            abi.encodeWithSelector(IReferrals.NotHook.selector)
+        );
         vm.recordLogs();
         _buy(token, 400 * PAIR_UNIT);
         Vm.Log[] memory logs = vm.getRecordedLogs();
@@ -294,11 +298,24 @@ contract ReferralsIntegrationTest is Test {
         assertApproxEqAbs(hook.pendingFees(token), fee, 1, "still accrued");
         assertEq(usdg.balanceOf(address(referrals)), 0);
 
-        vm.prank(refOwner);
-        referrals.setHook(address(hook));
+        vm.clearMockedCalls();
         hook.distribute(token);
         assertEq(hook.pendingFees(token), 0);
         assertGt(referrals.pendingOf(alice), 0);
+    }
+
+    /// @dev The hook is not upgradeable: after referrals switch to a new hook, the pools of
+    /// older Memes keep paying the protocol fee through the old one.
+    function test_Payout_ReferralsHookReplaced_OldHookStillPaysOut() external {
+        address token = _deployMeme(bob);
+        _buy(token, 1_000 * PAIR_UNIT);
+
+        vm.prank(refOwner);
+        referrals.setHook(makeAddr("newHook"));
+        _buy(token, 400 * PAIR_UNIT);
+
+        assertEq(hook.pendingFees(token), 0, "old hook paid out");
+        assertGt(referrals.pendingOf(alice), 0, "referrer credited");
     }
 
     /// @dev EOA protocol recipient keeps working: no notification is attempted.

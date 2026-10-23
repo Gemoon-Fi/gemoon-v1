@@ -5,7 +5,6 @@ cd "$(dirname "$0")/../.."
 source tools/scripts/load-env.sh
 
 for var in CONTROLLER_PROXY_ADDRESS \
-           HOOK_PROXY_ADDRESS \
            VAULT_PROXY_ADDRESS;do
 	echo -e "Implementation of: \033[32;1m" ${var};
 	impl=$(cast implementation --rpc-url="$RPC" ${!var})

@@ -11,6 +11,7 @@ import {IGemoonable} from "./IGemoonable.sol";
 ///         deployment (1%..10%). Out of every fee the protocol recipient gets `PROTOCOL_SHARE_BIPS`
 ///         (a third, 33.33%) of the fee, the vault the rest.
 ///         Every swap ends with a payout of everything accrued for the Meme of the pool.
+///         Not upgradeable: everything is configured in the constructor, the fees are fixed.
 interface IHookManager is IGemoonable {
     // ---------------------------------------------------------------------------------------------
     // Errors
@@ -35,12 +36,11 @@ interface IHookManager is IGemoonable {
     /// reverted so that gas estimation raises the limit. `needed` is the gas required at the
     /// check, `available` what was left.
     error NotEnoughGasForConversion(uint256 needed, uint256 available);
-    /// @dev `notifyPoolCreated` for a Meme whose pool was already reported: the anti-snipe ramp
-    /// runs once per Meme and cannot be restarted.
+    /// @dev `notifyPoolCreated` for a Meme whose base fee was already set: it is set once.
     error PoolAlreadyNotified(address meme);
-    /// @dev `notifyPoolCreated` with a zero creation time or one after the current block: the ramp
-    /// cannot be stretched into the future.
-    error InvalidPoolTimestamp(uint256 timestamp);
+    /// @dev `notifyPoolCreated` outside the block in which the first pool of `meme` was initialized
+    /// (`createdAt`, zero if none): the base fee is set only together with pool creation.
+    error PoolNotCreatedInThisBlock(address meme, uint256 createdAt);
 
     // ---------------------------------------------------------------------------------------------
     // Events
@@ -108,38 +108,12 @@ interface IHookManager is IGemoonable {
     /// @param createdAt Creation time of the pool.
     event MemeFeeConfigured(address indexed meme, uint256 feeBips, uint256 createdAt);
 
+    /// @notice First pool of `meme` initialized: its anti-snipe window starts at `createdAt`.
+    ///         Recorded by the hook itself, once per Meme.
+    event PoolTimestampRecorded(address indexed meme, uint256 createdAt);
+
     /// @notice Controller changed.
     event ControllerUpdated(address indexed controller);
-
-    // ---------------------------------------------------------------------------------------------
-    // Initialization (proxy)
-    // ---------------------------------------------------------------------------------------------
-
-    /// @notice Initializes the proxy. Called once, right after deployment.
-    /// @param owner_             Owner (Ownable2Step).
-    /// @param protocolRecipient_ Receiver of the protocol share of every fee.
-    /// @param vault_             Vault that receives the rest and holds Meme stakes.
-    /// @param controller_        GemoonController allowed into `onlyController` functions.
-    /// @param feeBips            Total hook fee, in bips of the pair-token side of a swap.
-    /// @param protocolShareBips  Protocol share of every fee, in bips of the fee (3 333 = a third).
-    function initialize(
-        address owner_,
-        address protocolRecipient_,
-        address vault_,
-        address controller_,
-        uint256 feeBips,
-        uint256 protocolShareBips
-    ) external;
-
-    /// @notice Re-initializes the proxy after an upgrade. Same parameters as `initialize`.
-    function reinitialize(
-        address owner_,
-        address protocolRecipient_,
-        address vault_,
-        address controller_,
-        uint256 feeBips,
-        uint256 protocolShareBips
-    ) external;
 
     // ---------------------------------------------------------------------------------------------
     // Admin (owner)
@@ -235,7 +209,7 @@ interface IHookManager is IGemoonable {
     ///         `baseFeeBips(meme)`.
     function DYNAMIC_FEE_THRESHOLD() external view returns (uint256);
 
-    /// @notice Creation time of the pool of `meme`, zero if the controller never reported it.
+    /// @notice Initialization time of the first pool of `meme`, recorded by the hook; zero if none.
     function poolTimestamps(address meme) external view returns (uint256);
 
     /// @notice Fee of a swap in the pool of `meme` at `timestamp`, in bips. Linear from
@@ -248,9 +222,9 @@ interface IHookManager is IGemoonable {
     // ------
     // Utils
     // ------
-    /// @notice Records when the pool of `meme` was created and the fee its creator chose.
-    ///         Only controller, once per Meme (`PoolAlreadyNotified`), with
-    ///         `0 < timestamp <= block.timestamp` (`InvalidPoolTimestamp`). Reverts with
-    ///         `InvalidMemeFeeBips` outside 1%..10%.
-    function notifyPoolCreated(address meme, uint256 timestamp, uint256 feeBips) external;
+    /// @notice Sets the base fee the creator of `meme` chose. Only controller, once per Meme
+    ///         (`PoolAlreadyNotified`), in the block in which the first pool of `meme` was
+    ///         initialized (`PoolNotCreatedInThisBlock`). Reverts with `InvalidMemeFeeBips`
+    ///         outside 1%..10%. The anti-snipe window is recorded by the hook, not passed here.
+    function notifyPoolCreated(address meme, uint256 feeBips) external;
 }

@@ -15,6 +15,7 @@ import {
     VaultInfo
 } from "../src/contracts/interfaces/IVault.sol";
 import {ISwapAdapter} from "../src/contracts/interfaces/ISwapAdapter.sol";
+import {Upgrades} from "@oz-upgrades/Upgrades.sol";
 
 contract MockToken is ERC20 {
     uint8 private immutable i_decimals;
@@ -678,6 +679,67 @@ contract VaultTest is VaultFixture {
         );
         vm.prank(alice);
         vault.setHook(alice);
+    }
+
+    // ------------------------------------------------------------------ hook replacement
+
+    /// @dev Hooks are not upgradeable: after `setHook(new)` the pools of older Memes still pay
+    /// through the old hook, so both must be able to notify fees.
+    function test_SetHook_NewHook_OldHookStillNotifies() external {
+        _register(_assets6040());
+        address newHook = makeAddr("newHook");
+        vm.prank(owner);
+        vault.setHook(newHook);
+
+        assertEq(vault.hook(), newHook, "hook of new Memes");
+        assertTrue(vault.isHook(hook), "old hook allowed");
+        assertTrue(vault.isHook(newHook), "new hook allowed");
+
+        _notify(1e6); // from the old hook
+        usdg.mint(address(vault), 2e6);
+        vm.prank(newHook);
+        vault.notifyFees(address(meme), 2e6);
+        VaultInfo memory info = vault.vaultInfo(address(meme));
+        assertEq(info.pendingStakerUSDG + info.pendingCreatorUSDG, 3e6, "both credited");
+    }
+
+    /// @dev Invariant: every hook ever set may notify fees, nobody else may.
+    function testFuzz_SetHook_AnySequence_OnlySetHooksNotify(
+        address[3] memory hooks,
+        address stranger
+    ) external {
+        _register(_assets6040());
+        // The ProxyAdmin is denied the fallback by the transparent proxy itself.
+        address proxyAdmin = Upgrades.getAdminAddress(address(vault));
+        vm.assume(stranger != proxyAdmin);
+        vm.startPrank(owner);
+        for (uint256 i; i < hooks.length; ++i) {
+            vm.assume(hooks[i] != address(0) && hooks[i] != proxyAdmin);
+            vault.setHook(hooks[i]);
+        }
+        vm.stopPrank();
+        vm.assume(stranger != hook);
+        for (uint256 i; i < hooks.length; ++i) vm.assume(stranger != hooks[i]);
+
+        assertEq(vault.hook(), hooks[2], "last one is current");
+        assertTrue(vault.isHook(hook), "initial hook kept");
+        for (uint256 i; i < hooks.length; ++i) {
+            assertTrue(vault.isHook(hooks[i]));
+            usdg.mint(address(vault), 1);
+            vm.prank(hooks[i]);
+            vault.notifyFees(address(meme), 1);
+        }
+        assertFalse(vault.isHook(stranger));
+        usdg.mint(address(vault), 1);
+        vm.prank(stranger);
+        vm.expectRevert(IVault.NotHook.selector);
+        vault.notifyFees(address(meme), 1);
+    }
+
+    function test_SetHook_Zero_Reverts() external {
+        vm.prank(owner);
+        vm.expectRevert(IVault.ZeroAddress.selector);
+        vault.setHook(address(0));
     }
 
     // ------------------------------------------------------------------ allowlist enumeration

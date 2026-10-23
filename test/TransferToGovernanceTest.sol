@@ -63,7 +63,6 @@ contract TransferToGovernanceTest is Test {
             referrals: address(0),
             adapter: address(0),
             controllerProxyAdmin: Upgrades.getAdminAddress(address(d.controller)),
-            hookProxyAdmin: Upgrades.getAdminAddress(address(d.hook)),
             vaultProxyAdmin: Upgrades.getAdminAddress(address(d.vault)),
             referralsProxyAdmin: address(0)
         });
@@ -88,7 +87,6 @@ contract TransferToGovernanceTest is Test {
         _transfer();
 
         assertEq(ProxyAdmin(t.controllerProxyAdmin).owner(), address(timelock), "controller admin");
-        assertEq(ProxyAdmin(t.hookProxyAdmin).owner(), address(timelock), "hook admin");
         assertEq(ProxyAdmin(t.vaultProxyAdmin).owner(), address(timelock), "vault admin");
         assertEq(d.controller.owner(), address(timelock), "controller owner");
         assertEq(d.hook.pendingOwner(), address(timelock), "hook pending owner");
@@ -106,7 +104,9 @@ contract TransferToGovernanceTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(OwnableUpgradeable.OwnableUnauthorizedAccount.selector, address(gov))
         );
-        ProxyAdmin(t.hookProxyAdmin).upgradeAndCall(ITransparentUpgradeableProxy(address(d.hook)), newImpl, "");
+        ProxyAdmin(t.controllerProxyAdmin).upgradeAndCall(
+            ITransparentUpgradeableProxy(address(d.controller)), newImpl, ""
+        );
     }
 
     /// @dev Full hand-over of the hook: the Safe schedules `acceptOwnership` on the timelock, it can

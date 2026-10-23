@@ -9,6 +9,7 @@ import {PausableUpgradeable} from
     "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import {GmoonReferrals} from "../src/contracts/Referrals.sol";
 import {IReferrals} from "../src/contracts/interfaces/IReferrals.sol";
+import {Upgrades} from "@oz-upgrades/Upgrades.sol";
 import {MintableToken} from "./mocks/MintableToken.sol";
 
 /// @dev Shared deployment of a Referrals proxy with a mock pair token; this test plays the hook
@@ -600,12 +601,53 @@ contract ReferralsTest is ReferralsBase {
         referrals.setHook(alice);
     }
 
-    function test_SetHook_NewHook_OldHookRejected() external {
+    /// @dev Hooks are not upgradeable: after `setHook(new)` the pools of older Memes still pay
+    /// the protocol fee through the old hook, so both must be able to notify it.
+    function test_SetHook_NewHook_OldHookStillNotifies() external {
+        _referBob();
         address newHook = makeAddr("newHook");
         vm.prank(owner);
         referrals.setHook(newHook);
-        vm.expectRevert(IReferrals.NotHook.selector);
+
+        assertEq(referrals.hook(), newHook, "hook of new Memes");
+        assertTrue(referrals.isHook(hook), "old hook allowed");
+        assertTrue(referrals.isHook(newHook), "new hook allowed");
+
+        usdg.mint(address(referrals), 2_000_000);
         vm.prank(hook);
+        referrals.notifyFee(meme, 1_000_000);
+        vm.prank(newHook);
+        referrals.notifyFee(meme, 1_000_000);
+        assertEq(referrals.pendingOf(alice), 200_000, "both credited");
+    }
+
+    /// @dev Invariant: every hook ever set may notify fees, nobody else may.
+    function testFuzz_SetHook_AnySequence_OnlySetHooksNotify(
+        address[3] memory hooks,
+        address stranger
+    ) external {
+        // The ProxyAdmin is denied the fallback by the transparent proxy itself.
+        address proxyAdmin = Upgrades.getAdminAddress(address(referrals));
+        vm.startPrank(owner);
+        for (uint256 i; i < hooks.length; ++i) {
+            vm.assume(hooks[i] != address(0) && hooks[i] != proxyAdmin);
+            referrals.setHook(hooks[i]);
+        }
+        vm.stopPrank();
+        vm.assume(stranger != hook);
+        for (uint256 i; i < hooks.length; ++i) vm.assume(stranger != hooks[i]);
+        vm.assume(stranger != proxyAdmin);
+
+        assertEq(referrals.hook(), hooks[2], "last one is current");
+        assertTrue(referrals.isHook(hook), "initial hook kept");
+        for (uint256 i; i < hooks.length; ++i) {
+            assertTrue(referrals.isHook(hooks[i]));
+            vm.prank(hooks[i]);
+            referrals.notifyFee(meme, 0);
+        }
+        assertFalse(referrals.isHook(stranger));
+        vm.prank(stranger);
+        vm.expectRevert(IReferrals.NotHook.selector);
         referrals.notifyFee(meme, 0);
     }
 

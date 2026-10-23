@@ -10,8 +10,15 @@
 
 <!-- ADDRESSES -->
 
-Все контракты, кроме токенов мемов и GemoonLens, стоят за прокси: адреса постоянные, версия читается через
-`getVersion()` (`IGemoonable.json`). GemoonLens без прокси: новая версия получает новый адрес.
+Все контракты, кроме токенов мемов, HookManager и GemoonLens, стоят за прокси: адреса постоянные, версия
+читается через `getVersion()` (`IGemoonable.json`). HookManager и GemoonLens без прокси и не обновляются:
+новая версия получает новый адрес. Пулы мема навсегда привязаны к хуку, с которым созданы, поэтому
+хук конкретного мема берите из `GemoonController.hookOf(meme)` (ноль — мем старого контроллера, тогда
+`controller.hook()`), а не из `controller.hook()`: тот указывает на хук для новых мемов. Ключ пула и
+`pendingFees`/`currentFeeBips` читайте у хука мема. GemoonLens делает это сам.
+Волт и рефералы принимают комиссии от любого хука, когда-либо назначенного через `setHook`
+(`vault.isHook(addr)`, `referrals.isHook(addr)`), поэтому после смены хука старые мемы продолжают
+получать выплаты.
 
 ## Что нужно знать сразу
 
@@ -190,11 +197,16 @@ HookManager для интеграций (`IHookManager.json`):
 - `currentFeeBips(meme) → uint256`: ставка комиссии в bips прямо сейчас, с учётом окна
   после создания пула. `feeBipsAt(meme, timestamp)` — то же на заданный момент.
 - `memeFeeBips(meme)`, `baseFeeBips(meme)`: ставка, выбранная создателем, и ставка после окна.
-- `PROTOCOL_SHARE_BIPS()`, `BIPS()`: доля протокола в bips от комиссии (3333 = треть).
+- `PROTOCOL_SHARE_BIPS()`, `BIPS()`: доля протокола в bips от комиссии (3333 = треть), `TOTAL_FEE_BIPS()` —
+  резервная ставка; обе заданы в конструкторе и не меняются. `initialize`/`reinitialize` у хука нет.
   До этой версии назывался `PROTOCOL_FEE_BIPS()` и означал bips от суммы сделки. `MIN_MEME_FEE_BIPS()`,
   `MAX_MEME_FEE_BIPS()` — границы ставки создателя. `MAX_FEE_BIPS()` (8000) и
   `DYNAMIC_FEE_THRESHOLD()` задают окно повышенной комиссии, `poolTimestamps(meme)` — время
-  создания пула.
+  создания первого пула мема, его записывает сам хук при `initialize` пула контроллером.
+- `notifyPoolCreated(meme, feeBips)` (только контроллер): ставка создателя, один раз на мем и
+  только в блоке создания пула. Параметра `timestamp` больше нет. Ошибки `PoolAlreadyNotified(meme)`,
+  `PoolNotCreatedInThisBlock(meme, createdAt)`, `InvalidMemeFeeBips(feeBips)`; `InvalidPoolTimestamp` удалена.
+- Событие `PoolTimestampRecorded(meme, createdAt)`: создан первый пул мема, начало окна.
 - Событие `MemeFeeConfigured(meme, feeBips, createdAt)`: выбранная ставка и начало окна.
 - События `MemeSwapped`, `FeeCharged`, `FeesDistributed`, `PayoutFailed`: сигнатуры в
   `indexing.md`.

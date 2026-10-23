@@ -7,14 +7,14 @@
 #   tools/scripts/set_protocol_recipient.sh [<recipient>] [--hook <hook>] [--dry-run] [--force]
 #   make set-protocol-recipient [RECIPIENT=<recipient>] [HOOK=<hook>] [DRY_RUN=1] [FORCE=1]
 #
-# Defaults: <recipient> = REFERRALS_PROXY_ADDRESS, <hook> = HOOK_PROXY_ADDRESS.
+# Defaults: <recipient> = REFERRALS_PROXY_ADDRESS, <hook> = HOOK_ADDRESS.
 # A recipient with code is notified by the hook (IProtocolFeeReceiver.notifyFee) and must accept
 # it, otherwise every payout of the hook fails: such a recipient must be the Referrals contract of
 # this hook (its hook() and pairToken() match). --force skips that check (e.g. a Safe on an old hook
 # implementation that does not notify yet). An EOA is accepted as is. --dry-run checks everything
 # and sends nothing.
 #
-# From env/$ENVIRONMENT.mk: RPC, PRIVATE_KEY, HOOK_PROXY_ADDRESS / REFERRALS_PROXY_ADDRESS (defaults). The sender
+# From env/$ENVIRONMENT.mk: RPC, PRIVATE_KEY, HOOK_ADDRESS / REFERRALS_PROXY_ADDRESS (defaults). The sender
 # must be the hook owner.
 set -euo pipefail
 
@@ -46,9 +46,9 @@ source tools/scripts/load-env.sh
 for var in RPC PRIVATE_KEY; do
     [ -n "${!var:-}" ] || { echo "$var is empty in $ENV_FILE" >&2; exit 1; }
 done
-HOOK="${HOOK:-${HOOK_PROXY_ADDRESS:-}}"
+HOOK="${HOOK:-${HOOK_ADDRESS:-}}"
 RECIPIENT="${RECIPIENT:-${REFERRALS_PROXY_ADDRESS:-}}"
-[ -n "$HOOK" ] || { echo "No hook: pass --hook or set HOOK_PROXY_ADDRESS" >&2; usage; }
+[ -n "$HOOK" ] || { echo "No hook: pass --hook or set HOOK_ADDRESS" >&2; usage; }
 [ -n "$RECIPIENT" ] || { echo "No recipient: pass it or set REFERRALS_PROXY_ADDRESS" >&2; usage; }
 
 ZERO=0x0000000000000000000000000000000000000000
@@ -93,7 +93,7 @@ fi
 NOTIFIES=true
 if [ "$OVERHEAD" = "150000" ]; then
     NOTIFIES=false
-    echo "WARNING: hook implementation does not notify the recipient yet (make upgrade-hook-proxy):" >&2
+    echo "WARNING: hook implementation does not notify the recipient yet (old hook: deploy a new one):" >&2
     echo "         fees arrive unattributed, Referrals count them all as protocol share." >&2
 fi
 

@@ -120,7 +120,8 @@ interface IReferrals is IProtocolFeeReceiver {
     /// @dev Only owner, non-zero.
     function setController(address controller) external;
 
-    /// @dev Only owner, non-zero.
+    /// @dev Only owner, non-zero. Every hook set before stays allowed to call `notifyFee`: hooks
+    /// are not upgradeable, the pools of older Memes keep paying through theirs.
     function setHook(address hook) external;
 
     // ---------------------------------------------------------------------------------------------
@@ -129,7 +130,10 @@ interface IReferrals is IProtocolFeeReceiver {
 
     function pairToken() external view returns (address);
     function controller() external view returns (address);
+    /// @notice Hook of new Memes, the last one set by `setHook`.
     function hook() external view returns (address);
+    /// @notice Whether `account` may call `notifyFee`: the current hook or any hook set before.
+    function isHook(address account) external view returns (bool);
     function refShareBips() external view returns (uint256);
     /// @notice True while referral payouts are paused.
     function paused() external view returns (bool);

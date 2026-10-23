@@ -7,6 +7,9 @@ import {ProxyAdmin} from "@openzeppelin/contracts/proxy/transparent/ProxyAdmin.s
 import {Upgrades} from "@oz-upgrades/Upgrades.sol";
 import {Hooks} from "@uniswap-v4-core/libraries/Hooks.sol";
 import {Currency} from "@uniswap-v4-core/types/Currency.sol";
+import {PoolKey} from "@uniswap-v4-core/types/PoolKey.sol";
+import {IHooks} from "@uniswap-v4-core/interfaces/IHooks.sol";
+import {BaseHook} from "uniswap-hooks/base/BaseHook.sol";
 import {DeployGemoon, GemoonDeployBase} from "../script/GemoonDeploy.sol";
 import {GemoonController} from "../src/contracts/Gemoon.sol";
 import {HookManager} from "../src/contracts/hooks/HookManager.sol";
@@ -114,7 +117,6 @@ contract DeployGemoonTest is Test {
         assertEq(d.vault.owner(), owner);
 
         assertEq(ProxyAdmin(Upgrades.getAdminAddress(address(d.vault))).owner(), proxyAdminOwner);
-        assertEq(ProxyAdmin(Upgrades.getAdminAddress(address(d.hook))).owner(), proxyAdminOwner);
         assertEq(
             ProxyAdmin(Upgrades.getAdminAddress(address(d.controller))).owner(), proxyAdminOwner
         );
@@ -128,21 +130,25 @@ contract DeployGemoonTest is Test {
         assertEq(d.hook.owner(), address(script));
     }
 
-    function test_DeployAll_HookAddresses_CarryPermissionBits() external {
+    function test_DeployAll_HookAddress_CarriesPermissionBits() external {
         DeployGemoon.Deployment memory d = _deploy(owner);
-        address implementation = Upgrades.getImplementationAddress(address(d.hook));
-        assertEq(uint160(address(d.hook)) & Hooks.ALL_HOOK_MASK, HOOK_FLAGS, "proxy bits");
-        assertEq(uint160(implementation) & Hooks.ALL_HOOK_MASK, HOOK_FLAGS, "impl bits");
+        assertEq(uint160(address(d.hook)) & Hooks.ALL_HOOK_MASK, HOOK_FLAGS, "hook bits");
+    }
+
+    /// @dev The hook is not upgradeable: no EIP-1967 implementation or admin, so neither its code
+    /// nor its fees can change under a live pool.
+    function test_DeployAll_Hook_NotAProxy() external {
+        DeployGemoon.Deployment memory d = _deploy(owner);
+        assertEq(Upgrades.getImplementationAddress(address(d.hook)), address(0), "no implementation");
+        assertEq(Upgrades.getAdminAddress(address(d.hook)), address(0), "no proxy admin");
+        assertEq(d.hook.TOTAL_FEE_BIPS(), 125, "fallback fee from the constructor");
+        assertEq(d.hook.PROTOCOL_SHARE_BIPS(), 2_000, "protocol share from the constructor");
     }
 
     function test_DeployAll_Twice_FreshAddresses() external {
         DeployGemoon.Deployment memory a = _deploy(owner);
         DeployGemoon.Deployment memory b = _deploy(owner);
         assertTrue(address(a.hook) != address(b.hook));
-        assertTrue(
-            Upgrades.getImplementationAddress(address(a.hook))
-                != Upgrades.getImplementationAddress(address(b.hook))
-        );
         _assertWired(b);
     }
 
@@ -191,15 +197,112 @@ contract DeployGemoonTest is Test {
     // HookManager controller
     // ---------------------------------------------------------------------------------------------
 
-    function test_NotifyPoolCreated_FromController_StoresTimestamp() external {
+    /// @dev What the PoolManager does on `initialize`: calls `afterInitialize` of the hook for a
+    /// Meme/pair-token pool with the given tick spacing.
+    function _initPool(HookManager hook, address meme, int24 tickSpacing) internal {
+        _initPool(hook, meme, tickSpacing, hook.controller());
+    }
+
+    function _initPool(HookManager hook, address meme, int24 tickSpacing, address sender)
+        internal
+    {
+        Currency pair = hook.pairToken();
+        Currency memeC = Currency.wrap(meme);
+        (Currency c0, Currency c1) = meme < Currency.unwrap(pair) ? (memeC, pair) : (pair, memeC);
+        PoolKey memory key = PoolKey(c0, c1, 0, tickSpacing, IHooks(address(hook)));
+        vm.prank(poolManager);
+        hook.afterInitialize(sender, key, 0, 0);
+    }
+
+    function _initPool(HookManager hook, address meme) internal {
+        _initPool(hook, meme, 60);
+    }
+
+    // ---- afterInitialize: the hook records the anti-snipe start itself ----
+
+    function test_AfterInitialize_FirstPool_RecordsBlockTimestamp() external {
         DeployGemoon.Deployment memory d = _deploy(owner);
         address meme = makeAddr("meme");
 
         vm.warp(1_700_000_000);
-        vm.prank(address(d.controller));
-        d.hook.notifyPoolCreated(meme, 1_700_000_000, 100);
+        vm.expectEmit(address(d.hook));
+        emit IHookManager.PoolTimestampRecorded(meme, 1_700_000_000);
+        _initPool(d.hook, meme);
 
         assertEq(d.hook.poolTimestamps(meme), 1_700_000_000);
+        assertEq(d.hook.currentFeeBips(meme), d.hook.MAX_FEE_BIPS());
+    }
+
+    /// @dev Anyone may initialize another pool of a live Meme (other tick spacing): that must not
+    /// restart its 80% window.
+    function testFuzz_AfterInitialize_LaterPool_KeepsFirstTimestamp(uint256 elapsed, int24 spacing)
+        external
+    {
+        DeployGemoon.Deployment memory d = _deploy(owner);
+        address meme = makeAddr("meme");
+        elapsed = bound(elapsed, 0, 10 * 365 days);
+
+        vm.warp(1_000);
+        _initPool(d.hook, meme);
+        vm.prank(address(d.controller));
+        d.hook.notifyPoolCreated(meme, 300);
+
+        vm.warp(1_000 + elapsed);
+        _initPool(d.hook, meme, spacing);
+
+        assertEq(d.hook.poolTimestamps(meme), 1_000, "window start kept");
+        if (elapsed >= d.hook.DYNAMIC_FEE_THRESHOLD()) assertEq(d.hook.currentFeeBips(meme), 300);
+    }
+
+    /// @dev A pool initialized by anyone but the controller never starts a window: a live Meme
+    /// deployed before the anti-snipe (no window recorded) cannot be put under the 80% fee by
+    /// opening a second pool for it.
+    function testFuzz_AfterInitialize_NotController_DoesNotStartWindow(
+        address sender,
+        int24 spacing
+    ) external {
+        DeployGemoon.Deployment memory d = _deploy(owner);
+        vm.assume(sender != address(d.controller));
+        address meme = makeAddr("legacyMeme");
+
+        vm.warp(1_000);
+        _initPool(d.hook, meme, spacing, sender);
+
+        assertEq(d.hook.poolTimestamps(meme), 0, "no window");
+        assertEq(d.hook.currentFeeBips(meme), d.hook.TOTAL_FEE_BIPS(), "base fee, not 80%");
+
+        vm.prank(address(d.controller));
+        vm.expectRevert(
+            abi.encodeWithSelector(IHookManager.PoolNotCreatedInThisBlock.selector, meme, 0)
+        );
+        d.hook.notifyPoolCreated(meme, 100);
+    }
+
+    function test_AfterInitialize_NotPoolManager_Revert() external {
+        DeployGemoon.Deployment memory d = _deploy(owner);
+        PoolKey memory key = PoolKey(
+            Currency.wrap(makeAddr("meme")), d.hook.pairToken(), 0, 60, IHooks(address(d.hook))
+        );
+
+        vm.expectRevert(BaseHook.NotPoolManager.selector);
+        d.hook.afterInitialize(address(this), key, 0, 0);
+    }
+
+    // ---- notifyPoolCreated: base fee only, in the block of pool creation ----
+
+    function test_NotifyPoolCreated_SameBlockAsPool_StoresFee() external {
+        DeployGemoon.Deployment memory d = _deploy(owner);
+        address meme = makeAddr("meme");
+
+        vm.warp(1_700_000_000);
+        _initPool(d.hook, meme);
+        vm.expectEmit(address(d.hook));
+        emit IHookManager.MemeFeeConfigured(meme, 100, 1_700_000_000);
+        vm.prank(address(d.controller));
+        d.hook.notifyPoolCreated(meme, 100);
+
+        assertEq(d.hook.poolTimestamps(meme), 1_700_000_000);
+        assertEq(d.hook.memeFeeBips(meme), 100);
     }
 
     function testFuzz_NotifyPoolCreated_FromController_StoresPerMeme(
@@ -210,80 +313,105 @@ contract DeployGemoonTest is Test {
         vm.assume(meme != other);
         timestamp = bound(timestamp, 1, type(uint64).max);
         DeployGemoon.Deployment memory d = _deploy(owner);
+        vm.assume(meme != Currency.unwrap(d.hook.pairToken()));
 
         vm.warp(timestamp);
+        _initPool(d.hook, meme);
         vm.prank(address(d.controller));
-        d.hook.notifyPoolCreated(meme, timestamp, 100);
+        d.hook.notifyPoolCreated(meme, 100);
 
         assertEq(d.hook.poolTimestamps(meme), timestamp);
+        assertEq(d.hook.memeFeeBips(meme), 100);
         assertEq(d.hook.poolTimestamps(other), 0, "other meme untouched");
+        assertEq(d.hook.memeFeeBips(other), 0, "other meme untouched");
     }
 
-    /// @dev The anti-snipe ramp of a Meme starts once: a second report cannot restart it.
+    /// @dev The base fee of a Meme is set once: a second report cannot change it.
     function test_NotifyPoolCreated_CalledTwice_RevertsPoolAlreadyNotified() external {
         DeployGemoon.Deployment memory d = _deploy(owner);
         address meme = makeAddr("meme");
 
-        vm.warp(200);
+        vm.warp(100);
+        _initPool(d.hook, meme);
         vm.startPrank(address(d.controller));
-        d.hook.notifyPoolCreated(meme, 100, 100);
+        d.hook.notifyPoolCreated(meme, 100);
         vm.expectRevert(abi.encodeWithSelector(IHookManager.PoolAlreadyNotified.selector, meme));
-        d.hook.notifyPoolCreated(meme, 200, 500);
+        d.hook.notifyPoolCreated(meme, 500);
         vm.stopPrank();
 
         assertEq(d.hook.poolTimestamps(meme), 100, "creation time kept");
         assertEq(d.hook.memeFeeBips(meme), 100, "base fee kept");
     }
 
-    function test_NotifyPoolCreated_TimestampAfterBlock_RevertsInvalidPoolTimestamp() external {
+    /// @dev Without an initialized pool the controller cannot start an anti-snipe window at all.
+    function test_NotifyPoolCreated_NoPool_RevertsPoolNotCreatedInThisBlock() external {
         DeployGemoon.Deployment memory d = _deploy(owner);
         address meme = makeAddr("meme");
 
         vm.warp(1_000);
         vm.prank(address(d.controller));
-        vm.expectRevert(abi.encodeWithSelector(IHookManager.InvalidPoolTimestamp.selector, 1_001));
-        d.hook.notifyPoolCreated(meme, 1_001, 100);
+        vm.expectRevert(
+            abi.encodeWithSelector(IHookManager.PoolNotCreatedInThisBlock.selector, meme, 0)
+        );
+        d.hook.notifyPoolCreated(meme, 100);
 
         assertEq(d.hook.poolTimestamps(meme), 0);
+        assertEq(d.hook.currentFeeBips(meme), d.hook.TOTAL_FEE_BIPS(), "no 80% window");
     }
 
-    function test_NotifyPoolCreated_ZeroTimestamp_RevertsInvalidPoolTimestamp() external {
+    /// @dev The audit scenario ("controller can schedule an 80% fee on a live pool"): a pool that
+    /// trades and was never reported cannot get an anti-snipe window later, whatever the fee and
+    /// however long after its creation.
+    function testFuzz_NotifyPoolCreated_LivePool_Reverts(uint256 elapsed, uint256 feeBips) external {
         DeployGemoon.Deployment memory d = _deploy(owner);
         address meme = makeAddr("meme");
+        elapsed = bound(elapsed, 1, 10 * 365 days);
+        feeBips = bound(feeBips, 100, 1_000);
+
+        vm.warp(1_000);
+        _initPool(d.hook, meme);
+        vm.warp(1_000 + elapsed);
 
         vm.prank(address(d.controller));
-        vm.expectRevert(abi.encodeWithSelector(IHookManager.InvalidPoolTimestamp.selector, 0));
-        d.hook.notifyPoolCreated(meme, 0, 100);
+        vm.expectRevert(
+            abi.encodeWithSelector(IHookManager.PoolNotCreatedInThisBlock.selector, meme, 1_000)
+        );
+        d.hook.notifyPoolCreated(meme, feeBips);
+
+        assertEq(d.hook.poolTimestamps(meme), 1_000, "window start kept");
+        assertEq(d.hook.memeFeeBips(meme), 0);
+        if (elapsed >= d.hook.DYNAMIC_FEE_THRESHOLD()) {
+            assertEq(d.hook.currentFeeBips(meme), d.hook.TOTAL_FEE_BIPS());
+        }
     }
 
-    /// @dev The audit scenario: the owner makes itself the controller and tries to restart the
-    /// 80% ramp of a live Meme, now or in the future. Every attempt reverts and the fee stays at
-    /// the base fee.
+    /// @dev The owner makes itself the controller and tries to restart the 80% ramp of a live
+    /// Meme, through a report and through a new pool. Every attempt fails, the fee stays the base fee.
     function test_NotifyPoolCreated_OwnerAsController_CannotRestartRamp() external {
         DeployGemoon.Deployment memory d = _deploy(owner);
         address meme = makeAddr("meme");
         vm.warp(1_000);
+        _initPool(d.hook, meme);
         vm.prank(address(d.controller));
-        d.hook.notifyPoolCreated(meme, 1_000, 100);
+        d.hook.notifyPoolCreated(meme, 100);
         vm.warp(1_000 + d.hook.DYNAMIC_FEE_THRESHOLD());
 
         vm.startPrank(owner);
         d.hook.setController(owner);
         vm.expectRevert(abi.encodeWithSelector(IHookManager.PoolAlreadyNotified.selector, meme));
-        d.hook.notifyPoolCreated(meme, block.timestamp, 100);
-        vm.expectRevert(abi.encodeWithSelector(IHookManager.PoolAlreadyNotified.selector, meme));
-        d.hook.notifyPoolCreated(meme, block.timestamp + 365 days, 1_000);
+        d.hook.notifyPoolCreated(meme, 1_000);
         vm.stopPrank();
+        _initPool(d.hook, meme, 200);
 
         assertEq(d.hook.currentFeeBips(meme), 100, "still the base fee");
     }
 
-    /// @dev Invariant: once a Meme is reported, no later report (any time, any fee) changes its
-    /// creation time or base fee, so the fee is the base fee from `createdAt + window` on.
+    /// @dev Invariant: once the first pool of a Meme exists, nothing the controller does later (any
+    /// time, any fee) moves its window or changes its base fee, so the fee is at most the base fee
+    /// from `createdAt + window` on.
     function testFuzz_NotifyPoolCreated_AfterFirst_AnyReport_RampUnchanged(
         uint256 createdAt,
         uint256 elapsed,
-        uint256 timestamp,
         uint256 feeBips
     ) external {
         DeployGemoon.Deployment memory d = _deploy(owner);
@@ -293,29 +421,18 @@ contract DeployGemoonTest is Test {
         feeBips = bound(feeBips, 100, 1_000);
 
         vm.warp(createdAt);
+        _initPool(d.hook, meme);
         vm.prank(address(d.controller));
-        d.hook.notifyPoolCreated(meme, createdAt, 200);
+        d.hook.notifyPoolCreated(meme, 200);
 
         vm.warp(createdAt + elapsed);
         vm.prank(address(d.controller));
         vm.expectRevert(abi.encodeWithSelector(IHookManager.PoolAlreadyNotified.selector, meme));
-        d.hook.notifyPoolCreated(meme, timestamp, feeBips);
+        d.hook.notifyPoolCreated(meme, feeBips);
 
         assertEq(d.hook.poolTimestamps(meme), createdAt);
         assertEq(d.hook.memeFeeBips(meme), 200);
         if (elapsed >= d.hook.DYNAMIC_FEE_THRESHOLD()) assertEq(d.hook.currentFeeBips(meme), 200);
-    }
-
-    /// @dev Any creation time after the current block is rejected, so the ramp cannot be stretched.
-    function testFuzz_NotifyPoolCreated_TimestampAfterBlock_Revert(uint256 now_, uint256 timestamp) external {
-        DeployGemoon.Deployment memory d = _deploy(owner);
-        now_ = bound(now_, 1, type(uint64).max);
-        timestamp = bound(timestamp, now_ + 1, type(uint256).max);
-
-        vm.warp(now_);
-        vm.prank(address(d.controller));
-        vm.expectRevert(abi.encodeWithSelector(IHookManager.InvalidPoolTimestamp.selector, timestamp));
-        d.hook.notifyPoolCreated(makeAddr("meme"), timestamp, 100);
     }
 
     function test_NotifyPoolCreated_FromOwner_Revert() external {
@@ -323,7 +440,7 @@ contract DeployGemoonTest is Test {
 
         vm.prank(owner);
         vm.expectRevert(IHookManager.NotController.selector);
-        d.hook.notifyPoolCreated(makeAddr("meme"), 1, 100);
+        d.hook.notifyPoolCreated(makeAddr("meme"), 100);
     }
 
     function test_NotifyPoolCreated_FromVault_Revert() external {
@@ -331,7 +448,7 @@ contract DeployGemoonTest is Test {
 
         vm.prank(address(d.vault));
         vm.expectRevert(IHookManager.NotController.selector);
-        d.hook.notifyPoolCreated(makeAddr("meme"), 1, 100);
+        d.hook.notifyPoolCreated(makeAddr("meme"), 100);
     }
 
     function test_NotifyPoolCreated_FromNewController_AfterSetController_Stores() external {
@@ -343,26 +460,26 @@ contract DeployGemoonTest is Test {
         d.hook.setController(next);
 
         vm.warp(42);
+        _initPool(d.hook, meme);
         vm.prank(next);
-        d.hook.notifyPoolCreated(meme, 42, 100);
+        d.hook.notifyPoolCreated(meme, 100);
 
-        assertEq(d.hook.poolTimestamps(meme), 42);
+        assertEq(d.hook.memeFeeBips(meme), 100);
     }
 
-    function testFuzz_NotifyPoolCreated_NotController_Revert(address caller, uint256 timestamp)
+    function testFuzz_NotifyPoolCreated_NotController_Revert(address caller, uint256 feeBips)
         external
     {
         DeployGemoon.Deployment memory d = _deploy(owner);
         vm.assume(caller != address(d.controller));
-        // The ProxyAdmin is denied the fallback by the transparent proxy itself.
-        vm.assume(caller != Upgrades.getAdminAddress(address(d.hook)));
         address meme = makeAddr("meme");
+        _initPool(d.hook, meme);
 
         vm.prank(caller);
         vm.expectRevert(IHookManager.NotController.selector);
-        d.hook.notifyPoolCreated(meme, timestamp, 100);
+        d.hook.notifyPoolCreated(meme, feeBips);
 
-        assertEq(d.hook.poolTimestamps(meme), 0);
+        assertEq(d.hook.memeFeeBips(meme), 0);
     }
 
     function test_SetController_ByOwner_UpdatesAndEmits() external {
@@ -379,7 +496,7 @@ contract DeployGemoonTest is Test {
         // The old controller loses access right away.
         vm.prank(address(d.controller));
         vm.expectRevert(IHookManager.NotController.selector);
-        d.hook.notifyPoolCreated(makeAddr("meme"), 1, 100);
+        d.hook.notifyPoolCreated(makeAddr("meme"), 100);
     }
 
     function test_SetController_NotOwner_Revert() external {

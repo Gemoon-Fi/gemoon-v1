@@ -138,6 +138,10 @@ contract Vault is
     /// by `setAssetAllowed`. A proxy upgraded from a version without it starts empty; re-calling
     /// `setAssetAllowed(asset, true)` for the already allowed assets fills it.
     EnumerableSet.AddressSet private s_allowedAssetList;
+    /// @dev Every hook ever set by `setHook`, the current one included. A hook is not upgradeable:
+    /// a new one only serves new Memes, the pools of older Memes keep paying fees through theirs.
+    /// A proxy upgraded from a version without it starts empty: `onlyHook` also accepts `s_hook`.
+    mapping(address hook => bool) private s_isHook;
 
     // ---------------------------------------------------------------------------------------------
     // Modifiers
@@ -149,7 +153,7 @@ contract Vault is
     }
 
     modifier onlyHook() {
-        if (msg.sender != s_hook) revert NotHook();
+        if (!isHook(msg.sender)) revert NotHook();
         _;
     }
 
@@ -477,6 +481,10 @@ contract Vault is
     /// @inheritdoc IVault
     function setHook(address hook_) external onlyOwner {
         if (hook_ == address(0)) revert ZeroAddress();
+        // The previous hook keeps paying the fees of the Memes whose pools use it.
+        address previous = s_hook;
+        if (previous != address(0)) s_isHook[previous] = true;
+        s_isHook[hook_] = true;
         s_hook = hook_;
         emit HookUpdated(hook_);
     }
@@ -543,6 +551,11 @@ contract Vault is
     /// @inheritdoc IVault
     function hook() external view returns (address) {
         return s_hook;
+    }
+
+    /// @inheritdoc IVault
+    function isHook(address account) public view returns (bool) {
+        return account == s_hook || s_isHook[account];
     }
 
     /// @inheritdoc IVault

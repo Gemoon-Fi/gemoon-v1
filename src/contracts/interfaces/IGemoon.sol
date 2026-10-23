@@ -119,4 +119,8 @@ interface IGemoonController {
         address oldAdmin,
         address newAdmin
     ) external;
+
+    /// @notice Hook the pool of `meme` was created with, zero if not recorded (Meme deployed by
+    ///         an older controller version). Fixed per Meme, whatever `hook()` is later set to.
+    function hookOf(address meme) external view returns (address);
 }

@@ -182,7 +182,8 @@ interface IGemoonLens {
     /// @return swapAdapter         Current `vault.swapAdapter()`, zero if not set.
     /// @return conversionThreshold `vault.conversionThreshold()`.
     /// @return conversionCooldown  `vault.CONVERSION_COOLDOWN()`.
-    /// @return hook                HookManager the Lens builds pool keys with.
+    /// @return hook                Fallback HookManager, used for Memes without `controller.hookOf`;
+    ///                             every other Meme is read through its own hook.
     /// @return poolManager         Uniswap V4 PoolManager the Lens reads prices from.
     function protocol()
         external

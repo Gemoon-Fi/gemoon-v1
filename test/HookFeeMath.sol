@@ -5,12 +5,14 @@ import "forge-std/Test.sol";
 import {DeployGemoon, GemoonDeployBase} from "../script/GemoonDeploy.sol";
 import {HookManager} from "../src/contracts/hooks/HookManager.sol";
 import {IHookManager} from "../src/contracts/interfaces/IHookManager.sol";
+import {PoolKey} from "@uniswap/v4-core/src/types/PoolKey.sol";
+import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
+import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 
 /// @notice Fee curve of the hook: 80% at pool creation, linear down to the fee the creator chose
 /// over `DYNAMIC_FEE_THRESHOLD`, that fee afterwards. Creator fee bounds. Protocol share bounds.
 /// @dev The hook can't be deployed with a plain `new`: BaseHook checks that the address carries
-/// the permission bits, and the implementation disables initializers. `deployHook` mines a
-/// CREATE2 salt for both the implementation and the proxy and initializes the proxy.
+/// the permission bits. `deployHook` mines a CREATE2 salt and passes the config to the constructor.
 /// Nothing here calls the PoolManager, so its address is a dummy.
 contract HookFeeMathTest is Test {
     uint256 constant FALLBACK_FEE = 125;
@@ -30,7 +32,6 @@ contract HookFeeMathTest is Test {
             address(script),
             GemoonDeployBase.HookDeployParams({
                 owner: makeAddr("owner"),
-                proxyAdminOwner: makeAddr("proxyAdminOwner"),
                 poolManager: makeAddr("poolManager"),
                 pairToken: makeAddr("usdg"),
                 protocolRecipient: makeAddr("protocolRecipient"),
@@ -42,10 +43,21 @@ contract HookFeeMathTest is Test {
         );
         window = hook.DYNAMIC_FEE_THRESHOLD();
 
-        // The hook only accepts a creation time up to the current block.
+        // The hook records the window start itself when the pool is initialized; the
+        // controller sets the fee in the same block.
         vm.warp(CREATED_AT);
+        _initPool(meme);
         vm.prank(controller);
-        hook.notifyPoolCreated(meme, CREATED_AT, MEME_FEE);
+        hook.notifyPoolCreated(meme, MEME_FEE);
+    }
+
+    /// @dev What the PoolManager does on `initialize`.
+    function _initPool(address meme_) internal {
+        PoolKey memory key = PoolKey(
+            Currency.wrap(meme_), hook.pairToken(), 0, 60, IHooks(address(hook))
+        );
+        vm.prank(address(hook.poolManager()));
+        hook.afterInitialize(controller, key, 0, 0);
     }
 
     function _expected(uint256 elapsed) internal view returns (uint256) {
@@ -134,41 +146,46 @@ contract HookFeeMathTest is Test {
 
     function test_NotifyPoolCreated_StoresMemeFeeAndEmits() external {
         address other = makeAddr("other");
+        _initPool(other);
         vm.expectEmit(address(hook));
         emit IHookManager.MemeFeeConfigured(other, 300, CREATED_AT);
         vm.prank(controller);
-        hook.notifyPoolCreated(other, CREATED_AT, 300);
+        hook.notifyPoolCreated(other, 300);
 
         assertEq(hook.memeFeeBips(other), 300);
         assertEq(hook.baseFeeBips(other), 300);
     }
 
     function test_NotifyPoolCreated_FeeBelowOnePercent_Revert() external {
+        _initPool(makeAddr("other"));
         vm.prank(controller);
         vm.expectRevert(abi.encodeWithSelector(IHookManager.InvalidMemeFeeBips.selector, 99));
-        hook.notifyPoolCreated(makeAddr("other"), CREATED_AT, 99);
+        hook.notifyPoolCreated(makeAddr("other"), 99);
     }
 
     function test_NotifyPoolCreated_FeeAboveTenPercent_Revert() external {
+        _initPool(makeAddr("other"));
         vm.prank(controller);
         vm.expectRevert(abi.encodeWithSelector(IHookManager.InvalidMemeFeeBips.selector, 1_001));
-        hook.notifyPoolCreated(makeAddr("other"), CREATED_AT, 1_001);
+        hook.notifyPoolCreated(makeAddr("other"), 1_001);
     }
 
     function testFuzz_NotifyPoolCreated_FeeInBounds_BecomesBaseFee(uint256 feeBips) external {
         feeBips = bound(feeBips, 100, 1_000);
         address other = makeAddr("other");
+        _initPool(other);
         vm.prank(controller);
-        hook.notifyPoolCreated(other, CREATED_AT, feeBips);
+        hook.notifyPoolCreated(other, feeBips);
 
         assertEq(hook.feeBipsAt(other, CREATED_AT + window), feeBips);
     }
 
     function testFuzz_NotifyPoolCreated_FeeOutOfBounds_Revert(uint256 feeBips) external {
         vm.assume(feeBips < 100 || feeBips > 1_000);
+        _initPool(makeAddr("other"));
         vm.prank(controller);
         vm.expectRevert(abi.encodeWithSelector(IHookManager.InvalidMemeFeeBips.selector, feeBips));
-        hook.notifyPoolCreated(makeAddr("other"), CREATED_AT, feeBips);
+        hook.notifyPoolCreated(makeAddr("other"), feeBips);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -187,7 +204,6 @@ contract HookFeeMathTest is Test {
             address(script),
             GemoonDeployBase.HookDeployParams({
                 owner: makeAddr("owner"),
-                proxyAdminOwner: makeAddr("proxyAdminOwner"),
                 poolManager: makeAddr("poolManager"),
                 pairToken: makeAddr("usdg"),
                 protocolRecipient: makeAddr("protocolRecipient"),
@@ -199,18 +215,18 @@ contract HookFeeMathTest is Test {
         );
     }
 
-    function test_Initialize_ProtocolShare_StoredInBipsOfFee() external view {
+    function test_Constructor_ProtocolShare_StoredInBipsOfFee() external view {
         assertEq(hook.PROTOCOL_SHARE_BIPS(), 3_333);
     }
 
-    function test_Initialize_ProtocolShareAboveHundredPercent_Revert() external {
+    function test_Constructor_ProtocolShareAboveHundredPercent_Revert() external {
         DeployGemoon script = new DeployGemoon();
         vm.expectRevert(IHookManager.InvalidFeeBips.selector);
         _deployHookWithShare(script, 10_001);
     }
 
     /// @dev Any share from 0 to 100% of the fee is accepted, whatever the fallback fee.
-    function testFuzz_Initialize_ProtocolShareUpToHundredPercent_Accepted(uint256 share)
+    function testFuzz_Constructor_ProtocolShareUpToHundredPercent_Accepted(uint256 share)
         external
     {
         share = bound(share, 0, 10_000);

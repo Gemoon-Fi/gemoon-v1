@@ -59,10 +59,14 @@ PositionManager, хук не пускает пулы незарегистрир�
    пользователем, иначе в `afterSwap`. Базовую ставку от 1% до 10% выбирает создатель в
    `rewardsConfig.swapFeeBips`. Первые `DYNAMIC_FEE_THRESHOLD` секунд (30) после создания пула
    ставка выше: 80% в момент создания и линейно вниз до базовой (`feeBipsAt`). Исключение —
-   свопы самого контроллера, то есть dev buy: для них всегда базовая ставка. Время создания и
-   ставку хук получает от контроллера через `notifyPoolCreated`, ровно один раз на мем и со
-   временем не позже текущего блока (`PoolAlreadyNotified`, `InvalidPoolTimestamp`): окно 80%
-   нельзя перезапустить или сдвинуть в будущее, даже сменив контроллер через `setController`. Протокол из любой комиссии
+   свопы самого контроллера, то есть dev buy: для них всегда базовая ставка. Время создания
+   хук записывает сам в `afterInitialize` первого пула мема, созданного контроллером
+   (`poolTimestamps`, событие `PoolTimestampRecorded`); пулы, созданные кем-то другим, и
+   следующие пулы того же мема его не трогают. Ставку хук получает от
+   контроллера через `notifyPoolCreated(meme, feeBips)` — один раз на мем
+   (`PoolAlreadyNotified`) и только в блоке создания пула (`PoolNotCreatedInThisBlock`). Поэтому
+   ни контроллер, ни владелец хука (через `setController`) не могут включить 80% на уже
+   торгующемся пуле, перезапустить или сдвинуть окно. Протокол из любой комиссии
    получает `PROTOCOL_SHARE_BIPS` (3333 bips, треть) самой комиссии, включая надбавку окна, волт
    остальное: при ставке 3% это ~1% и ~2% от сделки, при 10% — ~3.33% и ~6.67%. Округление вниз в
    пользу волта; 3333 bips меньше точной трети на 0.01% комиссии, эта разница тоже идёт волту. Комиссия копится в хуке как ERC6909-клеймы, отдельно по каждому мему.
@@ -179,7 +183,16 @@ PositionManager, хук не пускает пулы незарегистрир�
   рефералам на паузу, выводит протокольную часть и спасает чужие токены (`rescueERC20`, кроме
   pair-токена).
 - **Апгрейды.** Каждый прокси обновляется через свой ProxyAdmin скриптами `ProxyVaultUpgrade`,
-  `ProxyHookUpgrade`, `ProxyGemoonControllerUpgrade`, `ProxyReferralsUpgrade`. `VerifyWiring`
+  `ProxyGemoonControllerUpgrade`, `ProxyReferralsUpgrade`. **HookManager не обновляемый:** у него
+  нет прокси и ProxyAdmin, код и комиссии (`TOTAL_FEE_BIPS`, `PROTOCOL_SHARE_BIPS`, `MAX_FEE_BIPS`,
+  границы ставки мема) зафиксированы при деплое. Владелец хука может только перенаправить
+  получателей (`setVault`, `setProtocolRecipient`) и сменить контроллер (`setController`), поднять
+  комиссию живого пула не может никто. Новая версия хука — новый контракт по новому адресу: пулы
+  уже созданных мемов остаются на старом хуке, к новому переходят только новые мемы. Смена хука:
+  задеплоить новый (`deployHook`), затем `Vault.setHook`, `Referrals.setHook`, `Controller.setHook`.
+  Волт и рефералы продолжают принимать комиссии от всех хуков, назначенных раньше (`isHook`),
+  контроллер запоминает хук каждого мема (`hookOf`), GemoonLens читает каждый мем через его хук.
+  Отозвать старый хук нельзя: иначе комиссии его мемов застряли бы. `VerifyWiring`
   проверяет, что связка цела (рефералы — если задан `REFERRALS_PROXY_ADDRESS`).
 
 ### GemoonLens: батч-чтения для фронтенда
@@ -245,7 +258,7 @@ hooks = HookManager}`, `poolId = keccak256(abi.encode(key))`, цена из slot
 это в Lens нельзя. Полный отчёт `forge test --gas-report`: `docs/gemoon-lens-gas-report.txt`.
 
 **Деплой.** `make deploy-lens` (`script/DeployLens.s.sol`): берёт `CONTROLLER_PROXY_ADDRESS`,
-`VAULT_PROXY_ADDRESS`, `HOOK_PROXY_ADDRESS`, `POOL_MANAGER` и `LENS_SALT` (по умолчанию 0) из
+`VAULT_PROXY_ADDRESS`, `HOOK_ADDRESS`, `POOL_MANAGER` и `LENS_SALT` (по умолчанию 0) из
 `env/<ENVIRONMENT>.mk`, проверяет, что контроллер, волт, хук и PoolManager указывают друг на друга, и деплоит через
 CREATE2-фабрику `0x4e59b44847b379578588920cA78FbF26c0B4956C`. Адрес зависит только от соли,
 аргументов и байткода, поэтому после сброса форка та же команда поднимает Lens по тому же адресу,
@@ -267,8 +280,8 @@ Devnet (chain 1488): `0xf5e9342Ffe373D9a3B4a986870cbC6E66dDCbF15`, блок 8435
 | Tick spacing | 200 | `TICK_SPACING`, `IGemoon.sol` |
 | LP fee пула | 0, комиссию берёт хук | `Gemoon.sol` |
 | Комиссия мема | 1%..10%, выбирает создатель в `deployToken` | `MIN_MEME_FEE_BIPS`, `MAX_MEME_FEE_BIPS`, `HookManager.sol` |
-| Доля протокола | треть (3333 bips) от каждой комиссии (включая анти-снайп надбавку), остальное волту; задаётся при инициализации, не больше 100% | `PROTOCOL_SHARE_BIPS`, `HookManager.initialize` |
-| Резервная комиссия | 1.25% для мемов, о которых контроллер не сообщил | `TOTAL_FEE_BIPS`, `HookManager.initialize` |
+| Доля протокола | треть (3333 bips) от каждой комиссии (включая анти-снайп надбавку), остальное волту; задаётся в конструкторе и не меняется, не больше 100% | `PROTOCOL_SHARE_BIPS`, конструктор `HookManager` |
+| Резервная комиссия | 1.25% для мемов, о которых контроллер не сообщил; задаётся в конструкторе и не меняется | `TOTAL_FEE_BIPS`, конструктор `HookManager` |
 | Анти-снайп комиссия | 80% в момент создания пула, линейно до базовой за 30 секунд; dev buy платит базовую | `MAX_FEE_BIPS`, `DYNAMIC_FEE_THRESHOLD`, `HookManager.sol` |
 | Dev buy | до 80% эмиссии, exact output, в транзакции `deployToken` | `MAX_DEV_BUY_BIPS`, `MAX_DEV_BUY_X18`, `IGemoon.sol` |
 | Доля создателя | 0..100% от каждой комиссии волта, выбирает создатель в `deployToken`, после регистрации не меняется | `VaultInfo.creatorShareBps`, `creatorShareBpsOf`, `Vault.sol` |
@@ -317,11 +330,10 @@ ENVIRONMENT=dev ./deploy.sh [--simulate] [--no-lens]  # полный депло�
 make deploy-gemoon            # то же без записи адресов и Lens: Vault, Controller, Referrals, Hook, Adapter, активы, владение
 make verify-wiring            # read-only проверка, что контракты указывают друг на друга
 make upgrade-vault-proxy      # новая имплементация волта
-make upgrade-hook-proxy       # новая имплементация хука, адрес майнится под биты разрешений
 make upgrade-controller-proxy # новая имплементация контроллера
 make deploy-vault             # отдельный волт, если нужно заменить существующий
 make deploy-swap-adapter      # UniswapV3SwapAdapter для существующего волта
-make deploy-referrals         # GmoonReferrals за прокси (USDG_ADDRESS, CONTROLLER/HOOK_PROXY_ADDRESS)
+make deploy-referrals         # GmoonReferrals за прокси (USDG_ADDRESS, CONTROLLER_PROXY_ADDRESS, HOOK_ADDRESS)
 make wire-referrals           # controller.setReferrals + hook.setProtocolRecipient(referrals) + проверка
 make upgrade-referrals-proxy  # новая имплементация рефералов
 make set-protocol-recipient [RECIPIENT=0x..] [DRY_RUN=1]  # получатель протокольной доли в хуке, по умолчанию рефералы
@@ -337,15 +349,15 @@ make deploy-lens              # GemoonLens через CREATE2, повторяе�
 `REFERRALS_PROXY_ADDRESS` → `wire-referrals` от владельца контроллера и хука. С этого момента
 протокольная доля идёт в рефералы вместо прежнего `PROTOCOL_FEE_RECIPIENT`; накопленное в хуке до
 переключения тоже уйдёт туда при следующей выплате. Контроллер нужно предварительно обновить
-(`upgrade-controller-proxy`, `GEMOON_VERSION` = 2), хук — тоже (`upgrade-hook-proxy`), иначе хук
-не уведомляет получателя.
+(`upgrade-controller-proxy`, `GEMOON_VERSION` = 2). Хук старше версии, уведомляющей получателя,
+не обновить: нужен новый хук (новые мемы), иначе он не уведомляет получателя.
 
 После деплоя `GEMOON_OWNER`, если он не деплоер, зовёт `acceptOwnership` у Vault, GmoonReferrals
 и UniswapV3SwapAdapter. Хук и контроллер принадлежат ему сразу. Отчёт деплоя
 (`deploy-logs/deploy-<время>-report.md`) перечисляет адреса, назначение контрактов, связку,
 владельцев, результат по каждому активу и оставшиеся шаги. Подробно — `docs/DEPLOY.md`.
 
-Хук деплоится через CREATE2: и имплементация, и прокси должны нести биты разрешений в адресе.
+Хук деплоится через CREATE2 без прокси: адрес контракта должен нести биты разрешений.
 Скрипт сам подбирает соль и проверяет результат. В сети должен существовать детерминированный
 CREATE2-деплоер `0x4e59b44847b379578588920cA78FbF26c0B4956C`.
 
@@ -405,23 +417,19 @@ forge test          # всё вместе; форк-тесты запустят�
   нет. Забрать ликвидность можно только апгрейдом.
 - **`ProxyGemoonControllerUpgrade` зовёт `reinitialize`** под `reinitializer(GEMOON_VERSION)`, а
   версия равна 1, которую уже занял `initialize`. Апгрейд с вызовом упадёт, пока версия не
-  поднята. Апгрейд хука и волта пропускает вызов, если версия не изменилась.
+  поднята. Апгрейд волта пропускает вызов, если версия не изменилась.
 - **`ProxyGemoonControllerUpgrade` берёт pair-токен из `USDG_ADDRESS`** и до отправки сверяет его
   с `pairToken()` текущего хука: `reinitialize` перезаписывает pair-токен контроллера.
-- **`HookManager.initialize`/`reinitialize` изменили ABI в 2.0:** добавлен параметр
-  `controller_` после `vault_`. `ProxyHookUpgrade` читает `controller()` с прокси до апгрейда,
-  поэтому апгрейд хука, задеплоенного до 2.0, с поднятой версией упадёт: у старой имплементации
-  нет `controller()`.
+- **HookManager больше не за прокси (версия 2):** `initialize`/`reinitialize`, `ProxyHookUpgrade`,
+  `make upgrade-hook-proxy` и `HOOK_PROXY_ADMIN_ADDRESS` удалены, `HOOK_PROXY_ADDRESS` переименован в
+  `HOOK_ADDRESS`. Хуки, развёрнутые раньше, остаются прокси: их пулы привязаны к адресу прокси.
+  Чтобы и они стали неизменяемыми, владелец ProxyAdmin старого хука может отказаться от владения
+  (`renounceOwnership`) — это необратимо.
 - **`deployToken` изменил ABI в 2.0:** параметр имени стратегии убран, в `DeployConfig` добавлено
   поле `devBuy`, интеграции нужно обновить.
 - **Контроллер освобождён от анти-снайп комиссии** по `sender == controller` в хуке. Это
   безопасно, пока контроллер свопает только в dev buy; любая новая функция контроллера со свопом
   тоже получит базовую ставку.
-- **`PROTOCOL_FEE_BIPS` заменён на `PROTOCOL_SHARE_BIPS`** в том же слоте storage, но смысл другой:
-  раньше bips от сделки, теперь bips от комиссии. Прокси хука, развёрнутый до изменения, хранит
-  старое значение (25 или 50), которое после апгрейда значило бы 0.25–0.5% комиссии. Такой хук
-  нужно реинициализировать с новой долей (поднять версию) или передеплоить. `upgradeHook` читает
-  долю через `PROTOCOL_SHARE_BIPS()` со старой имплементации и на ней упадёт.
 - **`Vault.allowedAssets()` добавлен апгрейдом storage** (`s_allowedAssetList` в конце layout).
   У прокси волта, развёрнутого раньше, список после апгрейда пуст, хотя `isAssetAllowed` верен.
   Владелец заполняет его повторным `setAssetAllowed(asset, true)` по каждому уже разрешённому

@@ -156,7 +156,7 @@ contract ControllerDeployTokenTest is Test {
             currency1: Currency.wrap(token1),
             fee: 0,
             tickSpacing: TICK_SPACING,
-            hooks: IHooks(address(hook))
+            hooks: IHooks(controller.hookOf(token))
         });
     }
 
@@ -392,6 +392,71 @@ contract ControllerDeployTokenTest is Test {
         assertEq(usdg.balanceOf(protocolRecipient), toProtocol, "protocol share");
         assertEq(usdg.balanceOf(address(vault)), fee - toProtocol, "vault share");
         assertEq(vault.accounted(address(usdg)), fee - toProtocol, "vault accounted");
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Hook replacement: the hook is not upgradeable, a new one serves new Memes only
+    // ---------------------------------------------------------------------------------------------
+
+    function test_DeployToken_RecordsHookOf() external {
+        (address token,) = _deployMeme();
+        assertEq(controller.hookOf(token), address(hook));
+        assertEq(controller.hookOf(makeAddr("unknown")), address(0));
+    }
+
+    /// @dev A second, non-upgradeable hook wired to the same vault and controller.
+    function _deploySecondHook() internal returns (HookManager next) {
+        next = script.deployHook(
+            address(script),
+            GemoonDeployBase.HookDeployParams({
+                owner: address(script),
+                poolManager: address(poolManager),
+                pairToken: address(usdg),
+                protocolRecipient: protocolRecipient,
+                vault: address(vault),
+                controller: address(controller),
+                feeBips: 125,
+                protocolShareBips: PROTOCOL_SHARE
+            })
+        );
+        vm.startPrank(address(script));
+        vault.setHook(address(next));
+        controller.setHook(address(next));
+        vm.stopPrank();
+    }
+
+    /// @dev After the hook is replaced the old Meme keeps its pool and hook, and its fees still
+    /// reach the protocol and the vault; the new Meme gets a pool with the new hook.
+    function test_SetHook_NewHook_OldMemeKeepsHookAndPaysOut() external {
+        (address oldMeme,) = _deployMeme();
+        HookManager next = _deploySecondHook();
+        (address newMeme,) = _deployMeme();
+
+        assertEq(controller.hookOf(oldMeme), address(hook), "old meme keeps its hook");
+        assertEq(controller.hookOf(newMeme), address(next), "new meme on the new hook");
+        assertEq(controller.hook(), address(next));
+
+        uint256 first = 1_000 * PAIR_UNIT;
+        uint256 second = 400 * PAIR_UNIT;
+        _buyMeme(oldMeme, first);
+        _buyMeme(oldMeme, second);
+        uint256 fee = _fee(first) + _fee(second);
+        uint256 toProtocol = _protocol(_fee(first)) + _protocol(_fee(second));
+        assertEq(hook.pendingFees(oldMeme), 0, "old hook paid out");
+        assertEq(usdg.balanceOf(address(vault)), fee - toProtocol, "vault got the old meme fee");
+
+        uint256 vaultBefore = usdg.balanceOf(address(vault));
+        uint256 protocolBefore = usdg.balanceOf(protocolRecipient);
+        _buyMeme(newMeme, first);
+        // Charged by the new hook: paid out or still accrued there, nothing lost.
+        assertEq(
+            next.pendingFees(newMeme) + usdg.balanceOf(address(vault)) - vaultBefore
+                + usdg.balanceOf(protocolRecipient) - protocolBefore,
+            _fee(first),
+            "new hook charged the new meme"
+        );
+        assertEq(next.memeFeeBips(newMeme), 125, "new hook has the fee of the new meme");
+        assertEq(hook.memeFeeBips(newMeme), 0, "old hook knows nothing of it");
     }
 
     function test_Distribute_AfterFirstBuy_PaysAccruedFee() external {

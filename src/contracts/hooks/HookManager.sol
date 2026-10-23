@@ -19,12 +19,8 @@ import {
     toBeforeSwapDelta
 } from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
-import {
-    Initializable
-} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import {
-    Ownable2StepUpgradeable
-} from "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {IVault} from "../interfaces/IVault.sol";
 import {IProtocolFeeReceiver} from "../interfaces/IReferrals.sol";
 import {IHookManager} from "../interfaces/IHookManager.sol";
@@ -40,8 +36,12 @@ import {SignedMath} from "@openzeppelin/contracts/utils/math/SignedMath.sol";
 ///         Anti-snipe: the fee starts at `MAX_FEE_BIPS` (80%) when the pool is created and falls
 ///         linearly to the base fee over `DYNAMIC_FEE_THRESHOLD`. Swaps of the controller (the
 ///         dev buy inside `deployToken`) always pay the base fee.
-/// @dev Deployed behind a TransparentUpgradeableProxy. Both the proxy and every implementation
-/// must be CREATE2-mined to carry the bit pattern of `getHookPermissions`.
+/// @dev Not upgradeable: no proxy, the code and the fee parameters (`TOTAL_FEE_BIPS`,
+/// `PROTOCOL_SHARE_BIPS`, `MAX_FEE_BIPS`, the meme fee bounds) are fixed at deployment. The
+/// address is CREATE2-mined to carry the bit pattern of `getHookPermissions`. A new version is a
+/// new hook at a new address: pools of existing Memes stay on the hook they were created with.
+/// The owner can only re-point the fee recipients and the controller (`setVault`,
+/// `setProtocolRecipient`, `setController`); it cannot change any fee.
 ///
 /// Fee flow:
 ///  - pools: only Meme/pairToken pools with LP fee 0 whose Meme has a registered vault.
@@ -54,13 +54,7 @@ import {SignedMath} from "@openzeppelin/contracts/utils/math/SignedMath.sol";
 ///    an EOA is not; the vault is always notified (`IVault.notifyFees`). The swapper pays the gas. The payout runs inside try/catch: if it
 ///    fails, the swap still succeeds and the fee stays accrued until the next successful payout.
 ///  - `distribute(meme)`: manual fallback that pays out whatever is accrued for `meme`.
-contract HookManager is
-    IHookManager,
-    BaseHook,
-    IUnlockCallback,
-    Initializable,
-    Ownable2StepUpgradeable
-{
+contract HookManager is IHookManager, BaseHook, IUnlockCallback, Ownable2Step {
     using SafeCast for uint256;
     using PoolIdLibrary for PoolKey;
     using SignedMath for int256;
@@ -71,15 +65,15 @@ contract HookManager is
     // Constants / immutables
     // ---------------------------------------------------------------------------------------------
 
-    uint64 public constant HOOK_MANAGER_VERSION = 1;
+    uint64 public constant HOOK_MANAGER_VERSION = 2;
 
     uint256 public constant BIPS = 10_000;
     /// @notice Fallback base fee for a Meme the controller never reported, see `baseFeeBips`.
-    uint256 public TOTAL_FEE_BIPS = 125; // 1.25%
+    ///         Fixed at deployment (1.25% in production).
+    uint256 public immutable TOTAL_FEE_BIPS;
     /// @notice Protocol share of every fee, in bips of the fee. The vault gets the rest.
-    /// @dev Same storage slot as the former `PROTOCOL_FEE_BIPS` (bips of the swap): a proxy
-    /// upgraded from it must be re-initialized with a share.
-    uint256 public PROTOCOL_SHARE_BIPS = 3_333; // a third, 33.33%
+    ///         Fixed at deployment (3 333, a third, in production).
+    uint256 public immutable PROTOCOL_SHARE_BIPS;
     /// @notice Time after pool creation during which the fee falls from `MAX_FEE_BIPS` to
     ///         `baseFeeBips`.
     uint256 public constant DYNAMIC_FEE_THRESHOLD = 30 seconds;
@@ -103,7 +97,7 @@ contract HookManager is
     Currency private immutable i_pairToken;
 
     // ---------------------------------------------------------------------------------------------
-    // Storage (proxy). Append-only across upgrades.
+    // Storage
     // ---------------------------------------------------------------------------------------------
 
     address public protocolRecipient;
@@ -111,6 +105,8 @@ contract HookManager is
     /// @notice Fees charged and not yet paid out, per Meme, in `i_pairToken`.
     /// @dev Sum over all memes equals the ERC6909 claims of this hook.
     mapping(address meme => uint256) public accrued;
+    /// @notice Initialization time of the first pool of a Meme, set by the hook itself; zero if
+    ///         no pool of it was initialized.
     mapping(address meme => uint256) public poolTimestamps;
     /// @notice GemoonController, the only caller allowed into `onlyController` functions.
     address public controller;
@@ -133,76 +129,40 @@ contract HookManager is
     // Construction / initialization
     // ---------------------------------------------------------------------------------------------
 
+    /// @param poolManager_       Uniswap V4 PoolManager.
+    /// @param pairToken_         Token every pool is paired with and fees are charged in.
+    /// @param owner_             Owner: may re-point vault, protocol recipient and controller.
+    /// @param protocolRecipient_ Receives the protocol part of every fee.
+    /// @param vault_             Receives the rest of every fee; must know Memes before their pools.
+    /// @param controller_        GemoonController, the only caller of `notifyPoolCreated`.
+    /// @param feeBips            `TOTAL_FEE_BIPS`, at most `MAX_FEE_BIPS`.
+    /// @param protocolShareBips  `PROTOCOL_SHARE_BIPS`, at most `BIPS`.
     constructor(
         IPoolManager poolManager_,
-        Currency pairToken_
-    ) BaseHook(poolManager_) {
+        Currency pairToken_,
+        address owner_,
+        address protocolRecipient_,
+        address vault_,
+        address controller_,
+        uint256 feeBips,
+        uint256 protocolShareBips
+    ) BaseHook(poolManager_) Ownable(owner_) {
         if (address(poolManager_) == address(0)) revert ZeroAddress();
-        i_pairToken = pairToken_;
-        _disableInitializers();
-    }
-
-    function getVersion() public pure returns (uint64) {
-        return HOOK_MANAGER_VERSION;
-    }
-
-    function initialize(
-        address owner_,
-        address protocolRecipient_,
-        address vault_,
-        address controller_,
-        uint256 feeBips,
-        uint256 protocolShareBips
-    ) public initializer {
-        _init(
-            owner_,
-            protocolRecipient_,
-            vault_,
-            controller_,
-            feeBips,
-            protocolShareBips
-        );
-    }
-
-    function reinitialize(
-        address owner_,
-        address protocolRecipient_,
-        address vault_,
-        address controller_,
-        uint256 feeBips,
-        uint256 protocolShareBips
-    ) external reinitializer(getVersion()) {
-        _init(
-            owner_,
-            protocolRecipient_,
-            vault_,
-            controller_,
-            feeBips,
-            protocolShareBips
-        );
-    }
-
-    function _init(
-        address owner_,
-        address protocolRecipient_,
-        address vault_,
-        address controller_,
-        uint256 feeBips,
-        uint256 protocolShareBips
-    ) internal {
-        if (owner_ == address(0)) revert ZeroAddress();
         if (feeBips > MAX_FEE_BIPS || protocolShareBips > BIPS)
             revert InvalidFeeBips();
 
+        i_pairToken = pairToken_;
         TOTAL_FEE_BIPS = feeBips;
         PROTOCOL_SHARE_BIPS = protocolShareBips;
-
-        __Ownable_init(owner_);
-        __Ownable2Step_init();
 
         _setProtocolRecipient(protocolRecipient_);
         _setVault(vault_);
         _setController(controller_);
+    }
+
+    /// @notice Version of this hook contract. Informational only: the hook is not upgradeable.
+    function getVersion() public pure returns (uint64) {
+        return HOOK_MANAGER_VERSION;
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -289,12 +249,22 @@ contract HookManager is
         return IHooks.beforeInitialize.selector;
     }
 
+    /// @dev Starts the anti-snipe window of the Meme at the moment the controller initializes its
+    /// first pool (inside `deployToken`). The hook takes the time itself, so no role can choose
+    /// it. Pools initialized by anyone else, and later pools of the same Meme (another tick
+    /// spacing), do not start or move it: otherwise a second pool of a live Meme that has no
+    /// window yet (deployed before the anti-snipe) would put it under the 80% fee.
     function _afterInitialize(
-        address,
-        PoolKey calldata,
+        address sender,
+        PoolKey calldata poolKey,
         uint160,
         int24
-    ) internal pure override returns (bytes4) {
+    ) internal override returns (bytes4) {
+        address meme = _meme(poolKey);
+        if (sender == controller && poolTimestamps[meme] == 0) {
+            poolTimestamps[meme] = block.timestamp;
+            emit PoolTimestampRecorded(meme, block.timestamp);
+        }
         return IHooks.afterInitialize.selector;
     }
 
@@ -531,27 +501,25 @@ contract HookManager is
 
     // ---- Utils ----
 
-    /// @notice Records when the pool of `meme` was created and the fee its creator chose.
-    /// @dev Only controller, once per Meme: the anti-snipe ramp starts at `timestamp` and cannot be
-    /// restarted or moved, and the base fee cannot be changed afterwards, whoever holds the
-    /// controller role. Reverts unless `feeBips` is within `MIN_MEME_FEE_BIPS..MAX_MEME_FEE_BIPS`
-    /// and `0 < timestamp <= block.timestamp`.
-    /// @param meme      Meme whose pool was created.
-    /// @param timestamp Creation time of the pool.
-    /// @param feeBips   Base fee of the Meme in bips of the swap, protocol part included.
+    /// @notice Sets the base fee the creator of `meme` chose.
+    /// @dev Only controller, once per Meme, and only in the block in which the first pool of the
+    /// Meme was initialized: the anti-snipe window is recorded by the hook itself
+    /// (`_afterInitialize`), so the controller cannot start, restart or move it on a live pool,
+    /// and the base fee cannot be changed afterwards, whoever holds the controller role.
+    /// Reverts unless `feeBips` is within `MIN_MEME_FEE_BIPS..MAX_MEME_FEE_BIPS`.
+    /// @param meme    Meme whose pool was created in this block.
+    /// @param feeBips Base fee of the Meme in bips of the swap, protocol part included.
     function notifyPoolCreated(
         address meme,
-        uint256 timestamp,
         uint256 feeBips
     ) external onlyController {
-        if (poolTimestamps[meme] != 0) revert PoolAlreadyNotified(meme);
-        if (timestamp == 0 || timestamp > block.timestamp)
-            revert InvalidPoolTimestamp(timestamp);
+        if (memeFeeBips[meme] != 0) revert PoolAlreadyNotified(meme);
+        uint256 createdAt = poolTimestamps[meme];
+        if (createdAt != block.timestamp) revert PoolNotCreatedInThisBlock(meme, createdAt);
         if (feeBips < MIN_MEME_FEE_BIPS || feeBips > MAX_MEME_FEE_BIPS)
             revert InvalidMemeFeeBips(feeBips);
-        poolTimestamps[meme] = timestamp;
         memeFeeBips[meme] = feeBips;
-        emit MemeFeeConfigured(meme, feeBips, timestamp);
+        emit MemeFeeConfigured(meme, feeBips, createdAt);
     }
 
     /// @notice Fee of a swap in the pool of `meme` once the anti-snipe window is over, in bips.
@@ -565,8 +533,8 @@ contract HookManager is
 
     /// @notice Fee of a swap in the pool of `meme` at `timestamp`, in bips.
     /// @dev Linear from `MAX_FEE_BIPS` at pool creation down to `baseFeeBips` after
-    /// `DYNAMIC_FEE_THRESHOLD`. The decay rounds down, so the fee rounds up. A pool the controller
-    /// never reported (timestamp 0) pays the base fee; a timestamp at or before creation pays the
+    /// `DYNAMIC_FEE_THRESHOLD`. The decay rounds down, so the fee rounds up. A Meme without an
+    /// initialized pool (timestamp 0) pays the base fee; a timestamp at or before creation pays the
     /// max fee.
     /// @param meme      Meme of the pool.
     /// @param timestamp Time of the swap, normally `block.timestamp`.

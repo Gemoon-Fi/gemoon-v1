@@ -20,6 +20,8 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | `test_DeployToken_NoAllowanceLeftBehind` | Апрувы после минта позиции | После деплоя контроллер не оставляет апрувов | ERC20-апрув на Permit2 = 0, Permit2-апрув на PositionManager = 0 |
 | `test_DeployToken_EmitsPositionCreated` | Событие `PositionCreated` | Событие совпадает с реальной позицией | `token`, `positionId`, `liquidity` из события равны данным PositionManager |
 | `test_DeployToken_Twice_IndependentPositions` | Два мема подряд | Позиции независимы | Разные адреса токенов, id позиций подряд, обе у контроллера |
+| `test_DeployToken_RecordsHookOf` | Хук мема в контроллере | Контроллер помнит хук каждого мема | `hookOf(token)` = хук, у неизвестного адреса 0 |
+| `test_SetHook_NewHook_OldMemeKeepsHookAndPaysOut` | Новый хук в волте и контроллере, старый и новый мем | Старый мем остаётся на старом хуке и получает выплаты; новый мем — на новом хуке | `hookOf` старого = старый хук, нового = новый; после двух покупок старого мема его комиссия в волте; комиссия нового мема взята новым хуком |
 | `test_DeployToken_NotifiesHook_PoolTimestampIsBlockTimestamp` | Время создания пула в хуке | Окно анти-снайпа отсчитывается от блока деплоя | `poolTimestamps(token)` = `block.timestamp` деплоя |
 | `testFuzz_DeployToken_TwoMemes_EachKeepsOwnPoolTimestamp` (fuzz) | Два мема в разное время | Время создания хранится отдельно по мему | У каждого мема своё время создания |
 | `test_DeployToken_HookControllerIsOther_Revert` | Хук привязан к другому контроллеру | `notifyPoolCreated` только от контроллера | revert `NotController` |
@@ -123,7 +125,7 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
 | `test_DeployFull_Wiring_AllContractsPointAtEachOther` | Связка всех пяти контрактов | Каждый указывает на нужных соседей, рефералы — получатель протокольной доли | `checkWiring`, `checkReferralsWiring`, `checkAdapterWiring` проходят; `hook.protocolRecipient = referrals`, `vault.swapAdapter = adapter`, параметры адаптера и рефералов из params |
-| `test_DeployFull_Ownership_TwoStepPendingUntilAccepted` | Передача владения при `owner ≠ deployer` | Ownable2Step не отдаёт владение без accept; ProxyAdmin у `proxyAdminOwner` | Контроллер и хук сразу у owner; vault, referrals, adapter — pending до `acceptOwnership`, после — у owner; все 4 ProxyAdmin у `proxyAdminOwner` |
+| `test_DeployFull_Ownership_TwoStepPendingUntilAccepted` | Передача владения при `owner ≠ deployer` | Ownable2Step не отдаёт владение без accept; ProxyAdmin у `proxyAdminOwner` | Контроллер и хук сразу у owner; vault, referrals, adapter — pending до `acceptOwnership`, после — у owner; ProxyAdmin vault, controller, referrals у `proxyAdminOwner`; у хука ProxyAdmin нет |
 | `test_DeployFull_OwnerIsDeployer_NothingPending` | Владелец = деплоер | Нет лишних pending-передач | Все контракты у деплоера, `pendingOwner = 0` |
 | `test_DeployFull_RoutableAssets_AllowedAndRouted` | Активы с фабричным пулом и историей TWAP | Разрешён ⇔ есть маршрут на пул из файла | Статус `Routed`, актив в allowlist, маршрут: пул, fee 3000, допуск 100; allowlist = 2 |
 | `test_DeployFull_UnroutableAssets_SkippedWithReason` | Актив без кода, без пула, чужой пул, пул без истории, сам USDG | Неконвертируемый актив не попадает в allowlist | Статусы `NoCode`, `NoPool`, `NotFactoryPool`, `NoTwapHistory`, `PairToken`; маршрутов нет; разрешён только USDG |
@@ -181,6 +183,7 @@ End-to-end в процессе теста: настоящие PoolManager/Positi
 | `test_Tokens_IsRegisteredReverts_RegisteredOkFalse` | `vault.isRegistered` ревертит (mock) | L4 | `registeredOk = false`, `registered = false`, вызовы волта в `vault` и `position` пропущены |
 | `test_Tokens_StakerAccount_PositionMatchesVault` (2) | Аккаунт со стейком, сконвертированной наградой и кредитом открытой эпохи | L3 | `balance`, `staked`, `pendingCredit` > 0, `allowance` = 777, `earned` (> 0) совпадают с прямыми вызовами |
 | `test_Tokens_UnregisteredToken_VaultZeroNoRevert` (3) | Обычный ERC20 без волта | L1, L4 | `meta.ok`, `vault` нулевой кроме `registered = false` и `registeredOk = true` (волт ответил), `position.balance` из токена, поля волта в позиции 0 |
+| `test_Tokens_HookReplaced_EachMemeReadThroughItsHook` | Хук заменён, есть мем на старом и на новом хуке | Lens читает каждый мем через его хук (`controller.hookOf`) | `poolId` нового мема — ключ с новым хуком, цена > 0; старый мем — ключ со старым хуком |
 | `test_Tokens_PoolNotCreated_SqrtPriceZeroPoolIdComputed` (6) | Токен без пула | L4 | `sqrtPriceX96` = 0, `poolId` = id ключа `sort(USDG, token), 0, 200, hook` |
 | `test_Tokens_EoaInBatch_MetaNotOkOthersCorrect` (4) | EOA между двумя мемами | L1, L2 | У EOA `meta.ok = false`, нули, `poolId` посчитан; соседние элементы равны одиночным вызовам |
 | `test_Tokens_TokenWithoutCreatorOrDecimals_FlagsFalse` (5) | Токен без метаданных, `creator()` и `getSocialMedia()` | L4 | `decimalsOk`, `creatorOk`, `socialOk` = `false`, строки пустые, `burnedOk` = `true` (`balanceOf` есть), батч не падает |
@@ -245,7 +248,8 @@ End-to-end в процессе теста: настоящие PoolManager/Positi
 | `test_Initialize_ZeroControllerAndHook_LeftUnset` | Нулевые controller/hook | Их можно задать позже | оба 0 |
 | `test_SetRefShare_AboveBips_Reverts`, `test_SetRefShare_NotOwner_Reverts` | `setRefShare` | Граница и доступ | revert `InvalidRefShare` / `OwnableUnauthorizedAccount` |
 | `test_SetHook_Zero_Reverts`, `test_SetController_Zero_Reverts`, `test_SetHook_NotOwner_Reverts` | Сеттеры | Нельзя обнулить, только владелец | revert `ZeroAddress` / `OwnableUnauthorizedAccount` |
-| `test_SetHook_NewHook_OldHookRejected` | Смена хука | `notifyFee` только от текущего хука | старый хук получает revert `NotHook` |
+| `test_SetHook_NewHook_OldHookStillNotifies` | Смена хука | Хук не обновляемый: старые мемы платят через старый хук | `hook()` = новый, `isHook` для обоих, `notifyFee` от обоих зачислен (200 000 рефереру) |
+| `testFuzz_SetHook_AnySequence_OnlySetHooksNotify` (fuzz) | Любая последовательность из 3 хуков и посторонний адрес | `notifyFee` принимается от любого когда-либо назначенного хука и ни от кого больше | все хуки проходят, посторонний — revert `NotHook` |
 
 ### Коды и привязка
 
@@ -326,7 +330,8 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 | `test_Swap_MemeWithoutReferrer_AllToProtocol` | Мем без реферера | Всё протоколу | totalPending 0 |
 | `test_Distribute_AfterTrades_PaysReferrer` | `distribute` после торгов | — | alice получила начисленное |
 | `test_DeployToken_ReferralsUnset_NotRegistered` | Рефералы выключены в контроллере | Ноль выключает регистрацию | `memeReferrer` = 0 |
-| `test_Payout_ReferralsRejectsHook_FeesStayAccruedUntilFixed` | Рефералы отвергают хук | Сбой получателя не ломает своп, комиссия не теряется | `PayoutFailed`, комиссия в хуке, после починки `distribute` выплачивает |
+| `test_Payout_ReferralsRejectsHook_FeesStayAccruedUntilFixed` | Рефералы откатывают `notifyFee` (mock) | Сбой получателя не ломает своп, комиссия не теряется | `PayoutFailed`, комиссия в хуке, после починки `distribute` выплачивает |
+| `test_Payout_ReferralsHookReplaced_OldHookStillPaysOut` | Рефералы переключены на новый хук | Старые мемы продолжают платить через старый хук | `pendingFees` старого хука 0, реферер получил долю |
 | `test_Payout_EoaProtocolRecipient_PaysWithoutNotify` | EOA как получатель | Хук не уведомляет EOA | EOA получает протокольную долю |
 | `testFuzz_Swap_ReferredMeme_SplitConserved` (fuzz) | Любые объёмы сделок | Баланс рефералов = протокольная доля; credit ≈ floor(доля·10%) (±1 на выплату, вниз); credit + протокол = баланс | точное сохранение |
 | `test_UpgradeReferrals_NewVersion_KeepsState` | Апгрейд на v2 | Состояние и владелец сохраняются, reinitialize | версия 2, pending и memeReferrer прежние |
@@ -356,6 +361,9 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
 | `test_NotifyFees_NotHook_Reverts` | `notifyFees` не от хука. | Учёт комиссий только хуком | Revert `NotHook` |
+| `test_SetHook_NewHook_OldHookStillNotifies` | Смена хука волта. | Хук не обновляемый: старые мемы платят через старый хук | `hook()` = новый, `isHook` для обоих, комиссии от обоих зачислены (3e6) |
+| `testFuzz_SetHook_AnySequence_OnlySetHooksNotify` (fuzz) | Любая последовательность из 3 хуков и посторонний адрес. | `notifyFees` принимается от любого когда-либо назначенного хука и ни от кого больше | Все хуки проходят, посторонний — revert `NotHook` |
+| `test_SetHook_Zero_Reverts` | `setHook(0)`. | Хук не нулевой | Revert `ZeroAddress` |
 | `test_NotifyFees_UnregisteredMeme_Reverts` | Комиссия для незарегистрированного токена. | — | Revert `VaultNotRegistered(meme)` |
 | `test_NotifyFees_WithoutTransfer_Reverts` | Уведомление без фактического перевода USDG. | Учтённое ≤ реальный баланс | Revert `UnaccountedBalanceTooLow(0, 1e6)` |
 | `test_NotifyFees_SameTransferTwice_Reverts` | Повторное уведомление на тот же перевод. | Один перевод учитывается один раз | Revert `UnaccountedBalanceTooLow(0, 1e6)` |
@@ -561,10 +569,11 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 |---|---|---|---|
 | `test_DeployAll_Wiring_AllContractsPointAtEachOther` | Взаимные ссылки controller, hook и vault после `deployAll`. | Контракты связаны друг с другом и с одним USDG | Все ссылки совпадают, `checkWiring` не откатывается |
 | `test_DeployAll_Config_AppliedFromParams` | Применение параметров деплоя. | — | Порог 5e6; AAPL разрешён, USDG нет; recipient, fee 125, доля протокола 2000 (20% комиссии), poolManager, positionManager, permit2 заданы |
-| `test_DeployAll_Ownership_HandedToOwner` | Передача владения и прав ProxyAdmin. | Владение у заданного owner; апгрейды у proxyAdminOwner | Hook и controller принадлежат owner; vault ждёт `acceptOwnership` (pending = owner), после принятия owner = owner; все ProxyAdmin у proxyAdminOwner |
+| `test_DeployAll_Ownership_HandedToOwner` | Передача владения и прав ProxyAdmin. | Владение у заданного owner; апгрейды у proxyAdminOwner | Hook и controller принадлежат owner; vault ждёт `acceptOwnership` (pending = owner), после принятия owner = owner; ProxyAdmin vault и controller у proxyAdminOwner |
 | `test_DeployAll_OwnerIsDeployer_NoTransfer` | Owner совпадает с деплоером. | — | Все контракты принадлежат скрипту, pending у vault = 0 |
-| `test_DeployAll_HookAddresses_CarryPermissionBits` | Биты разрешений в адресах прокси и реализации hook. | Адреса hook несут ровно нужные флаги Uniswap v4 | `addr & ALL_HOOK_MASK == HOOK_FLAGS` для прокси и реализации |
-| `test_DeployAll_Twice_FreshAddresses` | Повторный деплой. | Повторный деплой не сталкивается по CREATE2 | Новые адреса hook и его реализации; второй деплой корректно связан |
+| `test_DeployAll_HookAddress_CarriesPermissionBits` | Биты разрешений в адресе hook. | Адрес hook несёт ровно нужные флаги Uniswap v4 | `addr & ALL_HOOK_MASK == HOOK_FLAGS` |
+| `test_DeployAll_Hook_NotAProxy` | Hook задеплоен без прокси. | Hook не обновляемый: ни код, ни комиссии не меняются под живым пулом | EIP-1967 implementation и admin = 0; `TOTAL_FEE_BIPS` = 125, `PROTOCOL_SHARE_BIPS` = 2000 из конструктора |
+| `test_DeployAll_Twice_FreshAddresses` | Повторный деплой. | Повторный деплой не сталкивается по CREATE2 | Новый адрес hook; второй деплой корректно связан |
 | `test_Run_FromEnv_DeploysAndWires` | `run()` с конфигом из переменных окружения, часть пустая. | Пустые env берут значения по умолчанию | Связи корректны; владелец owner, vault pending = owner; ProxyAdmin = owner (fallback); fee 300, доля протокола по умолчанию 3333 (треть); AAPL разрешён; порог 5e6; биты hook верны |
 | `test_SetVault_UsdgMismatch_Revert` | Подключение к контроллеру vault с другим USDG. | Пара-токен контроллера и USDG vault совпадают | Откат `VaultPairTokenMismatch(aapl, usdg)` |
 | `test_CheckWiring_VaultOfOtherHook_Revert` | `checkWiring` с hook из другого деплоя. | Проверка связей ловит чужой hook | Откат `WiringMismatch("controller.hook")` |
@@ -573,18 +582,21 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
-| `test_NotifyPoolCreated_FromController_StoresTimestamp` | Контроллер сообщает о создании пула в текущем блоке. | — | `poolTimestamps(meme) == 1_700_000_000` |
-| `testFuzz_NotifyPoolCreated_FromController_StoresPerMeme` (fuzz) | Запись времени для случайного meme и любого timestamp ≤ блока. | Запись изолирована по meme | `poolTimestamps(meme) == timestamp`, у другого meme 0 |
-| `test_NotifyPoolCreated_CalledTwice_RevertsPoolAlreadyNotified` | Второй вызов для того же meme с другим временем и ставкой. | Окно 80% запускается один раз на мем | Откат `PoolAlreadyNotified(meme)`, время 100 и ставка 100 прежние |
-| `test_NotifyPoolCreated_TimestampAfterBlock_RevertsInvalidPoolTimestamp` | Время создания на 1 с позже блока. | Окно нельзя сдвинуть в будущее | Откат `InvalidPoolTimestamp(1001)`, время не записано |
-| `test_NotifyPoolCreated_ZeroTimestamp_RevertsInvalidPoolTimestamp` | Время создания 0. | 0 значит «не сообщён», записать его нельзя | Откат `InvalidPoolTimestamp(0)` |
-| `test_NotifyPoolCreated_OwnerAsController_CannotRestartRamp` | Сценарий аудита: владелец делает себя контроллером и пытается перезапустить окно сейчас и через год с другой ставкой. | Даже владелец хука не поднимет комиссию живого мема | Оба вызова — `PoolAlreadyNotified`, комиссия остаётся базовой |
-| `testFuzz_NotifyPoolCreated_AfterFirst_AnyReport_RampUnchanged` (fuzz) | Любой повторный вызов в любой момент с любым временем и ставкой. | После первого сообщения время и ставка мема неизменны; через 30 с комиссия базовая | Откат `PoolAlreadyNotified`, `poolTimestamps`/`memeFeeBips` прежние |
-| `testFuzz_NotifyPoolCreated_TimestampAfterBlock_Revert` (fuzz) | Любое время позже текущего блока. | Окно нельзя растянуть | Откат `InvalidPoolTimestamp(timestamp)` |
+| `test_AfterInitialize_FirstPool_RecordsBlockTimestamp` | Хук сам записывает время при `initialize` первого пула мема контроллером. | Начало окна задаёт хук, не роль | Событие `PoolTimestampRecorded(meme, 1_700_000_000)`, `poolTimestamps(meme) == 1_700_000_000`, комиссия 80% |
+| `testFuzz_AfterInitialize_LaterPool_KeepsFirstTimestamp` (fuzz) | Любой может создать ещё один пул мема (другой tick spacing) в любой момент. | Новый пул не перезапускает окно живого мема | `poolTimestamps` прежний; после окна комиссия = базовая 300 |
+| `testFuzz_AfterInitialize_NotController_DoesNotStartWindow` (fuzz) | Пул мема без окна (старый мем) инициализирует кто угодно, кроме контроллера. | Сторонний пул не включает 80% на живом меме | `poolTimestamps == 0`, комиссия 125; `notifyPoolCreated` → `PoolNotCreatedInThisBlock(meme, 0)` |
+| `test_AfterInitialize_NotPoolManager_Revert` | Прямой вызов `afterInitialize` не от PoolManager. | Записать время можно только через реальный `initialize` | Откат `NotPoolManager` |
+| `test_NotifyPoolCreated_SameBlockAsPool_StoresFee` | Контроллер задаёт ставку в блоке создания пула. | — | Событие `MemeFeeConfigured(meme, 100, createdAt)`, `memeFeeBips == 100` |
+| `testFuzz_NotifyPoolCreated_FromController_StoresPerMeme` (fuzz) | Пул и ставка для случайного meme в любой момент. | Запись изолирована по meme | `poolTimestamps(meme) == timestamp`, `memeFeeBips == 100`, у другого meme 0 |
+| `test_NotifyPoolCreated_CalledTwice_RevertsPoolAlreadyNotified` | Второй вызов для того же meme с другой ставкой. | Ставка задаётся один раз на мем | Откат `PoolAlreadyNotified(meme)`, время 100 и ставка 100 прежние |
+| `test_NotifyPoolCreated_NoPool_RevertsPoolNotCreatedInThisBlock` | Вызов для мема без пула. | Без пула окно 80% не включить | Откат `PoolNotCreatedInThisBlock(meme, 0)`, комиссия = 125 |
+| `testFuzz_NotifyPoolCreated_LivePool_Reverts` (fuzz) | Сценарий аудита: пул торгуется, контроллер через ≥1 с пытается сообщить о нём с любой ставкой. | Контроллер не может включить 80% на живом пуле | Откат `PoolNotCreatedInThisBlock(meme, 1000)`, окно и ставка не изменились, после окна комиссия = 125 |
+| `test_NotifyPoolCreated_OwnerAsController_CannotRestartRamp` | Владелец делает себя контроллером, пытается сменить ставку и создаёт второй пул после окна. | Даже владелец хука не поднимет комиссию живого мема | `PoolAlreadyNotified`, комиссия остаётся базовой 100 |
+| `testFuzz_NotifyPoolCreated_AfterFirst_AnyReport_RampUnchanged` (fuzz) | Повторный вызов в любой момент с любой ставкой. | После первого сообщения время и ставка мема неизменны; через 30 с комиссия базовая | Откат `PoolAlreadyNotified`, `poolTimestamps`/`memeFeeBips` прежние |
 | `test_NotifyPoolCreated_FromOwner_Revert` | Вызов от владельца hook. | Уведомлять может только контроллер | Откат `NotController` |
 | `test_NotifyPoolCreated_FromVault_Revert` | Вызов от vault. | Уведомлять может только контроллер | Откат `NotController` |
-| `test_NotifyPoolCreated_FromNewController_AfterSetController_Stores` | Новый контроллер после `setController`. | Права переходят к новому контроллеру | `poolTimestamps(meme) == 42` |
-| `testFuzz_NotifyPoolCreated_NotController_Revert` (fuzz) | Вызов от любого адреса, кроме контроллера и ProxyAdmin. | Уведомлять может только контроллер | Откат `NotController`, timestamp остаётся 0 |
+| `test_NotifyPoolCreated_FromNewController_AfterSetController_Stores` | Новый контроллер после `setController`, в блоке создания пула. | Права переходят к новому контроллеру | `memeFeeBips(meme) == 100` |
+| `testFuzz_NotifyPoolCreated_NotController_Revert` (fuzz) | Вызов от любого адреса, кроме контроллера. | Уведомлять может только контроллер | Откат `NotController`, ставка остаётся 0 |
 | `test_SetController_ByOwner_UpdatesAndEmits` | Владелец меняет контроллер. | Старый контроллер сразу теряет доступ | Событие `ControllerUpdated(next)`, `controller == next`; старый получает откат `NotController` |
 | `test_SetController_NotOwner_Revert` | `setController` от постороннего. | Контроллер меняет только владелец | Откат `OwnableUnauthorizedAccount(stranger)` |
 | `test_SetController_ZeroAddress_Revert` | `setController(0)`. | Контроллер не нулевой | Откат `ZeroAddress` |
@@ -606,14 +618,14 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 | `testFuzz_FeeBipsAt_AlwaysBetweenMemeFeeAndMax` (fuzz) | Комиссия для любого timestamp | Комиссия всегда в [memeFee, 80%] | 1000 ≤ fee ≤ 8000 |
 | `testFuzz_FeeBipsAt_NeverIncreasesOverTime` (fuzz) | Сравнение комиссии в t1 ≤ t2 | Комиссия монотонно не растёт со временем | `fee(t1)` ≥ `fee(t2)` |
 | `testFuzz_FeeBipsAt_InsideWindow_MatchesLinearFormula` (fuzz) | Комиссия для любого момента внутри окна | Кривая точно линейна: `MAX - (MAX-meme)*elapsed/window` | Совпадает с `_expected(elapsed)` |
-| `test_NotifyPoolCreated_StoresMemeFeeAndEmits` | Регистрация пула контроллером с комиссией 3% | Комиссия создателя сохраняется и логируется | Событие `MemeFeeConfigured(other, 300, createdAt)`; `memeFeeBips`=`baseFeeBips`=300 |
+| `test_NotifyPoolCreated_StoresMemeFeeAndEmits` | Пул создан, контроллер в том же блоке задаёт комиссию 3% | Комиссия создателя сохраняется и логируется | Событие `MemeFeeConfigured(other, 300, createdAt)`; `memeFeeBips`=`baseFeeBips`=300 |
 | `test_NotifyPoolCreated_FeeBelowOnePercent_Revert` | Регистрация с комиссией 0,99% | Комиссия мема ≥ 1% | Revert `InvalidMemeFeeBips(99)` |
 | `test_NotifyPoolCreated_FeeAboveTenPercent_Revert` | Регистрация с комиссией 10,01% | Комиссия мема ≤ 10% | Revert `InvalidMemeFeeBips(1001)` |
 | `testFuzz_NotifyPoolCreated_FeeInBounds_BecomesBaseFee` (fuzz) | Любая допустимая комиссия 100–1000 | После окна действует ровно выбранная создателем комиссия | `feeBipsAt(createdAt+window)` = feeBips |
 | `testFuzz_NotifyPoolCreated_FeeOutOfBounds_Revert` (fuzz) | Любая комиссия вне 100–1000 | Нельзя задать комиссию вне границ | Revert `InvalidMemeFeeBips(feeBips)` |
-| `test_Initialize_ProtocolShare_StoredInBipsOfFee` | Доля протокола после инициализации | Доля хранится в bips комиссии | `PROTOCOL_SHARE_BIPS` = 3333 |
-| `test_Initialize_ProtocolShareAboveHundredPercent_Revert` | Инициализация с долей 100.01% | Протокол не может получить больше всей комиссии | Revert `InvalidFeeBips` |
-| `testFuzz_Initialize_ProtocolShareUpToHundredPercent_Accepted` (fuzz) | Любая доля 0..100% | Допустимая доля принимается как есть | `PROTOCOL_SHARE_BIPS` = переданной доле |
+| `test_Constructor_ProtocolShare_StoredInBipsOfFee` | Доля протокола после инициализации | Доля хранится в bips комиссии | `PROTOCOL_SHARE_BIPS` = 3333 |
+| `test_Constructor_ProtocolShareAboveHundredPercent_Revert` | Инициализация с долей 100.01% | Протокол не может получить больше всей комиссии | Revert `InvalidFeeBips` |
+| `testFuzz_Constructor_ProtocolShareUpToHundredPercent_Accepted` (fuzz) | Любая доля 0..100% | Допустимая доля принимается как есть | `PROTOCOL_SHARE_BIPS` = переданной доле |
 
 ## test/TokenTest.sol
 

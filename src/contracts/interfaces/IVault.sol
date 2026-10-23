@@ -283,7 +283,8 @@ interface IVault {
     /// @notice Sets the controller allowed to register vaults.
     function setController(address controller) external;
 
-    /// @notice Sets the hook allowed to notify fees.
+    /// @notice Sets the hook of new Memes. Every hook set before stays allowed to notify fees:
+    ///         hooks are not upgradeable, the pools of older Memes keep paying through theirs.
     function setHook(address hook) external;
 
     /// @notice Sets the pending USDG a vault needs before its epoch is converted, in USDG units.
@@ -329,7 +330,11 @@ interface IVault {
 
     function controller() external view returns (address);
 
+    /// @notice Hook of new Memes, the last one set by `setHook`.
     function hook() external view returns (address);
+
+    /// @notice Whether `account` may notify fees: the current hook or any hook set before.
+    function isHook(address account) external view returns (bool);
 
     function swapAdapter() external view returns (address);
 

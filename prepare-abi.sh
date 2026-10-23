@@ -51,7 +51,7 @@ env_value() {
 address_rows=(
 	"GemoonController|\`IGemoonController.json\`|CONTROLLER_PROXY_ADDRESS"
 	"Vault|\`IVault.json\`|VAULT_PROXY_ADDRESS"
-	"HookManager|\`IHookManager.json\`|HOOK_PROXY_ADDRESS"
+	"HookManager|\`IHookManager.json\`|HOOK_ADDRESS"
 	"GmoonReferrals|\`IReferrals.json\`|REFERRALS_PROXY_ADDRESS"
 	"GemoonLens (батч-чтения)|\`GemoonLens.json\`|LENS_ADDRESS"
 	"UniswapV3SwapAdapter|\`IUniswapV3SwapAdapter.json\`|VAULT_SWAP_ADAPTER"

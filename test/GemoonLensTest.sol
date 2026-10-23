@@ -18,7 +18,7 @@ import {IPositionDescriptor} from "@uniswap-v4-periphery/interfaces/IPositionDes
 import {IWETH9} from "@uniswap-v4-periphery/interfaces/external/IWETH9.sol";
 import {IAllowanceTransfer} from "permit2/src/interfaces/IAllowanceTransfer.sol";
 import {DeployPermit2} from "permit2/test/utils/DeployPermit2.sol";
-import {DeployGemoon} from "../script/GemoonDeploy.sol";
+import {DeployGemoon, GemoonDeployBase} from "../script/GemoonDeploy.sol";
 import {DeployLens} from "../script/DeployLens.s.sol";
 import {GemoonController} from "../src/contracts/Gemoon.sol";
 import {HookManager} from "../src/contracts/hooks/HookManager.sol";
@@ -458,6 +458,43 @@ contract GemoonLensTest is GemoonLensTestBase {
         assertEq(v.position.pendingCredit, 0);
         assertEq(v.position.earnedAssets.length, 0);
         assertEq(v.position.earnedAmounts.length, 0);
+    }
+
+    /// @dev The hook is not upgradeable: after it is replaced, new Memes trade in pools keyed
+    /// with the new hook and old Memes keep theirs. The Lens reads each through its own hook.
+    function test_Tokens_HookReplaced_EachMemeReadThroughItsHook() external {
+        address oldMeme = _deployMeme(_usdgAsset());
+
+        DeployGemoon script = new DeployGemoon();
+        HookManager next = script.deployHook(
+            address(script),
+            GemoonDeployBase.HookDeployParams({
+                owner: address(this),
+                poolManager: address(poolManager),
+                pairToken: address(usdg),
+                protocolRecipient: makeAddr("protocolRecipient"),
+                vault: address(vault),
+                controller: address(controller),
+                feeBips: 125,
+                protocolShareBips: 3_333
+            })
+        );
+        vm.startPrank(controller.owner());
+        vault.setHook(address(next));
+        controller.setHook(address(next));
+        vm.stopPrank();
+        address newMeme = _deployMeme(_usdgAsset());
+
+        PoolKey memory newKey = _poolKey(newMeme);
+        newKey.hooks = IHooks(address(next));
+        IGemoonLens.TokenView memory v = _view(newMeme, address(0));
+        assertEq(v.market.poolId, PoolId.unwrap(newKey.toId()), "pool of the new hook");
+        assertGt(v.market.sqrtPriceX96, 0, "that pool exists");
+        assertTrue(v.market.pendingFeesOk);
+
+        v = _view(oldMeme, address(0));
+        assertEq(v.market.poolId, PoolId.unwrap(_poolKey(oldMeme).toId()), "old hook kept");
+        assertGt(v.market.sqrtPriceX96, 0);
     }
 
     function test_Tokens_PoolNotCreated_SqrtPriceZeroPoolIdComputed() external {

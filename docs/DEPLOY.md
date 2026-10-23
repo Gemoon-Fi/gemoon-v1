@@ -39,7 +39,7 @@ Makefile и скрипты из `tools/scripts` падают с ошибкой. 
 **Сеть.** Проверить до старта:
 
 - По адресу `0x4e59b44847b379578588920cA78FbF26c0B4956C` есть код. Это детерминированный
-  CREATE2-деплоер, через него скрипт ставит имплементацию и прокси хука. Без него скрипт
+  CREATE2-деплоер, через него скрипт ставит хук (без прокси). Без него скрипт
   откажется работать. Проверка: `cast code 0x4e59b44847b379578588920cA78FbF26c0B4956C --rpc-url $RPC`.
 - Лимит размера контракта (EIP-170, 24 576 байт) все контракты проходят: самый большой,
   GemoonController, ~12 КБ, Vault ~14 КБ (`forge build --sizes`).
@@ -76,8 +76,8 @@ ENVIRONMENT=prod ./deploy.sh --simulate  # то же для mainnet, из env/pr
    `USDG_ADDRESS`, `UNISWAP_V3_FACTORY` и CREATE2-деплоера есть код в сети.
 2. `make deploy-gemoon` (симуляция — `make simulate-gemoon`): весь деплой одним forge-скриптом,
    таблица шагов ниже.
-3. Читает из лога адреса и пишет их в `env/$ENVIRONMENT.mk`: `VAULT_/HOOK_/CONTROLLER_/REFERRALS_PROXY_ADDRESS`,
-   `*_PROXY_ADMIN_ADDRESS`, `SWAP_ADAPTER`, `VAULT_SWAP_ADAPTER`. Перед правкой делает копию
+3. Читает из лога адреса и пишет их в `env/$ENVIRONMENT.mk`: `VAULT_/CONTROLLER_/REFERRALS_PROXY_ADDRESS`,
+   их `*_PROXY_ADMIN_ADDRESS`, `HOOK_ADDRESS` (у хука нет прокси), `SWAP_ADAPTER`, `VAULT_SWAP_ADAPTER`. Перед правкой делает копию
    `env/$ENVIRONMENT.mk.bak.<время>`.
 4. `make verify-wiring`: read-only проверка связки по сети, включая рефералы и адаптер.
 5. `make deploy-lens`, адрес в `LENS_ADDRESS`.
@@ -118,7 +118,7 @@ ENVIRONMENT=prod ./deploy.sh --simulate  # то же для mainnet, из env/pr
 | 3 | `Vault.setConversionThreshold`, `setAssetAllowed` на активы из `VAULT_ALLOWED_ASSETS` | деплоер | порог пропускается, если равен 0 |
 | 4 | `GemoonController` имплементация и прокси, `initialize(POOL_MANAGER, USDG, deployer)` | деплоер | владелец пока деплоер |
 | 5 | `GmoonReferrals` имплементация и прокси, `initialize(deployer, USDG, controller, 0, refShare)` | деплоер | до хука: хук получает рефералы как получателя протокольной доли в `initialize` |
-| 6 | `HookManager` имплементация и прокси через CREATE2, `initialize(GEMOON_OWNER, referrals, vault, controller, fee, protocolShare)` | деплоер | соль майнится под биты разрешений. Хуку больше ничего не нужно, поэтому владелец сразу итоговый |
+| 6 | `HookManager` через CREATE2, без прокси: `constructor(POOL_MANAGER, USDG, GEMOON_OWNER, referrals, vault, controller, fee, protocolShare)` | деплоер | соль майнится под биты разрешений. Хук не обновляемый, комиссии зафиксированы. Хуку больше ничего не нужно, поэтому владелец сразу итоговый |
 | 7 | `Controller.setReferrals`, `Referrals.setHook`; `Vault.setHook`, `setController`; `Controller.setHook`, `setVault`, `setPositionManager` | деплоер | рефералы подключаются первыми: `deployToken` открывается с `setPositionManager`, мем до `setReferrals` остался бы без реферера. `setHook`/`setVault` контроллера проверяют, что pair-токен совпадает |
 | 8 | `UniswapV3SwapAdapter(deployer, UNISWAP_V3_FACTORY, vault, USDG, window)`, `Vault.setSwapAdapter` | деплоер | адаптер не прокси, привязан к этому волту |
 | 9 | на каждую строку файла активов: `Vault.setAssetAllowed`, `Adapter.setRoute(asset, fee, slippage)` | деплоер | только если актив имеет код, пул — фабричный пул USDG/актив своего fee-tier и отдаёт TWAP за окно. Иначе строка пропускается, причина в отчёте. Уже разрешённое и с тем же маршрутом не отправляется |
@@ -152,11 +152,11 @@ ENVIRONMENT=prod ./deploy.sh --simulate  # то же для mainnet, из env/pr
 5. Контракты верифицируются в эксплорере, см. п. 6.
 6. Верифицировать контракты в эксплорере. Для хука есть готовые цели в `verify.mk` (Blockscout PRO API,
    ключ `BLOCKSCOUT_API_KEY` в `env/$ENVIRONMENT.mk`; аргументы конструкторов собираются из env):
-   `make -f verify.mk verify-hook ENVIRONMENT=prod` — имплементация и прокси;
+   `make -f verify.mk verify-hook ENVIRONMENT=prod` — сам хук (прокси нет);
    `make -f verify.mk standard-json-hook ENVIRONMENT=prod` — standard JSON input в
    `deploy-logs/standard-json/` для ручной верификации, ничего не отправляет. Запускать с коммита,
    с которого шёл деплой. Если Blockscout отвечает `Unable to verify`, есть Sourcify (Blockscout
-   показывает его верификации): `make -f verify.mk verify-hook-impl-sourcify ENVIRONMENT=prod`.
+   показывает его верификации): `make -f verify.mk verify-hook-sourcify ENVIRONMENT=prod`.
    Токены мемов: `make -f verify.mk verify-tokens-sourcify ENVIRONMENT=prod [SOURCE_REF=<коммит>]`
    верифицирует в Sourcify все токены из событий `TokenCreated` контроллера одним standard JSON
    (исходники в версии `SOURCE_REF`, по умолчанию `HEAD`), уже верифицированные пропускает, так что
@@ -166,9 +166,11 @@ ENVIRONMENT=prod ./deploy.sh --simulate  # то же для mainnet, из env/pr
 # имплементации волта и контроллера: без аргументов
 forge verify-contract $VAULT_IMPL src/contracts/vault/Vault.sol:Vault --chain-id $CHAIN_ID --verifier <verifier> --verifier-url <url>
 
-# имплементация хука
-forge verify-contract $HOOK_IMPL src/contracts/hooks/HookManager.sol:HookManager --chain-id $CHAIN_ID \
-  --constructor-args $(cast abi-encode "constructor(address,address)" $POOL_MANAGER $USDG_ADDRESS) ...
+# хук (без прокси): все параметры в конструкторе
+forge verify-contract $HOOK_ADDRESS src/contracts/hooks/HookManager.sol:HookManager --chain-id $CHAIN_ID \
+  --constructor-args $(cast abi-encode "constructor(address,address,address,address,address,address,uint256,uint256)" \
+    $POOL_MANAGER $USDG_ADDRESS $GEMOON_OWNER $REFERRALS_PROXY_ADDRESS $VAULT_PROXY_ADDRESS $CONTROLLER_PROXY_ADDRESS \
+    $HOOK_TOTAL_FEE_BIPS $HOOK_PROTOCOL_SHARE_BIPS) ...
 
 # любой из трёх прокси: (имплементация, владелец ProxyAdmin, calldata initialize)
 forge verify-contract $PROXY lib/openzeppelin-contracts/contracts/proxy/transparent/TransparentUpgradeableProxy.sol:TransparentUpgradeableProxy \
@@ -257,10 +259,19 @@ make transfer-to-governance ENVIRONMENT=prod
   задеплоенной версии. Поля только добавляются в конец, ничего не переставляется и не меняет тип.
 - Сначала симуляция без broadcast, потом `make upgrade-*`.
 
+HookManager не обновляется: у него нет прокси. Смена хука на новый:
+
+1. Задеплоить новый хук через `deployHook` (тот же волт, контроллер, рефералы как получатель).
+2. От владельцев: `Vault.setHook(new)`, `Referrals.setHook(new)`, `Controller.setHook(new)`.
+3. Передеплоить GemoonLens с новым хуком (`make deploy-lens`, обновить `HOOK_ADDRESS`).
+
+Пулы уже созданных мемов остаются на старом хуке навсегда и продолжают платить: волт и рефералы
+принимают комиссии от любого хука, назначенного раньше (`isHook`), контроллер хранит хук каждого
+мема (`hookOf`). Новые мемы создаются с новым хуком.
+
 | Цель | Что делает | Особенности |
 |---|---|---|
 | `make upgrade-vault-proxy` | новая имплементация, `upgradeAndCall` | если `VAULT_VERSION` вырос, атомарно зовётся `reinitialize()`, иначе апгрейд без вызова. После проверяет владельца, USDG и адрес имплементации |
-| `make upgrade-hook-proxy` | новая имплементация через CREATE2, `upgradeAndCall` | адрес имплементации снова майнится под биты разрешений. При росте `HOOK_MANAGER_VERSION` зовётся `reinitialize` с текущими владельцем, получателем, волтом, контроллером и комиссиями. После проверяет, что адрес прокси всё ещё подходит под разрешения новой имплементации |
 | `make upgrade-controller-proxy` | новая имплементация, `upgradeAndCall` с `reinitialize` | `reinitialize` защищён `reinitializer(GEMOON_VERSION)`, а версия равна 1, которую занял `initialize`. Пока версия не поднята, апгрейд с вызовом упадёт. Для апгрейда без вызова поднять версию или отправить `upgradeAndCall` с пустыми данными. Pair-токен берётся из `USDG_ADDRESS`; до отправки скрипт сверяет его с `pairToken()` текущего хука контроллера и падает при расхождении |
 
 **Апгрейд существующего контроллера на 2.0.** После смены имплементации владелец контроллера

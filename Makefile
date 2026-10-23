@@ -59,7 +59,7 @@ set-swap-adapter:
 	cast send $(VAULT_PROXY_ADDRESS) "setSwapAdapter(address)" $(SWAP_ADAPTER) --rpc-url $(RPC) --private-key $(PRIVATE_KEY)
 
 # Referrals behind a proxy: USDG_ADDRESS, [REFERRALS_REF_SHARE_BIPS=1000], [CONTROLLER_PROXY_ADDRESS],
-# [HOOK_PROXY_ADDRESS], [GEMOON_OWNER], [GEMOON_PROXY_ADMIN_OWNER]. Then put the logged proxy into
+# [HOOK_ADDRESS], [GEMOON_OWNER], [GEMOON_PROXY_ADMIN_OWNER]. Then put the logged proxy into
 # REFERRALS_PROXY_ADDRESS and run wire-referrals.
 deploy-referrals:
 	forge script --via-ir ./script/GemoonDeploy.sol:DeployReferrals --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
@@ -69,14 +69,14 @@ simulate-referrals:
 	forge script --via-ir ./script/GemoonDeploy.sol:DeployReferrals -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY)
 
 # controller.setReferrals + hook.setProtocolRecipient(referrals), then checks the wiring.
-# Needs REFERRALS_PROXY_ADDRESS, CONTROLLER_PROXY_ADDRESS, HOOK_PROXY_ADDRESS; signer owns controller and hook.
+# Needs REFERRALS_PROXY_ADDRESS, CONTROLLER_PROXY_ADDRESS, HOOK_ADDRESS; signer owns controller and hook.
 wire-referrals:
 	forge script --via-ir ./script/GemoonDeploy.sol:WireReferrals --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
 
 upgrade-referrals-proxy:
 	forge script --via-ir ./script/GemoonDeploy.sol:ProxyReferralsUpgrade --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
 
-# Hook protocol recipient (default REFERRALS_PROXY_ADDRESS on HOOK_PROXY_ADDRESS), owner of the hook:
+# Hook protocol recipient (default REFERRALS_PROXY_ADDRESS on HOOK_ADDRESS), owner of the hook:
 # make set-protocol-recipient [RECIPIENT=0x..] [HOOK=0x..] [DRY_RUN=1] [FORCE=1]
 set-protocol-recipient:
 	bash ./tools/scripts/set_protocol_recipient.sh $(RECIPIENT) $(if $(HOOK),--hook $(HOOK)) $(if $(DRY_RUN),--dry-run) $(if $(FORCE),--force)
@@ -91,9 +91,6 @@ withdraw-protocol-fees:
 
 upgrade-vault-proxy:
 	forge script --via-ir ./script/GemoonDeploy.sol:ProxyVaultUpgrade --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
-
-upgrade-hook-proxy:
-	forge script --via-ir ./script/GemoonDeploy.sol:ProxyHookUpgrade --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
 
 upgrade-controller-proxy:
 	forge script --via-ir ./script/GemoonDeploy.sol:ProxyGemoonControllerUpgrade --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
@@ -112,7 +109,7 @@ set-route:
 create-tokens:
 	bash ./tools/scripts/create-tokens.sh $(or $(COUNT),10) $(if $(DRY_RUN),--dry-run)
 
-# GemoonLens (read-only batch reader) via CREATE2: CONTROLLER/VAULT/HOOK_PROXY_ADDRESS, POOL_MANAGER,
+# GemoonLens (read-only batch reader) via CREATE2: CONTROLLER/VAULT_PROXY_ADDRESS, HOOK_ADDRESS, POOL_MANAGER,
 # [LENS_SALT]. Repeatable: same address every run, nothing is sent if it is already deployed.
 deploy-lens:
 	forge script ./script/DeployLens.s.sol:DeployLens --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast

@@ -159,7 +159,7 @@ contract DeployGemoonFullTest is Test {
         DeployGemoon.FullDeployment memory d = _deploy(owner, new DeployGemoon.AssetRow[](0));
 
         assertEq(d.controller.owner(), owner, "controller: immediate");
-        assertEq(d.hook.owner(), owner, "hook: owner from initialize");
+        assertEq(d.hook.owner(), owner, "hook: owner from the constructor");
         assertEq(d.vault.pendingOwner(), owner, "vault pending");
         assertEq(d.referrals.pendingOwner(), owner, "referrals pending");
         assertEq(d.adapter.pendingOwner(), owner, "adapter pending");
@@ -174,8 +174,7 @@ contract DeployGemoonFullTest is Test {
         assertEq(d.referrals.owner(), owner);
         assertEq(d.adapter.owner(), owner);
 
-        address[4] memory proxies =
-            [address(d.vault), address(d.hook), address(d.controller), address(d.referrals)];
+        address[3] memory proxies = [address(d.vault), address(d.controller), address(d.referrals)];
         for (uint256 i; i < proxies.length; ++i) {
             assertEq(
                 ProxyAdmin(Upgrades.getAdminAddress(proxies[i])).owner(),
@@ -183,6 +182,7 @@ contract DeployGemoonFullTest is Test {
                 "proxy admin owner"
             );
         }
+        assertEq(Upgrades.getAdminAddress(address(d.hook)), address(0), "hook: no proxy admin");
     }
 
     function test_DeployFull_OwnerIsDeployer_NothingPending() external {
@@ -444,7 +444,7 @@ contract DeployGemoonFullTest is Test {
         assertTrue(vault.isAssetAllowed(row.asset), "asset from file");
         assertTrue(vault.isAssetAllowed(address(usdg)), "extra asset from env");
         // empty GEMOON_PROXY_ADMIN_OWNER falls back to GEMOON_OWNER
-        assertEq(ProxyAdmin(Upgrades.getAdminAddress(address(hook))).owner(), owner);
+        assertEq(ProxyAdmin(Upgrades.getAdminAddress(address(controller))).owner(), owner);
 
         string memory report = vm.readFile(reportFile);
         assertTrue(vm.contains(report, vm.toString(address(adapter))), "report has adapter");

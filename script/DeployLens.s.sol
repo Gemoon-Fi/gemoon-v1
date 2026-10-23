@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity ^0.8.26;
 
 import "forge-std/Script.sol";
 import {GemoonLens} from "../src/contracts/lens/GemoonLens.sol";
@@ -17,7 +17,7 @@ import {IVault} from "../src/contracts/interfaces/IVault.sol";
 /// Env:
 ///  - CONTROLLER_PROXY_ADDRESS  GemoonController proxy
 ///  - VAULT_PROXY_ADDRESS       Vault proxy
-///  - HOOK_PROXY_ADDRESS        HookManager proxy
+///  - HOOK_ADDRESS        HookManager
 ///  - POOL_MANAGER              Uniswap V4 PoolManager
 ///  - LENS_SALT                 CREATE2 salt (optional, default 0)
 ///
@@ -41,7 +41,7 @@ contract DeployLens is Script {
         Params memory params = Params({
             controller: vm.envAddress("CONTROLLER_PROXY_ADDRESS"),
             vault: vm.envAddress("VAULT_PROXY_ADDRESS"),
-            hook: vm.envAddress("HOOK_PROXY_ADDRESS"),
+            hook: vm.envAddress("HOOK_ADDRESS"),
             poolManager: vm.envAddress("POOL_MANAGER"),
             salt: vm.envOr("LENS_SALT", bytes32(0))
         });
@@ -59,18 +59,26 @@ contract DeployLens is Script {
     /// @param create2Deployer Account CREATE2 is executed from.
     /// @param params          Constructor arguments and salt.
     /// @return Deterministic Lens address.
-    function predict(address create2Deployer, Params memory params) public pure returns (address) {
-        return vm.computeCreate2Address(params.salt, keccak256(_initCode(params)), create2Deployer);
+    function predict(
+        address create2Deployer,
+        Params memory params
+    ) public pure returns (address) {
+        return
+            vm.computeCreate2Address(
+                params.salt,
+                keccak256(_initCode(params)),
+                create2Deployer
+            );
     }
 
     /// @notice Checks the wiring, then deploys the Lens unless it already exists.
     /// @param create2Deployer Account CREATE2 is executed from, see the contract docs.
     /// @param params          Constructor arguments and salt.
     /// @return lens           Lens at `predict(create2Deployer, params)`.
-    function deploy(address create2Deployer, Params memory params)
-        public
-        returns (GemoonLens lens)
-    {
+    function deploy(
+        address create2Deployer,
+        Params memory params
+    ) public returns (GemoonLens lens) {
         _checkWiring(params);
 
         address expected = predict(create2Deployer, params);
@@ -80,30 +88,52 @@ contract DeployLens is Script {
         }
 
         lens = new GemoonLens{salt: params.salt}(
-            params.controller, params.vault, params.hook, params.poolManager
+            params.controller,
+            params.vault,
+            params.hook,
+            params.poolManager
         );
-        if (address(lens) != expected) revert Create2AddressMismatch(expected, address(lens));
+        if (address(lens) != expected)
+            revert Create2AddressMismatch(expected, address(lens));
     }
 
     /// @dev A Lens over contracts that do not point at each other would read wrong pools.
     function _checkWiring(Params memory params) internal view {
-        if (GemoonController(payable(params.controller)).vault() != IVault(params.vault)) {
+        if (
+            GemoonController(payable(params.controller)).vault() !=
+            IVault(params.vault)
+        ) {
             revert WiringMismatch("controller.vault");
         }
-        if (GemoonController(payable(params.controller)).hook() != params.hook) {
+        if (
+            GemoonController(payable(params.controller)).hook() != params.hook
+        ) {
             revert WiringMismatch("controller.hook");
         }
-        if (IVault(params.vault).hook() != params.hook) revert WiringMismatch("vault.hook");
-        if (HookManager(params.hook).vault() != params.vault) revert WiringMismatch("hook.vault");
-        if (address(HookManager(params.hook).poolManager()) != params.poolManager) {
+        if (IVault(params.vault).hook() != params.hook)
+            revert WiringMismatch("vault.hook");
+        if (HookManager(params.hook).vault() != params.vault)
+            revert WiringMismatch("hook.vault");
+        if (
+            address(HookManager(params.hook).poolManager()) !=
+            params.poolManager
+        ) {
             revert WiringMismatch("hook.poolManager");
         }
     }
 
-    function _initCode(Params memory params) internal pure returns (bytes memory) {
-        return abi.encodePacked(
-            type(GemoonLens).creationCode,
-            abi.encode(params.controller, params.vault, params.hook, params.poolManager)
-        );
+    function _initCode(
+        Params memory params
+    ) internal pure returns (bytes memory) {
+        return
+            abi.encodePacked(
+                type(GemoonLens).creationCode,
+                abi.encode(
+                    params.controller,
+                    params.vault,
+                    params.hook,
+                    params.poolManager
+                )
+            );
     }
 }

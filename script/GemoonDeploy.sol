@@ -21,14 +21,14 @@ import {TimelockController} from "@openzeppelin/contracts/governance/TimelockCon
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 
 /// @notice Shared deployment and upgrade logic of the Gemoon contracts.
-/// @dev Every contract lives behind a TransparentUpgradeableProxy. The proxy creates its own
-/// ProxyAdmin, owned by `proxyAdminOwner`, so the upgrade key is set at deployment and never has
-/// to be transferred afterwards.
+/// @dev Every contract but HookManager lives behind a TransparentUpgradeableProxy. The proxy
+/// creates its own ProxyAdmin, owned by `proxyAdminOwner`, so the upgrade key is set at deployment
+/// and never has to be transferred afterwards.
 ///
-/// HookManager is special: the PoolManager decides which callbacks to invoke from the bits of the
-/// hook address, so both the implementation (BaseHook validates itself in its constructor) and the
-/// proxy (the address pools actually reference) are deployed with CREATE2 and a mined salt that
-/// puts `HOOK_FLAGS` into the address. In `forge script` CREATE2 goes through the deterministic
+/// HookManager is not upgradeable: pools reference it directly, so its code and fees can never
+/// change under a live pool. The PoolManager decides which callbacks to invoke from the bits of
+/// the hook address (BaseHook validates itself in its constructor), so it is deployed with CREATE2
+/// and a mined salt that puts `HOOK_FLAGS` into the address. In `forge script` CREATE2 goes through the deterministic
 /// deployer at `CREATE2_FACTORY`; in `forge test` it is the calling contract itself.
 abstract contract GemoonDeployBase is Script {
     using Hooks for IHooks;
@@ -68,7 +68,6 @@ abstract contract GemoonDeployBase is Script {
 
     struct HookDeployParams {
         address owner;
-        address proxyAdminOwner;
         address poolManager;
         address pairToken;
         address protocolRecipient;
@@ -138,71 +137,40 @@ abstract contract GemoonDeployBase is Script {
     // HookManager
     // ---------------------------------------------------------------------------------------------
 
-    /// @notice Deploys a HookManager implementation and proxy, both CREATE2-mined.
-    /// @dev Everything the hook needs is passed to `initialize`, so `params.owner` is set as the
-    /// owner right away (Ownable2Step init sets it directly, no acceptOwnership).
+    /// @notice Deploys a CREATE2-mined HookManager. Not upgradeable: no proxy, everything is
+    ///         set in the constructor and `params.owner` owns it right away.
     /// @param create2Deployer Account CREATE2 is executed from, see the contract docs.
     /// @param params          Hook configuration; `vault` and `controller` must already be deployed.
-    /// @return hook           HookManager proxy.
+    /// @return hook           HookManager.
     function deployHook(address create2Deployer, HookDeployParams memory params)
         public
         returns (HookManager hook)
     {
-        HookManager implementation =
-            deployHookImplementation(create2Deployer, params.poolManager, params.pairToken);
-
-        bytes memory initData = abi.encodeCall(
-            HookManager.initialize,
-            (
-                params.owner,
-                params.protocolRecipient,
-                params.vault,
-                params.controller,
-                params.feeBips,
-                params.protocolShareBips
-            )
+        bytes memory args = abi.encode(
+            params.poolManager,
+            params.pairToken,
+            params.owner,
+            params.protocolRecipient,
+            params.vault,
+            params.controller,
+            params.feeBips,
+            params.protocolShareBips
         );
-        bytes32 initCodeHash = keccak256(
-            abi.encodePacked(
-                type(TransparentUpgradeableProxy).creationCode,
-                abi.encode(address(implementation), params.proxyAdminOwner, initData)
-            )
-        );
+        bytes32 initCodeHash = keccak256(abi.encodePacked(type(HookManager).creationCode, args));
         (address expected, bytes32 salt) = findHookSalt(create2Deployer, initCodeHash);
 
-        hook = HookManager(
-            payable(
-                address(
-                    new TransparentUpgradeableProxy{salt: salt}(
-                        address(implementation), params.proxyAdminOwner, initData
-                    )
-                )
-            )
+        hook = new HookManager{salt: salt}(
+            IPoolManager(params.poolManager),
+            Currency.wrap(params.pairToken),
+            params.owner,
+            params.protocolRecipient,
+            params.vault,
+            params.controller,
+            params.feeBips,
+            params.protocolShareBips
         );
         if (address(hook) != expected) revert Create2AddressMismatch(expected, address(hook));
         IHooks(address(hook)).validateHookPermissions(hook.getHookPermissions());
-    }
-
-    /// @notice Deploys a CREATE2-mined HookManager implementation (used for upgrades too).
-    /// @param create2Deployer Account CREATE2 is executed from.
-    /// @param poolManager     Uniswap V4 PoolManager.
-    /// @param pairToken       Token every pool is paired with and fees are charged in.
-    /// @return implementation Deployed implementation, initializers disabled.
-    function deployHookImplementation(
-        address create2Deployer,
-        address poolManager,
-        address pairToken
-    ) public returns (HookManager implementation) {
-        bytes32 initCodeHash = keccak256(
-            abi.encodePacked(type(HookManager).creationCode, abi.encode(poolManager, pairToken))
-        );
-        (address expected, bytes32 salt) = findHookSalt(create2Deployer, initCodeHash);
-
-        implementation =
-            new HookManager{salt: salt}(IPoolManager(poolManager), Currency.wrap(pairToken));
-        if (address(implementation) != expected) {
-            revert Create2AddressMismatch(expected, address(implementation));
-        }
     }
 
     /// @notice Finds the first salt whose CREATE2 address carries `HOOK_FLAGS` and is unused.
@@ -321,7 +289,7 @@ abstract contract GemoonDeployBase is Script {
     // ---------------------------------------------------------------------------------------------
 
     /// @notice Reverts unless controller, hook and vault all point at each other and share the
-    /// pair token, and the hook proxy address carries its permission bits.
+    /// pair token, and the hook address carries its permission bits.
     function checkWiring(GemoonController controller, HookManager hook, Vault vault)
         public
         view
@@ -516,7 +484,7 @@ contract DeployGemoon is GemoonDeployBase {
 
         // Machine-readable lines, parsed by deploy.sh.
         _logProxy("VAULT", address(d.vault));
-        _logProxy("HOOK", address(d.hook));
+        console.log("HOOK: ", address(d.hook));
         _logProxy("CONTROLLER", address(d.controller));
         _logProxy("REFERRALS", address(d.referrals));
         console.log("SWAP ADAPTER: ", address(d.adapter));
@@ -818,7 +786,7 @@ contract DeployGemoon is GemoonDeployBase {
             "- Block: ", vm.toString(block.number), ", timestamp ", vm.toString(block.timestamp), "\n",
             "- Deployer (sent every transaction): ", vm.toString(deployer), "\n",
             "- Final owner: ", vm.toString(params.core.owner), "\n",
-            "- ProxyAdmin owner (can upgrade): ", vm.toString(params.core.proxyAdminOwner), "\n"
+            "- ProxyAdmin owner (can upgrade everything but the hook): ", vm.toString(params.core.proxyAdminOwner), "\n"
         );
     }
 
@@ -845,10 +813,10 @@ contract DeployGemoon is GemoonDeployBase {
                 address(d.referrals),
                 "Protocol fee recipient of the hook: credits the referrer share of every protocol fee to the referrer of the Meme creator, the owner withdraws the rest."
             ),
-            _proxyRows(
+            _row(
                 "HookManager",
                 address(d.hook),
-                "Uniswap V4 hook of every Meme/USDG pool: charges the swap fee, pays the creator part to the vault and the protocol part to referrals. CREATE2-mined, the address carries the hook permission bits."
+                "Uniswap V4 hook of every Meme/USDG pool: charges the swap fee, pays the creator part to the vault and the protocol part to referrals. Not upgradeable, fees fixed at deployment. CREATE2-mined, the address carries the hook permission bits."
             ),
             _row(
                 "UniswapV3SwapAdapter",
@@ -1098,7 +1066,6 @@ contract DeployGemoon is GemoonDeployBase {
             create2Deployer,
             HookDeployParams({
                 owner: params.owner,
-                proxyAdminOwner: params.proxyAdminOwner,
                 poolManager: params.poolManager,
                 pairToken: params.usdg,
                 protocolRecipient: params.protocolRecipient,
@@ -1135,7 +1102,7 @@ contract DeployGemoon is GemoonDeployBase {
 ///  - VAULT_SWAP_ADAPTER           USDG -> asset adapter (optional, can be set later)
 ///  - VAULT_ALLOWED_ASSETS         comma-separated reward assets allowlist (optional)
 ///  - CONTROLLER_PROXY_ADDRESS     GemoonController proxy (optional, can be set later)
-///  - HOOK_PROXY_ADDRESS           HookManager proxy (optional, can be set later)
+///  - HOOK_ADDRESS                 HookManager (optional, can be set later)
 /// After the run: owner of the controller calls `GemoonController.setVault`, owner of the hook
 /// calls `HookManager.setVault` (both with the vault PROXY address), and GEMOON_OWNER calls
 /// `acceptOwnership` if it differs from the broadcaster.
@@ -1150,7 +1117,7 @@ contract DeployVault is GemoonDeployBase {
             proxyAdminOwner: _envAddressOr("GEMOON_PROXY_ADMIN_OWNER", owner),
             usdg: vm.envAddress("USDG_ADDRESS"),
             controller: _envAddressOr("CONTROLLER_PROXY_ADDRESS", address(0)),
-            hook: _envAddressOr("HOOK_PROXY_ADDRESS", address(0)),
+            hook: _envAddressOr("HOOK_ADDRESS", address(0)),
             conversionThreshold: vm.envUint("VAULT_CONVERSION_THRESHOLD"),
             swapAdapter: _envAddressOr("VAULT_SWAP_ADAPTER", address(0)),
             allowedAssets: _envAddressList("VAULT_ALLOWED_ASSETS")
@@ -1231,87 +1198,6 @@ contract ProxyVaultUpgrade is GemoonDeployBase {
     }
 }
 
-/// @notice Upgrades the HookManager proxy to a freshly deployed, CREATE2-mined implementation.
-/// @dev Env:
-///  - HOOK_PROXY_ADDRESS           HookManager proxy (required)
-///  - HOOK_PROXY_ADMIN_ADDRESS     ProxyAdmin of the hook proxy (required)
-/// PoolManager and pair token are read from the proxy. The broadcaster must own the ProxyAdmin.
-/// If the new implementation bumps `HOOK_MANAGER_VERSION`, `reinitialize` runs atomically with
-/// the upgrade, re-passing the current owner, recipient, vault, controller and fees; otherwise the upgrade
-/// carries no call. Storage must stay append-only, see `ProxyVaultUpgrade`.
-contract ProxyHookUpgrade is GemoonDeployBase {
-    using Hooks for IHooks;
-
-    function run() external {
-        address proxy = vm.envAddress("HOOK_PROXY_ADDRESS");
-        address proxyAdmin = vm.envAddress("HOOK_PROXY_ADMIN_ADDRESS");
-        HookManager hook = HookManager(payable(proxy));
-
-        vm.startBroadcast();
-        (, address sender,) = vm.readCallers();
-        HookManager newImplementation = deployHookImplementation(
-            CREATE2_FACTORY, address(hook.poolManager()), Currency.unwrap(hook.pairToken())
-        );
-        upgradeHook(sender, proxy, proxyAdmin, address(newImplementation));
-        vm.stopBroadcast();
-
-        _logProxy("HOOK", proxy);
-        console.log("HOOK VERSION: ", uint256(hook.getVersion()));
-    }
-
-    /// @notice Upgrades `proxy` to `newImplementation`. Must be called by `sender`.
-    /// @dev Reverts if the proxy admin or its owner do not match, if the version goes down, or if
-    /// owner / vault / pair token / implementation are not as expected after the upgrade, or if
-    /// the proxy address no longer matches the permissions of the new implementation.
-    /// @param sender            Broadcasting account, owner of `proxyAdmin`.
-    /// @param proxy             HookManager proxy.
-    /// @param proxyAdmin        ProxyAdmin of `proxy`.
-    /// @param newImplementation Deployed, CREATE2-mined HookManager implementation.
-    function upgradeHook(
-        address sender,
-        address proxy,
-        address proxyAdmin,
-        address newImplementation
-    ) public {
-        _checkProxyAdmin(sender, proxy, proxyAdmin);
-
-        HookManager hook = HookManager(payable(proxy));
-        address ownerBefore = hook.owner();
-        address vaultBefore = hook.vault();
-        address controllerBefore = hook.controller();
-        address pairTokenBefore = Currency.unwrap(hook.pairToken());
-
-        uint64 current = _initializedVersion(proxy);
-        uint64 next = HookManager(payable(newImplementation)).getVersion();
-        if (next < current) revert VersionDowngrade(current, next);
-        bytes memory data = next > current
-            ? abi.encodeCall(
-                HookManager.reinitialize,
-                (
-                    ownerBefore,
-                    hook.protocolRecipient(),
-                    vaultBefore,
-                    controllerBefore,
-                    hook.TOTAL_FEE_BIPS(),
-                    hook.PROTOCOL_SHARE_BIPS()
-                )
-            )
-            : bytes("");
-
-        ProxyAdmin(proxyAdmin).upgradeAndCall(
-            ITransparentUpgradeableProxy(proxy), newImplementation, data
-        );
-
-        if (
-            Upgrades.getImplementationAddress(proxy) != newImplementation
-                || hook.owner() != ownerBefore || hook.vault() != vaultBefore
-                || hook.controller() != controllerBefore
-                || Currency.unwrap(hook.pairToken()) != pairTokenBefore
-        ) revert StateChanged();
-        IHooks(proxy).validateHookPermissions(hook.getHookPermissions());
-    }
-}
-
 /// @notice Upgrades the GemoonController proxy and re-runs its initializer.
 /// @dev Env: GEMOON_OWNER, USDG_ADDRESS, POOL_MANAGER, CONTROLLER_PROXY_ADDRESS,
 /// CONTROLLER_PROXY_ADMIN_ADDRESS. `reinitialize` is guarded by `reinitializer(GEMOON_VERSION)`,
@@ -1350,13 +1236,13 @@ contract ProxyGemoonControllerUpgrade is Script {
 }
 
 /// @notice Read-only check that a deployment is wired correctly. No broadcast.
-/// @dev Env: CONTROLLER_PROXY_ADDRESS, HOOK_PROXY_ADDRESS, VAULT_PROXY_ADDRESS,
+/// @dev Env: CONTROLLER_PROXY_ADDRESS, HOOK_ADDRESS, VAULT_PROXY_ADDRESS,
 /// REFERRALS_PROXY_ADDRESS (optional: checked only if set).
 contract VerifyWiring is GemoonDeployBase {
     function run() external view {
         GemoonController controller =
             GemoonController(payable(vm.envAddress("CONTROLLER_PROXY_ADDRESS")));
-        HookManager hook = HookManager(payable(vm.envAddress("HOOK_PROXY_ADDRESS")));
+        HookManager hook = HookManager(payable(vm.envAddress("HOOK_ADDRESS")));
         Vault vault = Vault(vm.envAddress("VAULT_PROXY_ADDRESS"));
 
         checkWiring(controller, hook, vault);
@@ -1365,7 +1251,7 @@ contract VerifyWiring is GemoonDeployBase {
         console.log("VAULT OWNER: ", vault.owner());
         console.log("VAULT PENDING OWNER: ", vault.pendingOwner());
         console.log("VAULT CONVERSION THRESHOLD: ", vault.conversionThreshold());
-        _logProxy("HOOK", address(hook));
+        console.log("HOOK: ", address(hook));
         console.log("HOOK OWNER: ", hook.owner());
         console.log("HOOK PENDING OWNER: ", hook.pendingOwner());
         console.log("HOOK PROTOCOL RECIPIENT: ", hook.protocolRecipient());
@@ -1442,7 +1328,7 @@ contract DeployUniswapV3SwapAdapter is GemoonDeployBase {
 ///  - GEMOON_OWNER                 owner, withdraws the protocol part (default: broadcaster)
 ///  - GEMOON_PROXY_ADMIN_OWNER     owner of the ProxyAdmin, i.e. who can upgrade (default: GEMOON_OWNER)
 ///  - CONTROLLER_PROXY_ADDRESS     GemoonController proxy (optional, can be set later)
-///  - HOOK_PROXY_ADDRESS           HookManager proxy (optional, can be set later); its pair token
+///  - HOOK_ADDRESS                 HookManager (optional, can be set later); its pair token
 ///                                 must equal USDG_ADDRESS
 /// After the run: `make wire-referrals` with REFERRALS_PROXY_ADDRESS set (owner of the controller
 /// and the hook), so the hook pays the protocol share here and the controller registers new Memes.
@@ -1457,7 +1343,7 @@ contract DeployReferrals is GemoonDeployBase {
             proxyAdminOwner: _envAddressOr("GEMOON_PROXY_ADMIN_OWNER", owner),
             pairToken: vm.envAddress("USDG_ADDRESS"),
             controller: _envAddressOr("CONTROLLER_PROXY_ADDRESS", address(0)),
-            hook: _envAddressOr("HOOK_PROXY_ADDRESS", address(0)),
+            hook: _envAddressOr("HOOK_ADDRESS", address(0)),
             refShareBips: _envUintOr("REFERRALS_REF_SHARE_BIPS", 1_000)
         });
         if (
@@ -1479,7 +1365,7 @@ contract DeployReferrals is GemoonDeployBase {
 }
 
 /// @notice Points the controller and the hook at the Referrals contract and checks the wiring.
-/// @dev Env: REFERRALS_PROXY_ADDRESS, CONTROLLER_PROXY_ADDRESS, HOOK_PROXY_ADDRESS. The broadcaster
+/// @dev Env: REFERRALS_PROXY_ADDRESS, CONTROLLER_PROXY_ADDRESS, HOOK_ADDRESS. The broadcaster
 /// must own the controller and the hook. From now on the protocol share of every fee goes to the
 /// referrals contract instead of the previous protocol recipient.
 contract WireReferrals is GemoonDeployBase {
@@ -1487,7 +1373,7 @@ contract WireReferrals is GemoonDeployBase {
         GmoonReferrals referrals = GmoonReferrals(vm.envAddress("REFERRALS_PROXY_ADDRESS"));
         GemoonController controller =
             GemoonController(payable(vm.envAddress("CONTROLLER_PROXY_ADDRESS")));
-        HookManager hook = HookManager(payable(vm.envAddress("HOOK_PROXY_ADDRESS")));
+        HookManager hook = HookManager(payable(vm.envAddress("HOOK_ADDRESS")));
 
         vm.startBroadcast();
         wireReferrals(controller, hook, referrals);
@@ -1574,10 +1460,10 @@ contract ProxyReferralsUpgrade is GemoonDeployBase {
 ///  - GOVERNANCE_SAFE                Safe: proposer and executor of the timelock, owner of the rest (required)
 ///  - TIMELOCK_ADDRESS               existing TimelockController to reuse (optional: deploys one)
 ///  - TIMELOCK_MIN_DELAY             delay of a new timelock in seconds (optional, default 48 hours)
-///  - CONTROLLER/HOOK/VAULT_PROXY_ADDRESS and their *_PROXY_ADMIN_ADDRESS (required)
+///  - CONTROLLER/VAULT_PROXY_ADDRESS and their *_PROXY_ADMIN_ADDRESS, HOOK_ADDRESS (required)
 ///  - REFERRALS_PROXY_ADDRESS, REFERRALS_PROXY_ADMIN_ADDRESS, SWAP_ADAPTER (optional: skipped if empty)
 /// The broadcaster must own every contract and ProxyAdmin it touches. To the timelock: every
-/// ProxyAdmin and the controller (one-step, effective at once) and the hook (Ownable2Step: pending
+/// ProxyAdmin and the controller (one-step, effective at once) and the hook (no proxy; Ownable2Step: pending
 /// until the timelock runs `acceptOwnership`, scheduled by the Safe, executable after the delay).
 /// To the Safe: vault, referrals and adapter (Ownable2Step: the Safe calls `acceptOwnership`).
 /// The new timelock has no admin: its roles can only change through its own delayed operations.
@@ -1598,7 +1484,6 @@ contract TransferToGovernance is GemoonDeployBase {
         address referrals; // zero = skip
         address adapter; // zero = skip
         address controllerProxyAdmin;
-        address hookProxyAdmin;
         address vaultProxyAdmin;
         address referralsProxyAdmin; // zero = skip
     }
@@ -1609,12 +1494,11 @@ contract TransferToGovernance is GemoonDeployBase {
         uint256 delay = _envUintOr("TIMELOCK_MIN_DELAY", DEFAULT_TIMELOCK_DELAY);
         Targets memory t = Targets({
             controller: vm.envAddress("CONTROLLER_PROXY_ADDRESS"),
-            hook: vm.envAddress("HOOK_PROXY_ADDRESS"),
+            hook: vm.envAddress("HOOK_ADDRESS"),
             vault: vm.envAddress("VAULT_PROXY_ADDRESS"),
             referrals: _envAddressOr("REFERRALS_PROXY_ADDRESS", address(0)),
             adapter: _envAddressOr("SWAP_ADAPTER", address(0)),
             controllerProxyAdmin: vm.envAddress("CONTROLLER_PROXY_ADMIN_ADDRESS"),
-            hookProxyAdmin: vm.envAddress("HOOK_PROXY_ADMIN_ADDRESS"),
             vaultProxyAdmin: vm.envAddress("VAULT_PROXY_ADMIN_ADDRESS"),
             referralsProxyAdmin: _envAddressOr("REFERRALS_PROXY_ADMIN_ADDRESS", address(0))
         });
@@ -1656,7 +1540,6 @@ contract TransferToGovernance is GemoonDeployBase {
         if (safe.code.length == 0) revert SafeHasNoCode(safe);
 
         _transferProxyAdmin(sender, t.controller, t.controllerProxyAdmin, timelock);
-        _transferProxyAdmin(sender, t.hook, t.hookProxyAdmin, timelock);
         _transferProxyAdmin(sender, t.vault, t.vaultProxyAdmin, timelock);
         if (t.referrals != address(0)) {
             _transferProxyAdmin(sender, t.referrals, t.referralsProxyAdmin, timelock);

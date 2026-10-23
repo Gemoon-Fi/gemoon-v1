@@ -83,6 +83,9 @@ contract GemoonController is
     IAllowanceTransfer public permit2;
     /// @notice Referrals contract every new Meme is registered in; zero = referrals off.
     IReferrals public referrals;
+    /// @notice Hook the pool of a Meme was created with, zero for Memes deployed before it was
+    ///         recorded. Hooks are not upgradeable: `setHook` only changes the hook of new Memes.
+    mapping(address meme => address) public hookOf;
 
     /// @dev Version of the Gemoon contract.
     uint64 public constant GEMOON_VERSION = 1;
@@ -126,9 +129,10 @@ contract GemoonController is
         _init(poolManager_, weth_, protocolAdmin_);
     }
 
-    /// @notice Sets the hook attached to new pools.
+    /// @notice Sets the hook attached to new pools. Pools of existing Memes keep their hook
+    ///         (`hookOf`); the vault and the referrals keep accepting fees from it.
     /// @dev Only owner. The hook must charge fees in the pair token of this controller.
-    /// @param hook_ HookManager proxy.
+    /// @param hook_ HookManager (not upgradeable: pools created before a change keep their hook).
     function setHook(address hook_) external onlyOwner {
         if (hook_ == address(0)) revert InvalidAddress();
         address hookPairToken = Currency.unwrap(
@@ -235,6 +239,9 @@ contract GemoonController is
             )
         );
 
+        // Recorded before any call out: the pool below is created with this hook for good.
+        hookOf[deployedToken] = hook_;
+
         // The hook accepts the pool only if the vault of the Meme already exists.
         vault_.registerVault(
             deployedToken,
@@ -249,9 +256,9 @@ contract GemoonController is
             hook_
         );
 
+        // The hook recorded the pool creation time itself in `afterInitialize`.
         IHookManager(hook_).notifyPoolCreated(
             deployedToken,
-            block.timestamp,
             config.rewardsConfig.swapFeeBips
         );
 

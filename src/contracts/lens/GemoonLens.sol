@@ -16,7 +16,7 @@ import {IGemoonToken, SocialMedia} from "../interfaces/IToken.sol";
 import {IHookManager} from "../interfaces/IHookManager.sol";
 import {IUniswapV3SwapAdapter} from "../interfaces/IUniswapV3SwapAdapter.sol";
 import {IVault, VaultInfo, AssetConfig} from "../interfaces/IVault.sol";
-import {TICK_SPACING} from "../interfaces/IGemoon.sol";
+import {IGemoonController, TICK_SPACING} from "../interfaces/IGemoon.sol";
 
 /// @dev `GemoonToken.getSocialMedia`, not part of `IGemoonToken`.
 interface ISocialMediaToken {
@@ -50,14 +50,15 @@ contract GemoonLens is IGemoonLens {
     /// @dev Vault of the deployment. USDG and the swap adapter are read from it on every call,
     /// the adapter can be replaced by the vault owner.
     IVault private immutable i_vault;
-    /// @dev HookManager: `hooks` of every Gemoon pool key and source of `pendingFees`.
+    /// @dev Fallback HookManager for Memes the controller has no `hookOf` for (deployed by an
+    /// older controller version). Every other Meme is read through its own hook.
     address private immutable i_hook;
     /// @dev PoolManager whose slot0 gives the pool prices (StateLibrary, same as StateView).
     IPoolManager private immutable i_poolManager;
 
     /// @param controller_  GemoonController of the deployment.
     /// @param vault_       Vault of the deployment.
-    /// @param hook_        HookManager every Gemoon pool is keyed with.
+    /// @param hook_        HookManager of Memes without `controller.hookOf` (older controllers).
     /// @param poolManager_ Uniswap V4 PoolManager holding the pools.
     constructor(
         address controller_,
@@ -238,13 +239,14 @@ contract GemoonLens is IGemoonLens {
         address meme,
         address usdg
     ) private view returns (TokenMarket memory m, bool supplyOk) {
+        address hook_ = _hookOf(meme);
         bool memeIsToken0 = meme < usdg;
         PoolKey memory key = PoolKey({
             currency0: Currency.wrap(memeIsToken0 ? meme : usdg),
             currency1: Currency.wrap(memeIsToken0 ? usdg : meme),
             fee: 0,
             tickSpacing: TICK_SPACING,
-            hooks: IHooks(i_hook)
+            hooks: IHooks(hook_)
         });
         PoolId id = key.toId();
         m.poolId = PoolId.unwrap(id);
@@ -269,7 +271,7 @@ contract GemoonLens is IGemoonLens {
         m.burnedOk = zeroOk && deadOk;
         if (m.burnedOk) m.burned = burnedZero + burnedDead;
         (m.pendingFeesOk, m.pendingFees) = _readWord(
-            i_hook,
+            hook_,
             abi.encodeCall(IHookManager.pendingFees, (meme))
         );
     }
@@ -395,6 +397,16 @@ contract GemoonLens is IGemoonLens {
     // ---------------------------------------------------------------------------------------------
 
     /// @dev First 32-byte word of the return data.
+    /// @dev Hook the pool of `meme` was created with: `controller.hookOf(meme)`, or `i_hook` when
+    /// the controller has none recorded (older Meme or controller) or does not answer.
+    function _hookOf(address meme) private view returns (address hook_) {
+        (bool ok, address recorded) = _readAddress(
+            i_controller,
+            abi.encodeCall(IGemoonController.hookOf, (meme))
+        );
+        return ok && recorded != address(0) ? recorded : i_hook;
+    }
+
     function _readWord(
         address target,
         bytes memory data
