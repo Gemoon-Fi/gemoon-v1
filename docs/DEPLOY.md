@@ -24,8 +24,9 @@ Makefile и скрипты из `tools/scripts` падают с ошибкой. 
 | `UNISWAP_V3_FACTORY` | да | фабрика Uniswap V3 с пулами USDG/актив, из неё адаптер берёт пулы |
 | `GEMOON_OWNER` | нет | итоговый владелец всех контрактов, по умолчанию деплоер |
 | `GEMOON_PROXY_ADMIN_OWNER` | нет | владелец четырёх ProxyAdmin, то есть кто может апгрейдить, по умолчанию `GEMOON_OWNER` |
-| `HOOK_TOTAL_FEE_BIPS`, `HOOK_PROTOCOL_SHARE_BIPS` | нет | резервная комиссия хука в bips сделки (по умолчанию 125) и доля протокола в bips комиссии (по умолчанию 3333 = треть) |
-| `REFERRALS_REF_SHARE_BIPS` | нет | доля реферера в bips протокольной доли, по умолчанию 1000 |
+| `HOOK_TOTAL_FEE_BIPS` | нет | резервная комиссия хука в bips сделки (по умолчанию 125) |
+| `VAULT_PROTOCOL_SHARE_BPS` | нет | доля протокола в bps комиссии (по умолчанию 2500 = четверть); хранится в волте, владелец волта меняет её `setProtocolShare` |
+| `REFERRALS_REF_SHARE_BIPS` | нет | доля реферера в bips протокольной доли, по умолчанию 2500 |
 | `ADAPTER_TWAP_WINDOW` | нет | окно TWAP адаптера в секундах, по умолчанию 600 |
 | `ADAPTER_MAX_SLIPPAGE_BPS` | нет | допуск от TWAP для каждого маршрута, по умолчанию 100 (1%) |
 | `DEPLOY_ASSETS_FILE` | нет | список наградных активов, по умолчанию `tools/scripts/robinhood-assets.csv` (формат: заголовок, затем `Ticker,Contract address,Uniswap V3 / USDG pool`) |
@@ -168,9 +169,9 @@ forge verify-contract $VAULT_IMPL src/contracts/vault/Vault.sol:Vault --chain-id
 
 # хук (без прокси): все параметры в конструкторе
 forge verify-contract $HOOK_ADDRESS src/contracts/hooks/HookManager.sol:HookManager --chain-id $CHAIN_ID \
-  --constructor-args $(cast abi-encode "constructor(address,address,address,address,address,address,uint256,uint256)" \
-    $POOL_MANAGER $USDG_ADDRESS $GEMOON_OWNER $REFERRALS_PROXY_ADDRESS $VAULT_PROXY_ADDRESS $CONTROLLER_PROXY_ADDRESS \
-    $HOOK_TOTAL_FEE_BIPS $HOOK_PROTOCOL_SHARE_BIPS) ...
+  --constructor-args $(cast abi-encode "constructor(address,address,address,address,address,uint256)" \
+    $POOL_MANAGER $USDG_ADDRESS $GEMOON_OWNER $VAULT_PROXY_ADDRESS $CONTROLLER_PROXY_ADDRESS \
+    $HOOK_TOTAL_FEE_BIPS) ...
 
 # любой из трёх прокси: (имплементация, владелец ProxyAdmin, calldata initialize)
 forge verify-contract $PROXY lib/openzeppelin-contracts/contracts/proxy/transparent/TransparentUpgradeableProxy.sol:TransparentUpgradeableProxy \
@@ -231,8 +232,8 @@ make deploy-swap-adapter
 | Что | Кому | Как вступает в силу |
 |---|---|---|
 | 4 ProxyAdmin (апгрейды), контроллер | `TimelockController` | сразу |
-| хук (`setVault`, `setProtocolRecipient`, `setController`) | `TimelockController` | после `acceptOwnership` через таймлок (schedule → задержка → execute) |
-| Vault, GmoonReferrals, UniswapV3SwapAdapter | Safe | после `acceptOwnership()` из Safe |
+| хук (`setVault`, `setController`) | `TimelockController` | после `acceptOwnership` через таймлок (schedule → задержка → execute) |
+| Vault (в том числе доля протокола и её получатель), GmoonReferrals, UniswapV3SwapAdapter | Safe | после `acceptOwnership()` из Safe |
 
 Таймлок новый: задержка `TIMELOCK_MIN_DELAY` (по умолчанию 172800 = 48 ч), proposer, executor и
 canceller — только `GOVERNANCE_SAFE`, админа нет. Повторно использовать таймлок: `TIMELOCK_ADDRESS`.
@@ -304,7 +305,7 @@ anvil-аккаунт `0xf39F…2266` на девнете пуст, на него
   меняется. Реальный деплой только через `make deploy-gemoon`.
 
 **Как устроено хранение состояния и чем это ломается.** Anvil держит локально только те аккаунты,
-которые кто-то трогал после старта форка. За остальными он ходит в upstream Sepolia-ноду на блоке
+которые кто-то трогал после старта форка. За остальными он ходит в upstream-ноду Robinhood Chain на блоке
 форка. Отсюда два типичных отказа:
 
 - `state at block #N is pruned` на деплое. Upstream это не archive-нода, и блок форка выпал из её

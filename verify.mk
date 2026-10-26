@@ -6,14 +6,13 @@
 # Run from the commit the contracts were deployed from: the sources must match the deployed code.
 #
 # From env/<ENVIRONMENT>.mk: RPC, BLOCKSCOUT_API_KEY (verify-* only), POOL_MANAGER, USDG_ADDRESS,
-# HOOK_ADDRESS, GEMOON_OWNER, REFERRALS_PROXY_ADDRESS,
-# VAULT_PROXY_ADDRESS, CONTROLLER_PROXY_ADDRESS, HOOK_TOTAL_FEE_BIPS, HOOK_PROTOCOL_SHARE_BIPS.
+# HOOK_ADDRESS, GEMOON_OWNER, VAULT_PROXY_ADDRESS, CONTROLLER_PROXY_ADDRESS, HOOK_TOTAL_FEE_BIPS.
 
 ifndef ENVIRONMENT
-$(error ENVIRONMENT is not set: make -f verify.mk <target> ENVIRONMENT=dev|prod)
+$(error ENVIRONMENT is not set: make -f verify.mk <target> ENVIRONMENT=dev|prod|sepolia)
 endif
-ifeq ($(filter $(ENVIRONMENT),dev prod),)
-$(error Unknown ENVIRONMENT=$(ENVIRONMENT), expected dev or prod)
+ifeq ($(filter $(ENVIRONMENT),dev prod sepolia),)
+$(error Unknown ENVIRONMENT=$(ENVIRONMENT), expected dev, prod or sepolia)
 endif
 ENV_FILE := env/$(ENVIRONMENT).mk
 ifeq ($(wildcard $(ENV_FILE)),)
@@ -37,10 +36,12 @@ HOOK_CONTRACT := src/contracts/hooks/HookManager.sol:HookManager
 
 # HookManager is not upgradeable: one contract, constructor args rebuilt the way DeployGemoon
 # passed them. The env values must be the ones of the deployment.
-# HookManager(poolManager, pairToken, owner, protocolRecipient, vault, controller, feeBips, protocolShareBips)
-HOOK_ARGS = $$(cast abi-encode "constructor(address,address,address,address,address,address,uint256,uint256)" \
-	$(POOL_MANAGER) $(USDG_ADDRESS) $(GEMOON_OWNER) $(REFERRALS_PROXY_ADDRESS) $(VAULT_PROXY_ADDRESS) \
-	$(CONTROLLER_PROXY_ADDRESS) $(HOOK_TOTAL_FEE_BIPS) $(HOOK_PROTOCOL_SHARE_BIPS))
+# HookManager(poolManager, pairToken, owner, vault, controller, feeBips). A hook deployed before
+# the fee split moved into the vault took (.., owner, protocolRecipient, vault, controller, feeBips,
+# protocolShareBips): verify it from its own commit.
+HOOK_ARGS = $$(cast abi-encode "constructor(address,address,address,address,address,uint256)" \
+	$(POOL_MANAGER) $(USDG_ADDRESS) $(GEMOON_OWNER) $(VAULT_PROXY_ADDRESS) \
+	$(CONTROLLER_PROXY_ADDRESS) $(HOOK_TOTAL_FEE_BIPS))
 
 .PHONY: check-api-key verify-hook verify-hook-sourcify verify-tokens-sourcify standard-json-hook
 

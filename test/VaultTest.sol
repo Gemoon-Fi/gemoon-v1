@@ -15,6 +15,7 @@ import {
     VaultInfo
 } from "../src/contracts/interfaces/IVault.sol";
 import {ISwapAdapter} from "../src/contracts/interfaces/ISwapAdapter.sol";
+import {IProtocolFeeReceiver} from "../src/contracts/interfaces/IReferrals.sol";
 import {Upgrades} from "@oz-upgrades/Upgrades.sol";
 
 contract MockToken is ERC20 {
@@ -70,6 +71,25 @@ contract MockSwapAdapter is ISwapAdapter {
         }
         amountOut = (amountIn * rate[tokenOut]) / 1e18;
         MockToken(tokenOut).mint(recipient, amountOut);
+    }
+}
+
+/// @dev Protocol recipient with code: records every `notifyFee`, can be told to reject it.
+contract MockProtocolReceiver is IProtocolFeeReceiver {
+    address public lastMeme;
+    uint256 public lastAmount;
+    uint256 public calls;
+    bool public shouldRevert;
+
+    function setShouldRevert(bool shouldRevert_) external {
+        shouldRevert = shouldRevert_;
+    }
+
+    function notifyFee(address meme, uint256 amount) external {
+        require(!shouldRevert, "receiver: revert");
+        lastMeme = meme;
+        lastAmount = amount;
+        ++calls;
     }
 }
 
@@ -264,6 +284,32 @@ contract VaultTest is VaultFixture {
         vault.registerVault(address(meme), creator, 10_001, _assets6040());
     }
 
+    function test_RegisterVault_CreatorShareAtCap_Stored() external {
+        assertEq(vault.MAX_CREATOR_SHARE_BPS(), 5_000);
+        vm.prank(controller);
+        vault.registerVault(address(meme), creator, 5_000, _assets6040());
+        assertEq(vault.creatorShareBpsOf(address(meme)), 5_000);
+    }
+
+    function test_RegisterVault_CreatorShareAboveCap_Reverts() external {
+        vm.prank(controller);
+        vm.expectRevert(abi.encodeWithSelector(IVault.InvalidCreatorShare.selector, 5_001));
+        vault.registerVault(address(meme), creator, 5_001, _assets6040());
+    }
+
+    /// @dev Invariant: no vault is ever registered with a creator share above the cap, so the
+    /// stakers always get at least half of the vault part.
+    function testFuzz_RegisterVault_CreatorShare_RevertsAboveCap(uint16 shareBps) external {
+        vm.prank(controller);
+        if (shareBps > 5_000) {
+            vm.expectRevert(abi.encodeWithSelector(IVault.InvalidCreatorShare.selector, shareBps));
+            vault.registerVault(address(meme), creator, shareBps, _assets6040());
+        } else {
+            vault.registerVault(address(meme), creator, shareBps, _assets6040());
+            assertEq(vault.creatorShareBpsOf(address(meme)), shareBps);
+        }
+    }
+
     function test_CreatorShareBpsOf_Unregistered_ReturnsZero() external view {
         assertEq(vault.creatorShareBpsOf(address(meme)), 0);
     }
@@ -344,16 +390,15 @@ contract VaultTest is VaultFixture {
         assertEq(vault.pendingCreditOf(address(meme), alice), 100e6);
     }
 
-    function test_NotifyFees_FullCreatorShare_AllToCreator() external {
+    function test_NotifyFees_MaxCreatorShare_HalfToCreator() external {
         vm.prank(controller);
-        vault.registerVault(address(meme), creator, 10_000, _assets6040());
+        vault.registerVault(address(meme), creator, 5_000, _assets6040());
         _stake(alice, 1_000e18);
         _notify(100e6);
         VaultInfo memory info = vault.vaultInfo(address(meme));
-        assertEq(info.pendingCreatorUSDG, 100e6);
-        assertEq(info.pendingStakerUSDG, 0);
-        assertEq(info.accUsdPerShare, 0);
-        assertEq(vault.pendingCreditOf(address(meme), alice), 0);
+        assertEq(info.pendingCreatorUSDG, 50e6);
+        assertEq(info.pendingStakerUSDG, 50e6);
+        assertEq(vault.pendingCreditOf(address(meme), alice), 50e6);
     }
 
     function test_NotifyFees_ZeroCreatorShareNoStakers_AllToCreator() external {
@@ -368,7 +413,7 @@ contract VaultTest is VaultFixture {
         uint256 amount,
         uint256 staked
     ) external {
-        shareBps = uint16(bound(shareBps, 0, 10_000));
+        shareBps = uint16(bound(shareBps, 0, 5_000));
         amount = bound(amount, 1, 1e18);
         staked = bound(staked, 1, 1e30);
         vm.prank(controller);
@@ -385,10 +430,198 @@ contract VaultTest is VaultFixture {
             assertLe(credit, info.pendingStakerUSDG, "credit <= stakers' part");
             assertApproxEqAbs(credit, info.pendingStakerUSDG, 1, "credit ~ stakers' part");
         } else {
-            // share 100% or too small to move the accumulator: everything to the creator
+            // too small to move the accumulator: everything to the creator
             assertEq(info.pendingCreatorUSDG, amount);
         }
         assertEq(vault.creatorShareBpsOf(address(meme)), shareBps, "immutable");
+    }
+
+    // ------------------------------------------------------------------ protocol split
+
+    /// @dev EOA recipient, a third of every fee.
+    function _setProtocol(address recipient, uint256 shareBps) internal {
+        vm.startPrank(owner);
+        vault.setProtocolRecipient(recipient);
+        vault.setProtocolShare(shareBps);
+        vm.stopPrank();
+    }
+
+    function test_ProtocolSplit_FreshVault_ShareZeroRecipientUnset() external view {
+        assertEq(vault.protocolShareBps(), 0);
+        assertEq(vault.protocolRecipient(), address(0));
+    }
+
+    function test_SetProtocolShare_Owner_SetsAndEmits() external {
+        vm.expectEmit(address(vault));
+        emit IVault.ProtocolShareUpdated(3_333);
+        vm.prank(owner);
+        vault.setProtocolShare(3_333);
+        assertEq(vault.protocolShareBps(), 3_333);
+    }
+
+    function test_SetProtocolShare_AboveBps_Reverts() external {
+        vm.expectRevert(
+            abi.encodeWithSelector(IVault.InvalidProtocolShare.selector, 10_001)
+        );
+        vm.prank(owner);
+        vault.setProtocolShare(10_001);
+    }
+
+    function test_SetProtocolShare_NotOwner_Reverts() external {
+        vm.expectRevert(
+            abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice)
+        );
+        vm.prank(alice);
+        vault.setProtocolShare(1);
+    }
+
+    function test_SetProtocolRecipient_Owner_SetsAndEmits() external {
+        address recipient = makeAddr("protocol");
+        vm.expectEmit(address(vault));
+        emit IVault.ProtocolRecipientUpdated(recipient);
+        vm.prank(owner);
+        vault.setProtocolRecipient(recipient);
+        assertEq(vault.protocolRecipient(), recipient);
+    }
+
+    function test_SetProtocolRecipient_Zero_Reverts() external {
+        vm.expectRevert(IVault.ZeroAddress.selector);
+        vm.prank(owner);
+        vault.setProtocolRecipient(address(0));
+    }
+
+    function test_SetProtocolRecipient_NotOwner_Reverts() external {
+        vm.expectRevert(
+            abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice)
+        );
+        vm.prank(alice);
+        vault.setProtocolRecipient(alice);
+    }
+
+    /// @dev The hook sends the whole fee: a third leaves to the protocol at once, the rest is
+    /// credited (10% creator, 90% stakers) and only the rest is accounted.
+    function test_NotifyFees_ProtocolShare_SendsShareAndCreditsRest() external {
+        address recipient = makeAddr("protocol");
+        _setProtocol(recipient, 3_333);
+        _register(_assets6040());
+        _stake(alice, 1_000e18);
+
+        usdg.mint(address(vault), 100e6);
+        vm.expectEmit(address(vault));
+        emit IVault.FeesNotified(address(meme), 60_003_000, 6_667_000);
+        vm.expectEmit(address(vault));
+        emit IVault.ProtocolFeePaid(address(meme), recipient, 33_330_000);
+        vm.prank(hook);
+        vault.notifyFees(address(meme), 100e6);
+
+        assertEq(usdg.balanceOf(recipient), 33_330_000, "a third to the protocol");
+        assertEq(usdg.balanceOf(address(vault)), 66_670_000, "rest stays");
+        assertEq(vault.accounted(address(usdg)), 66_670_000, "only the rest is accounted");
+        VaultInfo memory info = vault.vaultInfo(address(meme));
+        assertEq(info.pendingCreatorUSDG, 6_667_000, "10% of the rest to the creator");
+        assertEq(info.pendingStakerUSDG, 60_003_000, "90% of the rest to the stakers");
+    }
+
+    /// @dev A non-zero share without a recipient would lose the protocol part: the whole notify
+    /// reverts, so the hook keeps the fee accrued.
+    function test_NotifyFees_ShareWithoutRecipient_Reverts() external {
+        vm.prank(owner);
+        vault.setProtocolShare(3_333);
+        _register(_assets6040());
+        usdg.mint(address(vault), 100e6);
+        vm.expectRevert(IVault.ProtocolRecipientNotSet.selector);
+        vm.prank(hook);
+        vault.notifyFees(address(meme), 100e6);
+    }
+
+    /// @dev A protocol part rounding to zero needs no recipient.
+    function test_NotifyFees_ShareRoundsToZeroWithoutRecipient_CreditsAll() external {
+        vm.prank(owner);
+        vault.setProtocolShare(1);
+        _register(_assets6040());
+        _notify(9_999);
+        assertEq(vault.pendingUSDG(address(meme)), 9_999);
+    }
+
+    function test_NotifyFees_ContractRecipient_Notified() external {
+        MockProtocolReceiver receiver = new MockProtocolReceiver();
+        _setProtocol(address(receiver), 3_333);
+        _register(_assets6040());
+        _notify(100e6);
+
+        assertEq(receiver.calls(), 1, "notified once");
+        assertEq(receiver.lastMeme(), address(meme), "meme");
+        assertEq(receiver.lastAmount(), 33_330_000, "amount sent");
+        assertEq(usdg.balanceOf(address(receiver)), 33_330_000, "tokens before the notify");
+    }
+
+    /// @dev A rejecting recipient rolls the whole notify back, credit included.
+    function test_NotifyFees_RecipientReverts_WholeNotifyReverts() external {
+        MockProtocolReceiver receiver = new MockProtocolReceiver();
+        receiver.setShouldRevert(true);
+        _setProtocol(address(receiver), 3_333);
+        _register(_assets6040());
+        usdg.mint(address(vault), 100e6);
+
+        vm.expectRevert("receiver: revert");
+        vm.prank(hook);
+        vault.notifyFees(address(meme), 100e6);
+        assertEq(vault.pendingUSDG(address(meme)), 0, "nothing credited");
+        assertEq(vault.accounted(address(usdg)), 0, "nothing accounted");
+    }
+
+    /// @dev 100% to the protocol: the Meme vault gets nothing.
+    function test_NotifyFees_FullProtocolShare_NothingCredited() external {
+        address recipient = makeAddr("protocol");
+        _setProtocol(recipient, 10_000);
+        _register(_assets6040());
+        _notify(100e6);
+        assertEq(usdg.balanceOf(recipient), 100e6);
+        assertEq(vault.pendingUSDG(address(meme)), 0);
+        assertEq(vault.accounted(address(usdg)), 0);
+    }
+
+    /// @dev The share is global and applies from the next notify on, to every Meme.
+    function test_SetProtocolShare_Changed_AppliesToNextNotify() external {
+        address recipient = makeAddr("protocol");
+        _setProtocol(recipient, 3_333);
+        _register(_assets6040());
+        _notify(100e6);
+        vm.prank(owner);
+        vault.setProtocolShare(5_000);
+        _notify(100e6);
+        assertEq(usdg.balanceOf(recipient), 33_330_000 + 50e6);
+        assertEq(vault.pendingUSDG(address(meme)), 66_670_000 + 50e6);
+    }
+
+    /// @dev Invariant of one notify: protocol + creator + stakers == amount, protocol part is
+    /// amount * share / BPS rounded down, `accounted` grows by the rest only.
+    function testFuzz_NotifyFees_AnyProtocolShare_SplitConserved(
+        uint256 protocolShareBps,
+        uint16 creatorShareBps,
+        uint256 amount,
+        uint256 staked
+    ) external {
+        protocolShareBps = bound(protocolShareBps, 0, 10_000);
+        creatorShareBps = uint16(bound(creatorShareBps, 0, 5_000));
+        amount = bound(amount, 1, 1e18);
+        staked = bound(staked, 0, 1e30);
+        address recipient = makeAddr("protocol");
+        _setProtocol(recipient, protocolShareBps);
+        vm.prank(controller);
+        vault.registerVault(address(meme), creator, creatorShareBps, _assets6040());
+        if (staked != 0) _stake(alice, staked);
+
+        _notify(amount);
+
+        uint256 toProtocol = (amount * protocolShareBps) / 10_000;
+        VaultInfo memory info = vault.vaultInfo(address(meme));
+        assertEq(usdg.balanceOf(recipient), toProtocol, "protocol part");
+        assertEq(
+            toProtocol + info.pendingCreatorUSDG + info.pendingStakerUSDG, amount, "conserved"
+        );
+        assertEq(vault.accounted(address(usdg)), amount - toProtocol, "accounted = rest");
+        assertEq(usdg.balanceOf(address(vault)), vault.accounted(address(usdg)), "no leftover");
     }
 
     // ------------------------------------------------------------------ conversion
@@ -1238,14 +1471,26 @@ contract VaultHandler is Test {
     address internal hook;
     address[] public actors;
 
+    address internal owner;
+
+    /// @dev USDG credited to the Meme vault (the fee minus the protocol part).
     uint256 public ghostNotified;
     uint256 public ghostPaidOut;
+    /// @dev Protocol part of every notify, `amount * share / BPS` at the time of the notify.
+    uint256 public ghostProtocol;
 
-    constructor(Vault vault_, MockToken usdg_, MockToken meme_, address hook_) {
+    constructor(
+        Vault vault_,
+        MockToken usdg_,
+        MockToken meme_,
+        address hook_,
+        address owner_
+    ) {
         vault = vault_;
         usdg = usdg_;
         meme = meme_;
         hook = hook_;
+        owner = owner_;
         for (uint256 i; i < 4; ++i) {
             actors.push(
                 makeAddr(string(abi.encodePacked("actor", vm.toString(i))))
@@ -1278,10 +1523,19 @@ contract VaultHandler is Test {
 
     function notify(uint256 amount) external {
         amount = bound(amount, 1, 1e15);
+        uint256 toProtocol = (amount * vault.protocolShareBps()) / vault.BPS();
         usdg.mint(address(vault), amount);
         vm.prank(hook);
         vault.notifyFees(address(meme), amount);
-        ghostNotified += amount;
+        ghostNotified += amount - toProtocol;
+        ghostProtocol += toProtocol;
+    }
+
+    /// @dev The owner changes the global protocol share at any time.
+    function setProtocolShare(uint256 shareBps) external {
+        shareBps = bound(shareBps, 0, vault.BPS());
+        vm.prank(owner);
+        vault.setProtocolShare(shareBps);
     }
 
     function convert() external {
@@ -1308,18 +1562,32 @@ contract VaultHandler is Test {
 
 /// @dev Single USDG-denominated asset, so every payout is comparable to what was notified.
 /// The threshold sits in the middle of the handler's fee range, so epochs close both
-/// automatically inside `notifyFees` and manually through `convert`.
+/// automatically inside `notifyFees` and manually through `convert`. The protocol share starts at
+/// a third and the handler changes it at random.
 contract VaultInvariantTest is VaultFixture {
     uint256 constant THRESHOLD = 5e14;
     VaultHandler handler;
+    address protocol = makeAddr("protocol");
 
     function setUp() external {
         _deployVault();
         _register(_assetsUsdgOnly());
-        vm.prank(owner);
+        vm.startPrank(owner);
         vault.setConversionThreshold(THRESHOLD);
-        handler = new VaultHandler(vault, usdg, meme, hook);
+        vault.setProtocolRecipient(protocol);
+        vault.setProtocolShare(3_333);
+        vm.stopPrank();
+        handler = new VaultHandler(vault, usdg, meme, hook, owner);
         targetContract(address(handler));
+    }
+
+    /// @dev The protocol gets exactly its share of every notify, never a unit of the Meme vault.
+    function invariant_ProtocolRecipient_GetsExactShareOfEveryNotify() external view {
+        assertEq(usdg.balanceOf(protocol), handler.ghostProtocol());
+    }
+
+    function invariant_ProtocolShare_NeverAboveBps() external view {
+        assertLe(vault.protocolShareBps(), vault.BPS());
     }
 
     function invariant_Pending_StaysBelowThreshold() external view {

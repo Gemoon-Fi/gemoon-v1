@@ -36,8 +36,8 @@ import {TokenConfig, SocialMedia, AdminConfig} from "../../src/contracts/interfa
 import {PriceMath} from "../../src/contracts/utils/Price.sol";
 import {MintableToken} from "../mocks/MintableToken.sol";
 
-/// @notice Controller and token deployment against the devnet: a Sepolia fork (chain id 1337)
-/// with the canonical Uniswap V4 PoolManager, PositionManager and Permit2. The Gemoon contracts
+/// @notice Controller and token deployment against the devnet: the Anvil fork of Robinhood chain (chain id
+/// 1488) with its Uniswap V4 PoolManager, PositionManager and Permit2. The Gemoon contracts
 /// are deployed onto the fork through the deploy script, the pair token is a mock USDG.
 /// @dev Env: DEVNET_RPC enables the suite (skipped when empty), DEVNET_BLOCK pins the block,
 /// OPERATOR_ADDRESS is the funded devnet account that owns the deployment (default: anvil #0).
@@ -47,10 +47,15 @@ contract ControllerDevnetForkTest is Test {
     using PoolIdLibrary for PoolKey;
     using PositionInfoLibrary for PositionInfo;
 
-    uint256 constant DEVNET_CHAIN_ID = 1337;
-    address constant POOL_MANAGER = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
-    address constant POSITION_MANAGER = 0x429ba70129df741B2Ca2a85BC3A2a3328e5c09b4;
-    address constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
+    uint256 constant DEVNET_CHAIN_ID = 1488;
+    /// @dev Uniswap V4 of the devnet, overridden by POOL_MANAGER / POSITION_MANAGER / PERMIT2 of
+    /// env/dev.mk when `make devnet-tests` exports them.
+    address constant DEVNET_POOL_MANAGER = 0x8366a39CC670B4001A1121B8F6A443A643e40951;
+    address constant DEVNET_POSITION_MANAGER = 0x58daec3116aae6D93017bAAea7749052E8a04fA7;
+    address constant DEVNET_PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
+    address POOL_MANAGER;
+    address POSITION_MANAGER;
+    address PERMIT2;
     address constant ANVIL_ACCOUNT_0 = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
     /// @dev Funded devnet account, becomes the owner of the deployed contracts.
     address DEVNET_ACCOUNT;
@@ -59,8 +64,8 @@ contract ControllerDevnetForkTest is Test {
 
     bool forked;
 
-    IPoolManager poolManager = IPoolManager(POOL_MANAGER);
-    IPositionManager positionManager = IPositionManager(POSITION_MANAGER);
+    IPoolManager poolManager;
+    IPositionManager positionManager;
     MintableToken usdg;
     PoolSwapTest swapRouter;
 
@@ -89,6 +94,11 @@ contract ControllerDevnetForkTest is Test {
         else vm.createSelectFork(rpc, vm.parseUint(rawBlock));
         forked = true;
         DEVNET_ACCOUNT = vm.envOr("OPERATOR_ADDRESS", ANVIL_ACCOUNT_0);
+        POOL_MANAGER = vm.envOr("POOL_MANAGER", DEVNET_POOL_MANAGER);
+        POSITION_MANAGER = vm.envOr("POSITION_MANAGER", DEVNET_POSITION_MANAGER);
+        PERMIT2 = vm.envOr("PERMIT2", DEVNET_PERMIT2);
+        poolManager = IPoolManager(POOL_MANAGER);
+        positionManager = IPositionManager(POSITION_MANAGER);
 
         assertEq(block.chainid, DEVNET_CHAIN_ID, "not the devnet");
         assertGt(POOL_MANAGER.code.length, 0, "PoolManager missing");
@@ -113,7 +123,7 @@ contract ControllerDevnetForkTest is Test {
                 usdg: address(usdg),
                 protocolRecipient: protocolRecipient,
                 feeBips: 125,
-                protocolShareBips: 3_333,
+                protocolShareBps: 2_500,
                 conversionThreshold: 0,
                 swapAdapter: address(0),
                 allowedAssets: assets

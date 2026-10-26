@@ -25,8 +25,8 @@ import {
 import {TokenConfig, SocialMedia, AdminConfig} from "../../src/contracts/interfaces/IToken.sol";
 import {MintableToken} from "../mocks/MintableToken.sol";
 
-/// @notice End-to-end dev buy against the devnet (Sepolia fork, chain id 1337, canonical Uniswap
-/// V4): the creator deploys a Meme buying 3% of the supply in the same transaction, the fee of
+/// @notice End-to-end dev buy against the devnet (Anvil fork of Robinhood chain, chain id 1488,
+/// its Uniswap V4): the creator deploys a Meme buying 3% of the supply in the same transaction, the fee of
 /// that buy and of the later trades reaches the protocol and the vault, the vault closes epochs
 /// and the creator collects the rewards.
 /// @dev The reward asset of the Meme is the pair token itself: the fork has no Uniswap V3 pool
@@ -36,16 +36,21 @@ import {MintableToken} from "../mocks/MintableToken.sol";
 /// OPERATOR_ADDRESS is the funded devnet account that owns the deployment (default: anvil #0).
 /// Nothing is broadcast, the fork lives only inside this test run.
 contract DevBuyDevnetForkTest is Test {
-    uint256 constant DEVNET_CHAIN_ID = 1337;
-    address constant POOL_MANAGER = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
-    address constant POSITION_MANAGER = 0x429ba70129df741B2Ca2a85BC3A2a3328e5c09b4;
-    address constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
+    uint256 constant DEVNET_CHAIN_ID = 1488;
+    /// @dev Uniswap V4 of the devnet, overridden by POOL_MANAGER / POSITION_MANAGER / PERMIT2 of
+    /// env/dev.mk when `make devnet-tests` exports them.
+    address constant DEVNET_POOL_MANAGER = 0x8366a39CC670B4001A1121B8F6A443A643e40951;
+    address constant DEVNET_POSITION_MANAGER = 0x58daec3116aae6D93017bAAea7749052E8a04fA7;
+    address constant DEVNET_PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
+    address POOL_MANAGER;
+    address POSITION_MANAGER;
+    address PERMIT2;
     address constant ANVIL_ACCOUNT_0 = 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266;
 
     uint256 constant BIPS = 10_000;
     uint256 constant PAIR_UNIT = 1e6; // mock USDG has 6 decimals
-    /// @dev Production protocol share of every fee, in bips of the fee: a third.
-    uint256 constant PROTOCOL_SHARE_BIPS = 3_333;
+    /// @dev Production protocol share of every fee, in bips of the fee: a quarter.
+    uint256 constant PROTOCOL_SHARE_BIPS = 2_500;
     /// @dev Swap fee the creator chooses for the Meme.
     uint256 constant MEME_FEE_BIPS = 300;
     /// @dev Pending USDG at which the vault closes an epoch.
@@ -58,7 +63,7 @@ contract DevBuyDevnetForkTest is Test {
 
     bool forked;
 
-    IPoolManager poolManager = IPoolManager(POOL_MANAGER);
+    IPoolManager poolManager;
     MintableToken usdg;
     PoolSwapTest swapRouter;
 
@@ -99,6 +104,10 @@ contract DevBuyDevnetForkTest is Test {
         else vm.createSelectFork(rpc, vm.parseUint(rawBlock));
         forked = true;
         address devnetAccount = vm.envOr("OPERATOR_ADDRESS", ANVIL_ACCOUNT_0);
+        POOL_MANAGER = vm.envOr("POOL_MANAGER", DEVNET_POOL_MANAGER);
+        POSITION_MANAGER = vm.envOr("POSITION_MANAGER", DEVNET_POSITION_MANAGER);
+        PERMIT2 = vm.envOr("PERMIT2", DEVNET_PERMIT2);
+        poolManager = IPoolManager(POOL_MANAGER);
 
         assertEq(block.chainid, DEVNET_CHAIN_ID, "not the devnet");
         assertGt(POOL_MANAGER.code.length, 0, "PoolManager missing");
@@ -122,7 +131,7 @@ contract DevBuyDevnetForkTest is Test {
                 usdg: address(usdg),
                 protocolRecipient: protocolRecipient,
                 feeBips: 125,
-                protocolShareBips: PROTOCOL_SHARE_BIPS,
+                protocolShareBps: PROTOCOL_SHARE_BIPS,
                 conversionThreshold: CONVERSION_THRESHOLD,
                 swapAdapter: address(0),
                 allowedAssets: assets
@@ -257,12 +266,11 @@ contract DevBuyDevnetForkTest is Test {
         assertEq(hook.currentFeeBips(l.token), hook.MAX_FEE_BIPS(), "others pay the anti-snipe fee");
 
         assertEq(hook.pendingFees(l.token), l.fee, "fee accrued in the hook");
-        assertEq(hook.accruedProtocol(l.token), l.protocolFee, "protocol part accrued");
         assertEq(usdg.balanceOf(address(controller)), 0, "controller keeps no pair token");
     }
 
-    /// @dev `distribute` (callable by anyone) pays the dev buy fee out right away: the protocol
-    /// part reaches the protocol recipient, the rest the vault, which crosses the threshold and
+    /// @dev `distribute` (callable by anyone) pays the dev buy fee out right away to the vault: it
+    /// sends the protocol part to the protocol recipient and keeps the rest, which crosses the threshold and
     /// closes epoch 0. Nobody stakes yet, so the whole vault part goes to the creator.
     function test_Distribute_AfterDevBuy_FeeReachesVaultAndProtocolAndClosesEpoch()
         external
@@ -289,7 +297,7 @@ contract DevBuyDevnetForkTest is Test {
     /// @dev Full flow: dev buy, the creator stakes half of it, two trades after the anti-snipe
     /// window. Each trade pays out everything accrued so far and closes an epoch, so two epochs
     /// close. Invariants at the end:
-    ///  - protocol recipient got exactly a third (3 333 bips) of every fee, dev buy included;
+    ///  - protocol recipient got exactly a quarter (2 500 bips) of every payout, dev buy included;
     ///  - vault got the rest of every fee and owes all of it to the creator and the stakers;
     ///  - the creator collects it as staker and as creator, the vault keeps rounding dust only.
     function test_DeployToken_DevBuyThenTrading_FeesConvertedOverSeveralEpochs()
@@ -309,10 +317,11 @@ contract DevBuyDevnetForkTest is Test {
         uint256 buy1 = 1_000 * PAIR_UNIT;
         _buyMeme(l.token, buy1);
         uint256 fee1 = (buy1 * MEME_FEE_BIPS) / BIPS;
-        uint256 protocol1 = (fee1 * PROTOCOL_SHARE_BIPS) / BIPS;
+        // one payout of both fees: the vault splits the sum
+        uint256 protocol1 = ((l.fee + fee1) * PROTOCOL_SHARE_BIPS) / BIPS;
 
         assertEq(hook.pendingFees(l.token), 0, "trade 1 paid everything out");
-        assertEq(usdg.balanceOf(protocolRecipient), l.protocolFee + protocol1, "protocol after 1");
+        assertEq(usdg.balanceOf(protocolRecipient), protocol1, "protocol after 1");
         assertEq(_epoch(l.token), 1, "epoch 0 closed");
 
         // trade 2: closes epoch 1
@@ -324,7 +333,7 @@ contract DevBuyDevnetForkTest is Test {
         assertEq(hook.pendingFees(l.token), 0, "trade 2 paid everything out");
         assertEq(_epoch(l.token), 2, "epoch 1 closed");
 
-        uint256 protocolTotal = l.protocolFee + protocol1 + protocol2;
+        uint256 protocolTotal = protocol1 + protocol2;
         uint256 vaultTotal = l.fee + fee1 + fee2 - protocolTotal;
         assertEq(usdg.balanceOf(protocolRecipient), protocolTotal, "protocol got its part");
         assertEq(usdg.balanceOf(address(vault)), vaultTotal, "vault got the rest");

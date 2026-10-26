@@ -1,13 +1,13 @@
 # Everything environment-specific (RPC, keys, owners, addresses) lives in env/<ENVIRONMENT>.mk,
-# never committed: make <target> ENVIRONMENT=dev|prod. Only the targets below run without it.
+# never committed: make <target> ENVIRONMENT=dev|prod|sepolia. Only the targets below run without it.
 ENV_FREE_TARGETS := clean compile unit-tests prepare-abi
 
 ifneq ($(filter-out $(ENV_FREE_TARGETS),$(or $(MAKECMDGOALS),deploy-gemoon)),)
 ifndef ENVIRONMENT
-$(error ENVIRONMENT is not set: make <target> ENVIRONMENT=dev|prod)
+$(error ENVIRONMENT is not set: make <target> ENVIRONMENT=dev|prod|sepolia)
 endif
-ifeq ($(filter $(ENVIRONMENT),dev prod),)
-$(error Unknown ENVIRONMENT=$(ENVIRONMENT), expected dev or prod)
+ifeq ($(filter $(ENVIRONMENT),dev prod sepolia),)
+$(error Unknown ENVIRONMENT=$(ENVIRONMENT), expected dev, prod or sepolia)
 endif
 ENV_FILE := env/$(ENVIRONMENT).mk
 ifeq ($(wildcard $(ENV_FILE)),)
@@ -58,7 +58,7 @@ deploy-swap-adapter:
 set-swap-adapter:
 	cast send $(VAULT_PROXY_ADDRESS) "setSwapAdapter(address)" $(SWAP_ADAPTER) --rpc-url $(RPC) --private-key $(PRIVATE_KEY)
 
-# Referrals behind a proxy: USDG_ADDRESS, [REFERRALS_REF_SHARE_BIPS=1000], [CONTROLLER_PROXY_ADDRESS],
+# Referrals behind a proxy: USDG_ADDRESS, [REFERRALS_REF_SHARE_BIPS=2500], [CONTROLLER_PROXY_ADDRESS],
 # [HOOK_ADDRESS], [GEMOON_OWNER], [GEMOON_PROXY_ADMIN_OWNER]. Then put the logged proxy into
 # REFERRALS_PROXY_ADDRESS and run wire-referrals.
 deploy-referrals:
@@ -68,18 +68,24 @@ deploy-referrals:
 simulate-referrals:
 	forge script --via-ir ./script/GemoonDeploy.sol:DeployReferrals -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY)
 
-# controller.setReferrals + hook.setProtocolRecipient(referrals), then checks the wiring.
-# Needs REFERRALS_PROXY_ADDRESS, CONTROLLER_PROXY_ADDRESS, HOOK_ADDRESS; signer owns controller and hook.
+# controller.setReferrals + referrals.setVault(vault) + vault.setProtocolRecipient(referrals), then
+# checks the wiring. Needs REFERRALS_PROXY_ADDRESS, CONTROLLER_PROXY_ADDRESS, VAULT_PROXY_ADDRESS;
+# signer owns controller, vault and referrals.
 wire-referrals:
 	forge script --via-ir ./script/GemoonDeploy.sol:WireReferrals --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
 
 upgrade-referrals-proxy:
 	forge script --via-ir ./script/GemoonDeploy.sol:ProxyReferralsUpgrade --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
 
-# Hook protocol recipient (default REFERRALS_PROXY_ADDRESS on HOOK_ADDRESS), owner of the hook:
-# make set-protocol-recipient [RECIPIENT=0x..] [HOOK=0x..] [DRY_RUN=1] [FORCE=1]
+# Vault protocol recipient (default REFERRALS_PROXY_ADDRESS on VAULT_PROXY_ADDRESS), owner of the vault:
+# make set-protocol-recipient [RECIPIENT=0x..] [VAULT=0x..] [DRY_RUN=1] [FORCE=1]
 set-protocol-recipient:
-	bash ./tools/scripts/set_protocol_recipient.sh $(RECIPIENT) $(if $(HOOK),--hook $(HOOK)) $(if $(DRY_RUN),--dry-run) $(if $(FORCE),--force)
+	bash ./tools/scripts/set_protocol_recipient.sh $(RECIPIENT) $(if $(VAULT),--vault $(VAULT)) $(if $(DRY_RUN),--dry-run) $(if $(FORCE),--force)
+
+# Owner of the vault: protocol share of every swap fee, in bps of the fee (0..10000), applies from
+# the next payout on: make set-protocol-share SHARE=2500
+set-protocol-share:
+	cast send $(VAULT_PROXY_ADDRESS) "setProtocolShare(uint256)" $(SHARE) --rpc-url $(RPC) --private-key $(PRIVATE_KEY)
 
 # Pays every listed referrer its credit: make distribute-referrals REFERRERS="[0x..,0x..]"
 distribute-referrals:
@@ -121,6 +127,11 @@ simulate-lens:
 # Read-only: checks that controller, hook and vault point at each other.
 verify-wiring:
 	forge script --via-ir ./script/GemoonDeploy.sol:VerifyWiring -vvvv --rpc-url=$(RPC)
+
+# Read-only: contract graph for contracts-map (contracts + "from -> to via method" links) into
+# deploy-logs/contracts-map-$(ENVIRONMENT).json. Extra flags: ARGS="--depth 2 --exclude allowedAssets --no-abi".
+contracts-map:
+	node tools/contracts-map/generate.mjs $(ARGS)
 
 # Ownership to governance: TimelockController run by GOVERNANCE_SAFE (ProxyAdmins, hook, controller),
 # the Safe itself (vault, referrals, adapter). [TIMELOCK_ADDRESS] reuses a timelock, [TIMELOCK_MIN_DELAY]

@@ -113,9 +113,12 @@ contract GemoonToken is
     /// @notice ERC-1046 metadata URI. The custom URI set by an admin (`setTokenURI`) if any,
     ///         otherwise built on-chain from the current token data:
     ///         `data:application/json;base64,<json>` with
-    ///         `{"name","symbol","decimals","description","image",
+    ///         `{"name","symbol","decimals","description","image","twitter","telegram","website",
     ///         "socialMedia":{"farcaster","twitterX","telegram","website"},
     ///         "fees":{"totalPercent","creatorPercent","vaultPercent","protocolPercent"}}`.
+    ///         Top-level `twitter` / `telegram` / `website` are the standard (pump.fun-style) link
+    ///         keys read by aggregators; each is present only if the creator set that link.
+    ///         `socialMedia` always carries all four links (empty string if not set).
     ///         Fees are JSON numbers in percent of the swap amount, up to 4 decimals (`1.25`).
     /// @dev The on-chain JSON is always in sync with `updateImage` / `changeDescription`
     /// (`UpdateImage`, `UpdateDescription` signal a change). Creator-chosen strings are
@@ -189,12 +192,32 @@ contract GemoonToken is
                 Json.escape(_description),
                 '","image":"',
                 Json.escape(_imgUrl),
-                '","socialMedia":',
+                '"',
+                _linksJson(social),
+                ',"socialMedia":',
                 socials,
                 ',"fees":',
                 _feesJson(),
                 "}"
             );
+    }
+
+    /// @dev Top-level `twitter`, `telegram`, `website` keys of the metadata JSON (pump.fun-style
+    /// metadata read by aggregators), each with a leading comma. A link the creator did not set is
+    /// left out.
+    function _linksJson(SocialMedia memory social) internal pure returns (string memory) {
+        return
+            string.concat(
+                _optionalField("twitter", social.twitterX),
+                _optionalField("telegram", social.telegram),
+                _optionalField("website", social.website)
+            );
+    }
+
+    /// @dev `,"key":"value"` with the value JSON-escaped, or nothing if the value is empty.
+    function _optionalField(string memory key, string memory value) internal pure returns (string memory) {
+        if (bytes(value).length == 0) return "";
+        return string.concat(',"', key, '":"', Json.escape(value), '"');
     }
 
     /// @dev `fees` object of the metadata JSON.

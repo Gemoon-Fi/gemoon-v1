@@ -27,10 +27,16 @@ import {
 
 import {IVault, AssetConfig, VaultInfo} from "../interfaces/IVault.sol";
 import {ISwapAdapter} from "../interfaces/ISwapAdapter.sol";
+import {IProtocolFeeReceiver} from "../interfaces/IReferrals.sol";
 
 /// @title Gemoon fee vault.
 /// @notice See {IVault}.
-/// @dev Reward accounting.
+/// @dev Fee split: the hook sends the whole swap fee here. `notifyFees` sends `s_protocolShareBps`
+/// of it to the protocol recipient right away and credits the rest to the Meme vault: the creator
+/// share to the creator, the remainder to the stakers. The protocol part never enters
+/// `s_accounted`.
+///
+/// Reward accounting.
 ///
 /// USDG credits: every `notifyFees` adds `toStakers * PRECISION / totalStaked` to `accUsdPerShare`
 /// (S). A staker with constant stake `a` earns `a * (S_now - S_checkpoint) / PRECISION` USDG.
@@ -90,6 +96,9 @@ contract Vault is
     uint64 public constant VAULT_VERSION = 1;
 
     uint256 public constant BPS = 10_000;
+    /// @notice Highest creator share of the vault part of every fee (50%); the stakers always get
+    ///         at least the other half.
+    uint256 public constant MAX_CREATOR_SHARE_BPS = 5_000;
     uint256 public constant MAX_ASSETS = 8;
     uint256 public constant PRECISION = 1e36;
     uint256 public constant CONVERSION_COOLDOWN = 1 minutes;
@@ -142,6 +151,12 @@ contract Vault is
     /// a new one only serves new Memes, the pools of older Memes keep paying fees through theirs.
     /// A proxy upgraded from a version without it starts empty: `onlyHook` also accepts `s_hook`.
     mapping(address hook => bool) private s_isHook;
+    /// @dev Receives `s_protocolShareBps` of every fee. A contract is notified via
+    /// `IProtocolFeeReceiver.notifyFee`, an EOA is not.
+    address private s_protocolRecipient;
+    /// @dev Protocol share of every fee notified by a hook, in BPS of the fee, 0..BPS. Global:
+    /// a change applies to every Meme from the next `notifyFees` on.
+    uint256 private s_protocolShareBps;
 
     // ---------------------------------------------------------------------------------------------
     // Modifiers
@@ -209,7 +224,7 @@ contract Vault is
     ) external onlyController {
         if (meme == address(0) || creator == address(0)) revert ZeroAddress();
         if (meme == address(s_usdg)) revert AssetNotAllowed(meme);
-        if (creatorShareBps > BPS) revert InvalidCreatorShare(creatorShareBps);
+        if (creatorShareBps > MAX_CREATOR_SHARE_BPS) revert InvalidCreatorShare(creatorShareBps);
 
         VaultInfo storage v = s_vaults[meme];
         if (v.registeredAt != 0) revert VaultAlreadyRegistered(meme);
@@ -248,25 +263,53 @@ contract Vault is
         uint256 usdgAmount
     ) external onlyHook onlyRegistered(meme) {
         if (usdgAmount == 0) revert ZeroAmount();
-        address usdg_ = address(s_usdg);
-        uint256 balance = IERC20(usdg_).balanceOf(address(this));
-        uint256 accounted_ = s_accounted[usdg_];
+        IERC20 usdg_ = s_usdg;
+        uint256 balance = usdg_.balanceOf(address(this));
+        uint256 accounted_ = s_accounted[address(usdg_)];
         uint256 unaccounted = balance > accounted_ ? balance - accounted_ : 0;
         if (unaccounted < usdgAmount)
             revert UnaccountedBalanceTooLow(unaccounted, usdgAmount);
 
-        s_accounted[usdg_] = accounted_ + usdgAmount;
+        // Protocol part rounds down, the dust stays with the Meme vault.
+        uint256 toProtocol = (usdgAmount * s_protocolShareBps) / BPS;
+        address recipient = s_protocolRecipient;
+        if (toProtocol != 0 && recipient == address(0))
+            revert ProtocolRecipientNotSet();
+        uint256 toVault = usdgAmount - toProtocol;
 
+        // Effects: credit the Meme vault before any call out.
+        s_accounted[address(usdg_)] = accounted_ + toVault;
         VaultInfo storage v = s_vaults[meme];
-        uint256 toCreator = (usdgAmount * v.creatorShareBps) / BPS;
-        uint256 toStakers = usdgAmount - toCreator;
+        _creditFees(meme, v, toVault);
+
+        // Interactions: the owner-set protocol recipient.
+        if (toProtocol != 0) {
+            usdg_.safeTransfer(recipient, toProtocol);
+            if (recipient.code.length != 0)
+                IProtocolFeeReceiver(recipient).notifyFee(meme, toProtocol);
+            emit ProtocolFeePaid(meme, recipient, toProtocol);
+        }
+
+        _tryConvert(meme, v);
+    }
+
+    /// @dev Credits `amount` USDG already in `s_accounted` to the open epoch of `meme`: the creator
+    /// share to the creator, the rest pro rata to the stakers, everything to the creator while
+    /// nobody stakes.
+    function _creditFees(
+        address meme,
+        VaultInfo storage v,
+        uint256 amount
+    ) internal {
+        uint256 toCreator = (amount * v.creatorShareBps) / BPS;
+        uint256 toStakers = amount - toCreator;
 
         uint256 accDelta = v.totalStaked == 0
             ? 0
             : Math.mulDiv(toStakers, PRECISION, v.totalStaked);
         // Nobody stakes, or the amount is too small to move the accumulator: all to the creator.
         if (accDelta == 0) {
-            toCreator = usdgAmount;
+            toCreator = amount;
             toStakers = 0;
         } else {
             v.accUsdPerShare += accDelta;
@@ -276,8 +319,6 @@ contract Vault is
         v.pendingCreatorUSDG += toCreator;
 
         emit FeesNotified(meme, toStakers, toCreator);
-
-        _tryConvert(meme, v);
     }
 
     /// @inheritdoc IVault
@@ -490,6 +531,20 @@ contract Vault is
     }
 
     /// @inheritdoc IVault
+    function setProtocolRecipient(address recipient) external onlyOwner {
+        if (recipient == address(0)) revert ZeroAddress();
+        s_protocolRecipient = recipient;
+        emit ProtocolRecipientUpdated(recipient);
+    }
+
+    /// @inheritdoc IVault
+    function setProtocolShare(uint256 shareBps) external onlyOwner {
+        if (shareBps > BPS) revert InvalidProtocolShare(shareBps);
+        s_protocolShareBps = shareBps;
+        emit ProtocolShareUpdated(shareBps);
+    }
+
+    /// @inheritdoc IVault
     function setConversionThreshold(uint256 threshold) external onlyOwner {
         s_conversionThreshold = threshold;
         emit ConversionThresholdUpdated(threshold);
@@ -556,6 +611,16 @@ contract Vault is
     /// @inheritdoc IVault
     function isHook(address account) public view returns (bool) {
         return account == s_hook || s_isHook[account];
+    }
+
+    /// @inheritdoc IVault
+    function protocolRecipient() external view returns (address) {
+        return s_protocolRecipient;
+    }
+
+    /// @inheritdoc IVault
+    function protocolShareBps() external view returns (uint256) {
+        return s_protocolShareBps;
     }
 
     /// @inheritdoc IVault

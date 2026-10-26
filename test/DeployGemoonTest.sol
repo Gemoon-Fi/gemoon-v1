@@ -60,7 +60,7 @@ contract DeployGemoonTest is Test {
             usdg: address(usdg),
             protocolRecipient: protocolRecipient,
             feeBips: 125,
-            protocolShareBips: 2_000,
+            protocolShareBps: 2_000,
             conversionThreshold: 5e6,
             swapAdapter: address(0),
             allowedAssets: assets
@@ -94,9 +94,9 @@ contract DeployGemoonTest is Test {
         assertEq(d.vault.conversionThreshold(), 5e6);
         assertTrue(d.vault.isAssetAllowed(address(aapl)));
         assertFalse(d.vault.isAssetAllowed(address(usdg)));
-        assertEq(d.hook.protocolRecipient(), protocolRecipient);
+        assertEq(d.vault.protocolRecipient(), protocolRecipient);
         assertEq(d.hook.TOTAL_FEE_BIPS(), 125);
-        assertEq(d.hook.PROTOCOL_SHARE_BIPS(), 2_000);
+        assertEq(d.vault.protocolShareBps(), 2_000);
         assertEq(address(d.hook.poolManager()), poolManager);
         assertEq(address(d.controller.poolManager()), poolManager);
         assertEq(address(d.controller.positionManager()), positionManager);
@@ -142,7 +142,6 @@ contract DeployGemoonTest is Test {
         assertEq(Upgrades.getImplementationAddress(address(d.hook)), address(0), "no implementation");
         assertEq(Upgrades.getAdminAddress(address(d.hook)), address(0), "no proxy admin");
         assertEq(d.hook.TOTAL_FEE_BIPS(), 125, "fallback fee from the constructor");
-        assertEq(d.hook.PROTOCOL_SHARE_BIPS(), 2_000, "protocol share from the constructor");
     }
 
     function test_DeployAll_Twice_FreshAddresses() external {
@@ -163,7 +162,9 @@ contract DeployGemoonTest is Test {
                 hook: address(0),
                 conversionThreshold: 0,
                 swapAdapter: address(0),
-                allowedAssets: new address[](0)
+                allowedAssets: new address[](0),
+                protocolRecipient: address(0),
+                protocolShareBps: 0
             })
         );
         GemoonController controller = script.deployController(
@@ -366,7 +367,7 @@ contract DeployGemoonTest is Test {
         DeployGemoon.Deployment memory d = _deploy(owner);
         address meme = makeAddr("meme");
         elapsed = bound(elapsed, 1, 10 * 365 days);
-        feeBips = bound(feeBips, 100, 1_000);
+        feeBips = bound(feeBips, 100, 500);
 
         vm.warp(1_000);
         _initPool(d.hook, meme);
@@ -418,7 +419,7 @@ contract DeployGemoonTest is Test {
         address meme = makeAddr("meme");
         createdAt = bound(createdAt, 1, type(uint64).max);
         elapsed = bound(elapsed, 0, 10 * 365 days);
-        feeBips = bound(feeBips, 100, 1_000);
+        feeBips = bound(feeBips, 100, 500);
 
         vm.warp(createdAt);
         _initPool(d.hook, meme);

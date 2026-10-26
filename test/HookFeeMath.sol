@@ -10,13 +10,13 @@ import {Currency} from "@uniswap/v4-core/src/types/Currency.sol";
 import {IHooks} from "@uniswap/v4-core/src/interfaces/IHooks.sol";
 
 /// @notice Fee curve of the hook: 80% at pool creation, linear down to the fee the creator chose
-/// over `DYNAMIC_FEE_THRESHOLD`, that fee afterwards. Creator fee bounds. Protocol share bounds.
+/// over `DYNAMIC_FEE_THRESHOLD`, that fee afterwards. Creator fee bounds. Fallback fee bounds.
 /// @dev The hook can't be deployed with a plain `new`: BaseHook checks that the address carries
 /// the permission bits. `deployHook` mines a CREATE2 salt and passes the config to the constructor.
 /// Nothing here calls the PoolManager, so its address is a dummy.
 contract HookFeeMathTest is Test {
     uint256 constant FALLBACK_FEE = 125;
-    uint256 constant MEME_FEE = 1_000; // 10%, chosen by the creator
+    uint256 constant MEME_FEE = 500; // 5%, chosen by the creator
     uint256 constant MAX_FEE = 8_000;
     uint256 constant CREATED_AT = 1_700_000_000;
 
@@ -34,11 +34,9 @@ contract HookFeeMathTest is Test {
                 owner: makeAddr("owner"),
                 poolManager: makeAddr("poolManager"),
                 pairToken: makeAddr("usdg"),
-                protocolRecipient: makeAddr("protocolRecipient"),
                 vault: makeAddr("vault"),
                 controller: controller,
-                feeBips: FALLBACK_FEE,
-                protocolShareBips: 3_333
+                feeBips: FALLBACK_FEE
             })
         );
         window = hook.DYNAMIC_FEE_THRESHOLD();
@@ -68,10 +66,10 @@ contract HookFeeMathTest is Test {
     // Curve
     // ---------------------------------------------------------------------------------------------
 
-    function test_Constants_MaxFee80Percent_MemeFeeBounds1To10Percent() external view {
+    function test_Constants_MaxFee80Percent_MemeFeeBounds1To5Percent() external view {
         assertEq(hook.MAX_FEE_BIPS(), MAX_FEE);
         assertEq(hook.MIN_MEME_FEE_BIPS(), 100);
-        assertEq(hook.MAX_MEME_FEE_BIPS(), 1_000);
+        assertEq(hook.MAX_MEME_FEE_BIPS(), 500);
         assertGt(window, 1, "window spans several seconds");
     }
 
@@ -90,9 +88,9 @@ contract HookFeeMathTest is Test {
     }
 
     function test_FeeBipsAt_HalfWindow_ReturnsMidpoint() external view {
-        // exact midpoint between 80% and 10% when the window is even
+        // exact midpoint between 80% and 5% when the window is even
         assertEq(hook.feeBipsAt(meme, CREATED_AT + window / 2), _expected(window / 2));
-        if (window % 2 == 0) assertEq(_expected(window / 2), 4_500);
+        if (window % 2 == 0) assertEq(_expected(window / 2), 4_250);
     }
 
     function test_FeeBipsAt_LastSecond_AboveMemeFee() external view {
@@ -163,15 +161,15 @@ contract HookFeeMathTest is Test {
         hook.notifyPoolCreated(makeAddr("other"), 99);
     }
 
-    function test_NotifyPoolCreated_FeeAboveTenPercent_Revert() external {
+    function test_NotifyPoolCreated_FeeAboveFivePercent_Revert() external {
         _initPool(makeAddr("other"));
         vm.prank(controller);
-        vm.expectRevert(abi.encodeWithSelector(IHookManager.InvalidMemeFeeBips.selector, 1_001));
-        hook.notifyPoolCreated(makeAddr("other"), 1_001);
+        vm.expectRevert(abi.encodeWithSelector(IHookManager.InvalidMemeFeeBips.selector, 501));
+        hook.notifyPoolCreated(makeAddr("other"), 501);
     }
 
     function testFuzz_NotifyPoolCreated_FeeInBounds_BecomesBaseFee(uint256 feeBips) external {
-        feeBips = bound(feeBips, 100, 1_000);
+        feeBips = bound(feeBips, 100, 500);
         address other = makeAddr("other");
         _initPool(other);
         vm.prank(controller);
@@ -181,7 +179,7 @@ contract HookFeeMathTest is Test {
     }
 
     function testFuzz_NotifyPoolCreated_FeeOutOfBounds_Revert(uint256 feeBips) external {
-        vm.assume(feeBips < 100 || feeBips > 1_000);
+        vm.assume(feeBips < 100 || feeBips > 500);
         _initPool(makeAddr("other"));
         vm.prank(controller);
         vm.expectRevert(abi.encodeWithSelector(IHookManager.InvalidMemeFeeBips.selector, feeBips));
@@ -189,14 +187,11 @@ contract HookFeeMathTest is Test {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Protocol share: bips of the fee, at most 100%
+    // Fallback fee: bips of the swap, at most MAX_FEE_BIPS. The hook keeps no protocol share: the
+    // vault splits every fee.
     // ---------------------------------------------------------------------------------------------
 
-    function _deployHookWithShare(uint256 protocolShareBips) internal returns (HookManager) {
-        return _deployHookWithShare(new DeployGemoon(), protocolShareBips);
-    }
-
-    function _deployHookWithShare(DeployGemoon script, uint256 protocolShareBips)
+    function _deployHookWithFee(DeployGemoon script, uint256 feeBips)
         internal
         returns (HookManager)
     {
@@ -206,30 +201,22 @@ contract HookFeeMathTest is Test {
                 owner: makeAddr("owner"),
                 poolManager: makeAddr("poolManager"),
                 pairToken: makeAddr("usdg"),
-                protocolRecipient: makeAddr("protocolRecipient"),
                 vault: makeAddr("vault"),
                 controller: controller,
-                feeBips: FALLBACK_FEE,
-                protocolShareBips: protocolShareBips
+                feeBips: feeBips
             })
         );
     }
 
-    function test_Constructor_ProtocolShare_StoredInBipsOfFee() external view {
-        assertEq(hook.PROTOCOL_SHARE_BIPS(), 3_333);
-    }
-
-    function test_Constructor_ProtocolShareAboveHundredPercent_Revert() external {
+    function test_Constructor_FallbackFeeAboveMax_Revert() external {
         DeployGemoon script = new DeployGemoon();
         vm.expectRevert(IHookManager.InvalidFeeBips.selector);
-        _deployHookWithShare(script, 10_001);
+        _deployHookWithFee(script, MAX_FEE + 1);
     }
 
-    /// @dev Any share from 0 to 100% of the fee is accepted, whatever the fallback fee.
-    function testFuzz_Constructor_ProtocolShareUpToHundredPercent_Accepted(uint256 share)
-        external
-    {
-        share = bound(share, 0, 10_000);
-        assertEq(_deployHookWithShare(share).PROTOCOL_SHARE_BIPS(), share);
+    /// @dev Any fallback fee from 0 to `MAX_FEE_BIPS` is accepted and stored as is.
+    function testFuzz_Constructor_FallbackFeeUpToMax_Accepted(uint256 feeBips) external {
+        feeBips = bound(feeBips, 0, MAX_FEE);
+        assertEq(_deployHookWithFee(new DeployGemoon(), feeBips).TOTAL_FEE_BIPS(), feeBips);
     }
 }

@@ -19,7 +19,7 @@
 |---|---|---|
 | `GemoonController` | `TokenCreated`, `PoolCreated`, `PositionCreated`, `DevBuy` | |
 | `HookManager` (`IHookManager.json`) | `MemeSwapped`, `FeeCharged`, `FeesDistributed`, `PayoutFailed` | `pendingFees` |
-| `Vault` | `AssetAllowedUpdated`, `VaultRegistered`, `FeesNotified`, `FeesConverted`, `ConversionFailed`, `Staked`, `Unstaked`, `EmergencyUnstaked`, `RewardPaid`, `CreatorRewardPaid`, `CreatorTransferred` | `earned`, `pendingCreditOf`, `pendingUSDG`, `totalStaked`, `stakedOf`, `getAssets`, `creatorAccrued`, `isAssetAllowed`, `allowedAssets`, `swapAdapter` |
+| `Vault` | `AssetAllowedUpdated`, `VaultRegistered`, `FeesNotified`, `ProtocolFeePaid`, `FeesConverted`, `ConversionFailed`, `Staked`, `Unstaked`, `EmergencyUnstaked`, `RewardPaid`, `CreatorRewardPaid`, `CreatorTransferred` | `earned`, `pendingCreditOf`, `pendingUSDG`, `totalStaked`, `stakedOf`, `getAssets`, `creatorAccrued`, `isAssetAllowed`, `allowedAssets`, `swapAdapter` |
 | `UniswapV3SwapAdapter` | `Swapped`, `RouteSet`, `RouteRemoved` | `quote`, `routeOf` |
 | `PoolManager` (Uniswap V4, `IPoolManager.json`) | `Swap` | |
 | ERC20 мема | `Transfer`, `UpdateImage`, `UpdateDescription` | `imageAddress`, `description`, `getSocialMedia`, `balanceOf` |
@@ -40,8 +40,11 @@ HookManager
   MemeSwapped(address indexed meme, address indexed router, address indexed trader,
               bool isBuy, uint256 pairAmount, uint256 memeAmount, uint256 fee)
   FeeCharged(PoolId indexed poolId, address indexed sender, uint256 amount)
-  FeesDistributed(address indexed meme, address indexed protocolRecipient,
-                  address indexed vault, uint256 toProtocol, uint256 toVault)
+  FeesDistributed(address indexed meme, address indexed vault, uint256 amount)
+                                                            // вся комиссия ушла в волт, делит её
+                                                            // волт (до разделения сигнатура была
+                                                            // (meme, protocolRecipient, vault,
+                                                            // toProtocol, toVault))
   PayoutFailed(bytes reason)                                // автовыплата после свопа не прошла,
                                                             // комиссия осталась в pendingFees
 
@@ -50,6 +53,9 @@ Vault
   VaultRegistered(address indexed meme, address indexed creator, uint16 creatorShareBps,
                   AssetConfig[] assets)
   FeesNotified(address indexed meme, uint256 toStakers, uint256 toCreator)
+                                                            // часть мема, уже без доли протокола
+  ProtocolFeePaid(address indexed meme, address indexed recipient, uint256 amount)
+                                                            // доля протокола из той же выплаты
   FeesConverted(address indexed meme, uint64 indexed epoch, uint256 usdgIn,
                 uint256[] toStakers, uint256[] toCreator)
   ConversionFailed(address indexed meme, bytes reason)

@@ -99,7 +99,7 @@ abstract contract GemoonLensTestBase is Test {
                 usdg: address(usdg),
                 protocolRecipient: makeAddr("protocolRecipient"),
                 feeBips: 125,
-                protocolShareBips: 3_333,
+                protocolShareBps: 2_500,
                 conversionThreshold: 0,
                 swapAdapter: address(0),
                 allowedAssets: allowed
@@ -472,11 +472,9 @@ contract GemoonLensTest is GemoonLensTestBase {
                 owner: address(this),
                 poolManager: address(poolManager),
                 pairToken: address(usdg),
-                protocolRecipient: makeAddr("protocolRecipient"),
                 vault: address(vault),
                 controller: address(controller),
-                feeBips: 125,
-                protocolShareBips: 3_333
+                feeBips: 125
             })
         );
         vm.startPrank(controller.owner());
@@ -894,6 +892,8 @@ contract GemoonLensTest is GemoonLensTestBase {
 /// @dev Every `tokens` batch: 5 reward assets per Meme, the account holding and staking each one.
 /// Two string sizes: realistic (280-byte description, 120-byte image URL) for the 70-token limit,
 /// and the 2 KB worst case, which sets the safe chunk size.
+/// setUp deploys 340 Memes, close to the default 2^30 test gas limit: foundry.toml raises it,
+/// the measured calls are asserted against their own limits.
 contract GemoonLensGasTest is GemoonLensTestBase {
     uint256 constant TOKENS_BATCH = 70;
     uint256 constant SAFE_CHUNK_2KB = 50;

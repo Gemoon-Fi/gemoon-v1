@@ -55,8 +55,8 @@ contract ControllerDeployTokenTest is Test {
     using PoolIdLibrary for PoolKey;
 
     uint256 constant PAIR_UNIT = 1e6; // USDG has 6 decimals
-    /// @dev Protocol share of every fee, in bips of the fee: a third.
-    uint256 constant PROTOCOL_SHARE = 3_333;
+    /// @dev Protocol share of every fee, in bips of the fee: a quarter.
+    uint256 constant PROTOCOL_SHARE = 2_500;
 
     MintableToken usdg;
     PoolManager poolManager;
@@ -97,7 +97,7 @@ contract ControllerDeployTokenTest is Test {
                 usdg: address(usdg),
                 protocolRecipient: protocolRecipient,
                 feeBips: 125,
-                protocolShareBips: PROTOCOL_SHARE,
+                protocolShareBps: PROTOCOL_SHARE,
                 conversionThreshold: 0,
                 swapAdapter: address(0),
                 allowedAssets: assets
@@ -225,7 +225,8 @@ contract ControllerDeployTokenTest is Test {
         return (amount * 125) / 10_000;
     }
 
-    /// @dev Protocol part of one charged fee, rounded down like the hook does.
+    /// @dev Protocol part of one payout, rounded down like `Vault.notifyFees` does. The vault splits
+    /// what the hook pays out at once, so fees paid together are split as one amount.
     function _protocol(uint256 fee) internal pure returns (uint256) {
         return (fee * PROTOCOL_SHARE) / 10_000;
     }
@@ -385,9 +386,10 @@ contract ControllerDeployTokenTest is Test {
         _buyMeme(token, first);
         _buyMeme(token, second);
 
-        // 1.25% of every input: a third of it to the protocol, the rest to the vault.
+        // 1.25% of every input, paid out together: the vault sends a quarter of it to the protocol
+        // and keeps the rest.
         uint256 fee = _fee(first) + _fee(second);
-        uint256 toProtocol = _protocol(_fee(first)) + _protocol(_fee(second));
+        uint256 toProtocol = _protocol(fee);
         assertEq(hook.pendingFees(token), 0, "nothing left accrued");
         assertEq(usdg.balanceOf(protocolRecipient), toProtocol, "protocol share");
         assertEq(usdg.balanceOf(address(vault)), fee - toProtocol, "vault share");
@@ -412,11 +414,9 @@ contract ControllerDeployTokenTest is Test {
                 owner: address(script),
                 poolManager: address(poolManager),
                 pairToken: address(usdg),
-                protocolRecipient: protocolRecipient,
                 vault: address(vault),
                 controller: address(controller),
-                feeBips: 125,
-                protocolShareBips: PROTOCOL_SHARE
+                feeBips: 125
             })
         );
         vm.startPrank(address(script));
@@ -441,7 +441,7 @@ contract ControllerDeployTokenTest is Test {
         _buyMeme(oldMeme, first);
         _buyMeme(oldMeme, second);
         uint256 fee = _fee(first) + _fee(second);
-        uint256 toProtocol = _protocol(_fee(first)) + _protocol(_fee(second));
+        uint256 toProtocol = _protocol(fee);
         assertEq(hook.pendingFees(oldMeme), 0, "old hook paid out");
         assertEq(usdg.balanceOf(address(vault)), fee - toProtocol, "vault got the old meme fee");
 
@@ -671,8 +671,8 @@ contract ControllerDeployTokenTest is Test {
     }
 
     /// @dev Invariant: whatever the fee rate, every charged fee ends up either paid to the
-    /// protocol and the vault or still accrued, and the protocol gets 30% of every fee, the
-    /// anti-snipe excess included.
+    /// protocol and the vault or still accrued in the hook, and the protocol gets a quarter of
+    /// everything paid out, the anti-snipe excess included.
     function testFuzz_Swap_DynamicFee_ProtocolPlusVaultPlusAccruedEqualsCharged(
         uint256 e1,
         uint256 e2
@@ -695,18 +695,16 @@ contract ControllerDeployTokenTest is Test {
 
         uint256 toProtocol = usdg.balanceOf(protocolRecipient);
         uint256 toVault = usdg.balanceOf(address(vault));
+        uint256 paidOut = fee1 + fee2 - hook.pendingFees(token);
         assertEq(toProtocol + toVault + hook.pendingFees(token), fee1 + fee2, "fee conserved");
-        assertEq(
-            toProtocol + hook.accruedProtocol(token),
-            _protocol(fee1) + _protocol(fee2),
-            "protocol part is 30% of every fee"
-        );
-        assertLe(hook.accruedProtocol(token), hook.pendingFees(token), "protocol part <= accrued");
+        // The first payout always fails (the PoolManager holds no pair token yet): one payout.
+        assertEq(toProtocol, _protocol(paidOut), "protocol part is a quarter of the payout");
+        assertEq(vault.accounted(address(usdg)), toVault, "vault keeps only its part");
         assertGe(bips1, bips2, "fee rate never grows over time");
     }
 
     // ---------------------------------------------------------------------------------------------
-    // Swap fee chosen by the creator: protocol gets 30% of it, vault the rest
+    // Swap fee chosen by the creator: protocol gets 25% of it, vault the rest
     // ---------------------------------------------------------------------------------------------
 
     function _deployMemeWithFee(uint256 swapFeeBips) internal returns (address token) {
@@ -716,9 +714,9 @@ contract ControllerDeployTokenTest is Test {
     }
 
     function test_DeployToken_SwapFee_StoredInHook() external {
-        address token = _deployMemeWithFee(1_000);
-        assertEq(hook.memeFeeBips(token), 1_000);
-        assertEq(hook.currentFeeBips(token), 1_000);
+        address token = _deployMemeWithFee(500);
+        assertEq(hook.memeFeeBips(token), 500);
+        assertEq(hook.currentFeeBips(token), 500);
     }
 
     function test_DeployToken_SwapFeeBelowOnePercent_Revert() external {
@@ -727,10 +725,10 @@ contract ControllerDeployTokenTest is Test {
         controller.deployToken(_config(99));
     }
 
-    function test_DeployToken_SwapFeeAboveTenPercent_Revert() external {
+    function test_DeployToken_SwapFeeAboveFivePercent_Revert() external {
         vm.prank(creator);
-        vm.expectRevert(abi.encodeWithSelector(IHookManager.InvalidMemeFeeBips.selector, 1_001));
-        controller.deployToken(_config(1_001));
+        vm.expectRevert(abi.encodeWithSelector(IHookManager.InvalidMemeFeeBips.selector, 501));
+        controller.deployToken(_config(501));
     }
 
     function test_DeployToken_CreatorShare_StoredInVault() external {
@@ -740,6 +738,14 @@ contract ControllerDeployTokenTest is Test {
         address token = controller.deployToken(config);
         assertEq(vault.creatorShareBpsOf(token), 3_500);
         assertEq(vault.vaultInfo(token).creatorShareBps, 3_500);
+    }
+
+    function test_DeployToken_CreatorShareAboveCap_Revert() external {
+        DeployConfig memory config = _config();
+        config.vaultCreatorShareBps = 5_001;
+        vm.prank(creator);
+        vm.expectRevert(abi.encodeWithSelector(IVault.InvalidCreatorShare.selector, 5_001));
+        controller.deployToken(config);
     }
 
     function test_DeployToken_CreatorShareAboveBps_Revert() external {
@@ -762,24 +768,23 @@ contract ControllerDeployTokenTest is Test {
         controller.deployToken(config);
     }
 
-    /// @dev 1.25% fee, a third to the protocol, 10% of the vault part to the creator.
+    /// @dev 1.25% fee, a quarter to the protocol, 10% of the vault part to the creator.
     function test_DeployToken_FeeInfo_WrittenIntoToken() external {
         (address token,) = _deployMeme();
         FeeInfo memory fees = IGemoonToken(token).feeInfo();
         assertEq(fees.totalPpm, 12_500, "total 1.25%");
-        assertEq(fees.protocolPpm, 4_166, "protocol 0.4166%");
-        assertEq(fees.creatorPpm, 833, "creator 0.0833%");
-        assertEq(fees.vaultPpm, 7_501, "stakers 0.7501%");
+        assertEq(fees.protocolPpm, 3_125, "protocol 0.3125%");
+        assertEq(fees.creatorPpm, 937, "creator 0.0937%");
+        assertEq(fees.vaultPpm, 8_438, "stakers 0.8438%");
     }
 
-    /// @dev Invariant: the split in the token mirrors the payout rules (protocol share of the
-    /// fee from the hook, creator share of the vault part from the vault) and its parts add up to
-    /// the base fee of the hook.
+    /// @dev Invariant: the split in the token mirrors the payout rules of the vault (protocol share
+    /// of the fee, creator share of the rest) and its parts add up to the base fee of the hook.
     function testFuzz_DeployToken_FeeInfo_MirrorsHookAndVault(uint256 swapFeeBips, uint16 creatorShareBps)
         external
     {
         swapFeeBips = bound(swapFeeBips, hook.MIN_MEME_FEE_BIPS(), hook.MAX_MEME_FEE_BIPS());
-        creatorShareBps = uint16(bound(creatorShareBps, 0, 10_000));
+        creatorShareBps = uint16(bound(creatorShareBps, 0, 5_000));
         DeployConfig memory config = _config(swapFeeBips);
         config.vaultCreatorShareBps = creatorShareBps;
         vm.prank(creator);
@@ -788,7 +793,7 @@ contract ControllerDeployTokenTest is Test {
         FeeInfo memory fees = IGemoonToken(token).feeInfo();
         assertEq(fees.totalPpm, hook.baseFeeBips(token) * 100, "total = hook base fee");
         assertEq(
-            fees.protocolPpm, (uint256(fees.totalPpm) * hook.PROTOCOL_SHARE_BIPS()) / 10_000, "protocol"
+            fees.protocolPpm, (uint256(fees.totalPpm) * vault.protocolShareBps()) / 10_000, "protocol"
         );
         assertEq(
             fees.creatorPpm,
@@ -800,9 +805,9 @@ contract ControllerDeployTokenTest is Test {
         );
     }
 
-    /// @dev 10% fee: the protocol gets a third of it (~3.33% of the volume), the vault the rest.
-    function test_Swap_TenPercentFee_ProtocolGetsOneThirdVaultRest() external {
-        address token = _deployMemeWithFee(1_000);
+    /// @dev 5% fee: the protocol gets a quarter of it (1.25% of the volume), the vault the rest.
+    function test_Swap_FivePercentFee_ProtocolGetsQuarterVaultRest() external {
+        address token = _deployMemeWithFee(500);
         uint256 first = 1_000 * PAIR_UNIT;
         uint256 second = 400 * PAIR_UNIT;
 
@@ -811,25 +816,24 @@ contract ControllerDeployTokenTest is Test {
 
         uint256 total = first + second;
         assertEq(hook.pendingFees(token), 0, "paid out");
-        uint256 fee1 = (first * 1_000) / 10_000;
-        uint256 fee2 = (second * 1_000) / 10_000;
-        uint256 toProtocol = _protocol(fee1) + _protocol(fee2);
-        assertEq(usdg.balanceOf(protocolRecipient), toProtocol, "a third of the fee");
+        uint256 fee1 = (first * 500) / 10_000;
+        uint256 fee2 = (second * 500) / 10_000;
+        uint256 toProtocol = _protocol(fee1 + fee2);
+        assertEq(usdg.balanceOf(protocolRecipient), toProtocol, "a quarter of the fee");
         assertEq(usdg.balanceOf(address(vault)), fee1 + fee2 - toProtocol, "the rest");
-        assertApproxEqRel(toProtocol, (total * 1_000) / 10_000 / 3, 1e14, "~3.33% of the volume");
+        assertApproxEqAbs(toProtocol, (total * 125) / 10_000, 1, "1.25% of the volume");
         assertApproxEqAbs(
             usdg.balanceOf(protocolRecipient) + usdg.balanceOf(address(vault)),
-            (total * 1_000) / 10_000,
+            (total * 500) / 10_000,
             1,
-            "10% of the volume"
+            "5% of the volume"
         );
     }
 
-    /// @dev A third of any fee to the protocol: of 3% it is ~1% of the volume and ~2% to the vault,
-    /// of 1% ~0.33% and ~0.67%, of 10% ~3.33% and ~6.67%. 3 333 bips undershoot an exact third
-    /// by 0.01% of the fee, which goes to the vault.
-    function test_Swap_ProtocolShare_OneThirdOfAnyMemeFee() external {
-        uint256[3] memory fees = [uint256(100), 300, 1_000];
+    /// @dev A quarter of any fee to the protocol: of 1% it is 0.25% of the volume and 0.75% to the
+    /// vault, of 3% 0.75% and 2.25%, of 5% 1.25% and 3.75%.
+    function test_Swap_ProtocolShare_QuarterOfAnyMemeFee() external {
+        uint256[3] memory fees = [uint256(100), 300, 500];
         uint256 volume = 1_000 * PAIR_UNIT;
         for (uint256 i; i < fees.length; ++i) {
             address token = _deployMemeWithFee(fees[i]);
@@ -844,17 +848,17 @@ contract ControllerDeployTokenTest is Test {
             uint256 fee = (volume * fees[i]) / 10_000;
             assertEq(toProtocol, _protocol(fee), "protocol part");
             assertEq(toVault, fee - toProtocol, "vault part");
-            assertApproxEqRel(toProtocol, fee / 3, 1e14, "a third of the fee");
-            assertApproxEqRel(toVault, (fee * 2) / 3, 1e14, "two thirds to the vault");
+            assertApproxEqAbs(toProtocol, fee / 4, 1, "a quarter of the fee");
+            assertApproxEqAbs(toVault, (fee * 3) / 4, 1, "three quarters to the vault");
         }
     }
 
     /// @dev Invariant over any allowed fee: protocol + vault + accrued == every fee charged, and
-    /// the protocol part is always a third (3 333 bips) of the fee, rounded down.
-    function testFuzz_Swap_AnySwapFee_ProtocolGetsOneThirdFeeConserved(uint256 swapFeeBips)
+    /// the protocol part is always a quarter (2 500 bips) of the payout, rounded down.
+    function testFuzz_Swap_AnySwapFee_ProtocolGetsQuarterFeeConserved(uint256 swapFeeBips)
         external
     {
-        swapFeeBips = bound(swapFeeBips, 100, 1_000);
+        swapFeeBips = bound(swapFeeBips, 100, 500);
         address token = _deployMemeWithFee(swapFeeBips);
         uint256 first = 1_000 * PAIR_UNIT;
         uint256 second = 400 * PAIR_UNIT;
@@ -863,13 +867,12 @@ contract ControllerDeployTokenTest is Test {
         _buyMeme(token, second);
 
         uint256 charged = (first * swapFeeBips) / 10_000 + (second * swapFeeBips) / 10_000;
-        uint256 protocolPart = _protocol((first * swapFeeBips) / 10_000)
-            + _protocol((second * swapFeeBips) / 10_000);
         uint256 toProtocol = usdg.balanceOf(protocolRecipient);
         uint256 toVault = usdg.balanceOf(address(vault));
+        uint256 paidOut = charged - hook.pendingFees(token);
         assertEq(toProtocol + toVault + hook.pendingFees(token), charged, "fee conserved");
-        assertEq(toProtocol + hook.accruedProtocol(token), protocolPart, "protocol part a third");
-        assertLe(protocolPart * 3, charged, "never above a third");
+        assertEq(toProtocol, _protocol(paidOut), "protocol part a quarter");
+        assertLe(toProtocol * 4, charged, "never above a quarter");
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -941,7 +944,7 @@ contract ControllerDeployTokenTest is Test {
         usdg.approve(address(controller), type(uint256).max);
         vm.recordLogs();
         address token =
-            controller.deployToken(_configWithDevBuy(1_000, memeAmount, type(uint256).max));
+            controller.deployToken(_configWithDevBuy(500, memeAmount, type(uint256).max));
         vm.stopPrank();
         Trade memory t = _memeSwapped();
 
@@ -951,7 +954,7 @@ contract ControllerDeployTokenTest is Test {
         assertEq(t.trader, creator, "buyer reported as trader");
         assertTrue(t.isBuy);
         assertEq(t.memeAmount, memeAmount);
-        assertEq(t.fee, (t.pairAmount * 1_000) / 10_000, "base fee of the meme");
+        assertEq(t.fee, (t.pairAmount * 500) / 10_000, "base fee of the meme");
     }
 
     /// @dev The dev buy is settled after `afterSwap`, so on a PoolManager without pair token the
@@ -1090,7 +1093,7 @@ contract ControllerDeployTokenTest is Test {
         external
     {
         memeAmount = bound(memeAmount, 1e18, MAX_DEV_BUY_X18);
-        swapFeeBips = bound(swapFeeBips, 100, 1_000);
+        swapFeeBips = bound(swapFeeBips, 100, 500);
         uint256 before = 1_000_000 * PAIR_UNIT;
 
         DevBuyResult memory r = _deployWithDevBuy(swapFeeBips, memeAmount);
@@ -1348,9 +1351,9 @@ contract ControllerDeployTokenTest is Test {
         (bool ok,) = _buyWithGas(token, 100 * PAIR_UNIT, 5_000_000);
         assertTrue(ok);
         assertEq(vault.vaultInfo(token).epoch, 1, "fresh epoch");
-        // vault part: 5000 USDG buy -> 41.67, our 100 USDG buy -> 0.83: only ours crosses 42
+        // vault part: 5000 USDG buy -> 46.875, our 100 USDG buy -> 0.9375: only ours crosses 47
         vm.prank(address(script));
-        vault.setConversionThreshold(42 * PAIR_UNIT);
+        vault.setConversionThreshold(47 * PAIR_UNIT);
 
         uint256 estimate = _minGasToBuy(token, 100 * PAIR_UNIT);
         (ok,) = _buyWithGas(token, 5_000 * PAIR_UNIT, 5_000_000);

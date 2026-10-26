@@ -11,8 +11,8 @@ struct DeployedToken {
 }
 
 struct RewardsConfig {
-    /// @dev Swap fee of the Meme in bips: 100..1000 (1%..10%). The protocol gets a third of it,
-    /// the vault of the Meme the rest (`HookManager.PROTOCOL_SHARE_BIPS`).
+    /// @dev Swap fee of the Meme in bips: 100..500 (1%..5%). The vault splits it: the protocol
+    /// gets `Vault.protocolShareBps` of it (a third by default), the Meme vault the rest.
     uint256 swapFeeBips;
     address creatorAddress;
     address rewardRecipient; // now is only
@@ -35,7 +35,7 @@ struct DeployConfig {
     RewardsConfig rewardsConfig;
     /// @dev Reward assets of the Meme vault, chosen by the creator from the vault allowlist.
     AssetConfig[] vaultAssets;
-    /// @dev Share of every vault fee credited to `rewardRecipient`, in bps: 0..10_000
+    /// @dev Share of every vault fee credited to `rewardRecipient`, in bps: 0..5_000
     /// (1_000 = 10%), the rest goes to the stakers. Immutable after deployment.
     uint16 vaultCreatorShareBps;
     DevBuyConfig devBuy;

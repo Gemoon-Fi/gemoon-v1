@@ -234,7 +234,7 @@ contract GemoonController is
             tokenConfig,
             _feeInfo(
                 config.rewardsConfig.swapFeeBips,
-                IHookManager(hook_).PROTOCOL_SHARE_BIPS(),
+                vault_.protocolShareBps(),
                 config.vaultCreatorShareBps
             )
         );
@@ -283,14 +283,15 @@ contract GemoonController is
     }
 
     /// @dev Fee split written into the Meme at deployment, in parts per million of the swap. Mirrors
-    /// the payout: the hook gives the protocol `protocolShareBips` of the fee, the vault the rest,
-    /// and the vault credits `creatorShareBps` of its part to the creator, the rest to the stakers.
+    /// `Vault.notifyFees`: the protocol gets `protocolShareBips` of the fee, the creator
+    /// `creatorShareBps` of the rest, the stakers the remainder. A snapshot: the vault owner may
+    /// change the protocol share later, the Meme keeps the figure of its deployment.
     /// Each part rounds down like the payout, the stakers part takes the dust, so the parts always
     /// add up to the total. Out-of-range inputs are not checked here: they are capped so this
     /// never reverts, and the vault (`InvalidCreatorShare`) or the hook (`InvalidMemeFeeBips`)
     /// reverts the deployment right after with its own error.
     /// @param swapFeeBips       Base fee of the Meme, bips of the swap.
-    /// @param protocolShareBips Protocol share of the fee, bips of the fee.
+    /// @param protocolShareBips Protocol share of the fee, bips of the fee (`Vault.protocolShareBps`).
     /// @param creatorShareBps   Creator share of the vault part, bps of that part.
     function _feeInfo(
         uint256 swapFeeBips,

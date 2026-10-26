@@ -21,16 +21,16 @@ import {IReferrals} from "./interfaces/IReferrals.sol";
 import {Hash, Hashes} from "./utils/Hash.sol";
 
 /// @title Gemoon referrals and protocol fee receiver.
-/// @notice See {IReferrals}. Set as `HookManager.protocolRecipient`: receives the protocol share
-///         of every swap fee, credits `refShareBips` of it to the referrer of the Meme and keeps
-///         the rest for the protocol.
+/// @notice See {IReferrals}. Set as `Vault.protocolRecipient`: receives the protocol share
+///         of every swap fee from the vault, credits `refShareBips` of it to the referrer of the
+///         Meme and keeps the rest for the protocol.
 /// @dev Accounting, in the pair token:
 ///  - `s_pending[r]`: owed to referrer `r`; `s_totalPending` is their sum.
 ///  - Protocol part: `balance - s_totalPending`, everything not owed to referrers, including fees of
 ///    Memes without a referrer and tokens sent here directly.
 /// Invariant: `pairToken.balanceOf(this) >= s_totalPending`, checked on every credit.
 ///
-/// Pause stops only referral payouts (`claim`, `distribute`). Fees keep being credited, so hook
+/// Pause stops only referral payouts (`claim`, `distribute`). Fees keep being credited, so fee
 /// payouts never fail because of it, and the protocol part can always be withdrawn: it never
 /// touches what is owed to referrers.
 ///
@@ -72,6 +72,8 @@ contract GmoonReferrals is
     /// the protocol fee through the hook they were created with. A proxy upgraded from a version
     /// without it starts empty: `onlyHook` also accepts `s_hook`.
     mapping(address hook => bool) private s_isHook;
+    /// @dev Vault that splits the swap fees and sends the protocol share here.
+    address private s_vault;
 
     // ---------------------------------------------------------------------------------------------
     // Modifiers
@@ -82,8 +84,8 @@ contract GmoonReferrals is
         _;
     }
 
-    modifier onlyHook() {
-        if (!isHook(msg.sender)) revert NotHook();
+    modifier onlyFeeSource() {
+        if (!isFeeSource(msg.sender)) revert NotFeeSource();
         _;
     }
 
@@ -198,12 +200,13 @@ contract GmoonReferrals is
     }
 
     /// @notice Credits the referrer of `meme` with its share of `amount`.
-    /// @dev Only hook, right after it transferred `amount` here. Never reverts for a Meme without a
-    /// referrer or a zero share, so it cannot block the hook payout; reverts only if the balance
-    /// would not cover what is owed to referrers.
+    /// @dev Only the vault (or a hook of the older design that paid the protocol share itself),
+    /// right after it transferred `amount` here. Never reverts for a Meme without a referrer or a
+    /// zero share, so it cannot block the fee payout; reverts only if the balance would not cover
+    /// what is owed to referrers.
     /// @param meme   Meme whose pool generated the fees.
     /// @param amount Pair token amount transferred.
-    function notifyFee(address meme, uint256 amount) external onlyHook {
+    function notifyFee(address meme, uint256 amount) external onlyFeeSource {
         address referrer = s_memeReferrer[meme];
         uint256 refAmount = referrer == address(0)
             ? 0
@@ -269,6 +272,13 @@ contract GmoonReferrals is
         _setHook(hook_);
     }
 
+    /// @inheritdoc IReferrals
+    function setVault(address vault_) external onlyOwner {
+        if (vault_ == address(0)) revert ZeroAddress();
+        s_vault = vault_;
+        emit VaultUpdated(vault_);
+    }
+
     // ---------------------------------------------------------------------------------------------
     // Views
     // ---------------------------------------------------------------------------------------------
@@ -291,6 +301,16 @@ contract GmoonReferrals is
     /// @inheritdoc IReferrals
     function isHook(address account) public view returns (bool) {
         return account == s_hook || s_isHook[account];
+    }
+
+    /// @inheritdoc IReferrals
+    function vault() external view returns (address) {
+        return s_vault;
+    }
+
+    /// @inheritdoc IReferrals
+    function isFeeSource(address account) public view returns (bool) {
+        return (account == s_vault && account != address(0)) || isHook(account);
     }
 
     /// @inheritdoc IReferrals

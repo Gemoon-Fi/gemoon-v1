@@ -25,8 +25,9 @@ import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/Own
 /// creates its own ProxyAdmin, owned by `proxyAdminOwner`, so the upgrade key is set at deployment
 /// and never has to be transferred afterwards.
 ///
-/// HookManager is not upgradeable: pools reference it directly, so its code and fees can never
-/// change under a live pool. The PoolManager decides which callbacks to invoke from the bits of
+/// HookManager is not upgradeable: pools reference it directly, so its code and fee rates can
+/// never change under a live pool. How a fee is split (protocol share and recipient) lives in the
+/// upgradeable Vault. The PoolManager decides which callbacks to invoke from the bits of
 /// the hook address (BaseHook validates itself in its constructor), so it is deployed with CREATE2
 /// and a mined salt that puts `HOOK_FLAGS` into the address. In `forge script` CREATE2 goes through the deterministic
 /// deployer at `CREATE2_FACTORY`; in `forge test` it is the calling contract itself.
@@ -64,17 +65,17 @@ abstract contract GemoonDeployBase is Script {
         uint256 conversionThreshold;
         address swapAdapter;
         address[] allowedAssets;
+        address protocolRecipient;
+        uint256 protocolShareBps;
     }
 
     struct HookDeployParams {
         address owner;
         address poolManager;
         address pairToken;
-        address protocolRecipient;
         address vault;
         address controller;
         uint256 feeBips;
-        uint256 protocolShareBips;
     }
 
     struct ControllerDeployParams {
@@ -100,7 +101,8 @@ abstract contract GemoonDeployBase is Script {
     /// @dev The proxy is initialized with `deployer` as owner in the deployment transaction (no
     /// front-running of `initialize`) so it can be configured in the same run, then ownership is
     /// handed to `params.owner` via Ownable2Step (needs acceptOwnership). Zero `controller`,
-    /// `hook` and `swapAdapter` are skipped and can be set later by the owner.
+    /// `hook`, `swapAdapter`, `protocolRecipient` and `protocolShareBps` are skipped and can be set
+    /// later by the owner. A non-zero share needs a recipient before the first fee arrives.
     /// @param deployer Calling account, owner of the vault until `params.owner` accepts.
     /// @param params   Vault configuration.
     /// @return vault   Vault proxy.
@@ -125,6 +127,10 @@ abstract contract GemoonDeployBase is Script {
         if (params.conversionThreshold != 0) {
             vault.setConversionThreshold(params.conversionThreshold);
         }
+        if (params.protocolRecipient != address(0)) {
+            vault.setProtocolRecipient(params.protocolRecipient);
+        }
+        if (params.protocolShareBps != 0) vault.setProtocolShare(params.protocolShareBps);
 
         for (uint256 i; i < params.allowedAssets.length; ++i) {
             vault.setAssetAllowed(params.allowedAssets[i], true);
@@ -150,11 +156,9 @@ abstract contract GemoonDeployBase is Script {
             params.poolManager,
             params.pairToken,
             params.owner,
-            params.protocolRecipient,
             params.vault,
             params.controller,
-            params.feeBips,
-            params.protocolShareBips
+            params.feeBips
         );
         bytes32 initCodeHash = keccak256(abi.encodePacked(type(HookManager).creationCode, args));
         (address expected, bytes32 salt) = findHookSalt(create2Deployer, initCodeHash);
@@ -163,11 +167,9 @@ abstract contract GemoonDeployBase is Script {
             IPoolManager(params.poolManager),
             Currency.wrap(params.pairToken),
             params.owner,
-            params.protocolRecipient,
             params.vault,
             params.controller,
-            params.feeBips,
-            params.protocolShareBips
+            params.feeBips
         );
         if (address(hook) != expected) revert Create2AddressMismatch(expected, address(hook));
         IHooks(address(hook)).validateHookPermissions(hook.getHookPermissions());
@@ -262,24 +264,24 @@ abstract contract GemoonDeployBase is Script {
         );
     }
 
-    /// @notice Reverts unless the referrals contract is the protocol recipient of the hook and
-    /// points at the same controller and hook, which in turn point at it.
+    /// @notice Reverts unless the referrals contract is the protocol recipient of the vault and
+    /// points at the same controller and vault, which in turn point at it.
     function checkReferralsWiring(
         GemoonController controller,
-        HookManager hook,
+        Vault vault,
         GmoonReferrals referrals
     ) public view {
         if (address(controller.referrals()) != address(referrals)) {
             revert WiringMismatch("controller.referrals");
         }
-        if (hook.protocolRecipient() != address(referrals)) {
-            revert WiringMismatch("hook.protocolRecipient");
+        if (vault.protocolRecipient() != address(referrals)) {
+            revert WiringMismatch("vault.protocolRecipient");
         }
-        if (referrals.hook() != address(hook)) revert WiringMismatch("referrals.hook");
+        if (referrals.vault() != address(vault)) revert WiringMismatch("referrals.vault");
         if (referrals.controller() != address(controller)) {
             revert WiringMismatch("referrals.controller");
         }
-        if (referrals.pairToken() != Currency.unwrap(hook.pairToken())) {
+        if (referrals.pairToken() != vault.usdg()) {
             revert WiringMismatch("referrals.pairToken");
         }
     }
@@ -353,8 +355,9 @@ abstract contract GemoonDeployBase is Script {
 /// and UniswapV3SwapAdapter, wired together, the reward assets of `DEPLOY_ASSETS_FILE` allowed in
 /// the vault with their swap routes on the adapter, ownership handed over, and a report of what was
 /// deployed where and why.
-/// @dev Order (`deployFull`): vault -> controller -> referrals -> hook (takes vault, controller and
-/// referrals in `initialize`) -> setters -> adapter -> assets and routes -> ownership -> checks.
+/// @dev Order (`deployFull`): vault -> controller -> referrals (protocol recipient of the vault) ->
+/// hook (takes vault and controller in its constructor) -> setters -> adapter -> assets and
+/// routes -> ownership -> checks.
 /// The deployer owns vault, controller, referrals and adapter during the run so it can configure
 /// them; the hook is owned by the final owner right away. A half-finished run is safe: the
 /// controller reverts on `deployToken` until hook, vault and PositionManager are set, the hook
@@ -378,8 +381,9 @@ abstract contract GemoonDeployBase is Script {
 ///                               (default: GEMOON_OWNER)
 ///  - HOOK_TOTAL_FEE_BIPS        fallback swap fee in bips for Memes without their own fee
 ///                               (default: 125); every Meme gets its fee from `deployToken`
-///  - HOOK_PROTOCOL_SHARE_BIPS   protocol share of every fee, in bips of the fee (default: 3333)
-///  - REFERRALS_REF_SHARE_BIPS   referrer share of the protocol fee, in bips (default: 1000)
+///  - VAULT_PROTOCOL_SHARE_BPS   protocol share of every fee, in bps of the fee, kept by the vault
+///                               and changeable by its owner (default: 2500)
+///  - REFERRALS_REF_SHARE_BIPS   referrer share of the protocol fee, in bips (default: 2500)
 ///  - ADAPTER_TWAP_WINDOW        TWAP window of the adapter in seconds (default: 600)
 ///  - ADAPTER_MAX_SLIPPAGE_BPS   allowed deviation from the TWAP per route (default: 100)
 ///  - DEPLOY_ASSETS_FILE         reward asset list, `Ticker,Contract address,Uniswap V3 / USDG pool`
@@ -387,7 +391,7 @@ abstract contract GemoonDeployBase is Script {
 ///  - VAULT_ALLOWED_ASSETS       extra comma-separated assets allowed without a route, e.g. USDG
 ///                               itself (optional)
 ///  - DEPLOY_REPORT              file the report is written to (optional, it is logged anyway)
-/// The protocol share of the swap fee goes to the Referrals contract; its owner withdraws the
+/// The vault sends the protocol share of the swap fee to the Referrals contract; its owner withdraws the
 /// protocol part with `withdrawProtocolFees`. After the run GEMOON_OWNER accepts the ownership of
 /// vault, referrals and adapter (Ownable2Step) if it differs from the broadcaster.
 contract DeployGemoon is GemoonDeployBase {
@@ -400,7 +404,7 @@ contract DeployGemoon is GemoonDeployBase {
         address usdg;
         address protocolRecipient;
         uint256 feeBips;
-        uint256 protocolShareBips;
+        uint256 protocolShareBps;
         uint256 conversionThreshold;
         address swapAdapter;
         address[] allowedAssets;
@@ -514,7 +518,7 @@ contract DeployGemoon is GemoonDeployBase {
             usdg: vm.envAddress("USDG_ADDRESS"),
             protocolRecipient: address(0),
             feeBips: _envUintOr("HOOK_TOTAL_FEE_BIPS", 125),
-            protocolShareBips: _envUintOr("HOOK_PROTOCOL_SHARE_BIPS", 3_333),
+            protocolShareBps: _envUintOr("VAULT_PROTOCOL_SHARE_BPS", 2_500),
             conversionThreshold: vm.envUint("VAULT_CONVERSION_THRESHOLD"),
             swapAdapter: address(0),
             allowedAssets: _envAddressList("VAULT_ALLOWED_ASSETS")
@@ -529,7 +533,7 @@ contract DeployGemoon is GemoonDeployBase {
 
         params = FullParams({
             core: paramsFromEnv(deployer),
-            refShareBips: _envUintOr("REFERRALS_REF_SHARE_BIPS", 1_000),
+            refShareBips: _envUintOr("REFERRALS_REF_SHARE_BIPS", 2_500),
             v3Factory: vm.envAddress("UNISWAP_V3_FACTORY"),
             twapWindow: SafeCast.toUint32(_envUintOr("ADAPTER_TWAP_WINDOW", 600)),
             maxSlippageBps: SafeCast.toUint16(_envUintOr("ADAPTER_MAX_SLIPPAGE_BPS", 100)),
@@ -583,7 +587,7 @@ contract DeployGemoon is GemoonDeployBase {
         // 1. Vault and controller, kept by the deployer until they are configured.
         (d.vault, d.controller) = _deployVaultAndController(deployer, core);
 
-        // 2. Referrals before the hook: the hook takes it as protocol recipient in `initialize`.
+        // 2. Referrals, the protocol recipient of the vault.
         d.referrals = deployReferrals(
             ReferralsDeployParams({
                 owner: deployer,
@@ -596,13 +600,14 @@ contract DeployGemoon is GemoonDeployBase {
         );
 
         // 3. Hook, owned by the final owner right away.
-        core.protocolRecipient = address(d.referrals);
         d.hook = _deployCoreHook(create2Deployer, core, d.vault, d.controller);
 
         // 4. Wiring. Referrals first: `deployToken` opens with `setPositionManager` in `_wireCore`,
-        // a Meme deployed before `setReferrals` would never be attributed to a referrer.
+        // a Meme deployed before `setReferrals` would never be attributed to a referrer, and no fee
+        // may arrive before the vault knows where the protocol share goes.
         d.controller.setReferrals(address(d.referrals));
-        d.referrals.setHook(address(d.hook));
+        d.vault.setProtocolRecipient(address(d.referrals));
+        d.referrals.setVault(address(d.vault));
         _wireCore(d.vault, d.controller, d.hook, core);
 
         // 5. Swap adapter, owned by the deployer until the routes are set.
@@ -624,7 +629,7 @@ contract DeployGemoon is GemoonDeployBase {
 
         // 8. Sanity.
         checkWiring(d.controller, d.hook, d.vault);
-        checkReferralsWiring(d.controller, d.hook, d.referrals);
+        checkReferralsWiring(d.controller, d.vault, d.referrals);
         checkAdapterWiring(d.vault, d.adapter);
         checkAssets(d.vault, d.adapter, d.assets);
     }
@@ -862,13 +867,13 @@ contract DeployGemoon is GemoonDeployBase {
             _row("controller.vault", address(d.controller.vault()), "New Memes are registered in this vault."),
             _row("controller.positionManager", address(d.controller.positionManager()), "Mints the initial position."),
             _row("controller.referrals", address(d.controller.referrals()), "New Memes are attributed to the referrer of their creator."),
-            _row("hook.vault", d.hook.vault(), "Receives the creator part of every fee."),
+            _row("hook.vault", d.hook.vault(), "Receives every fee and splits it."),
             _row("hook.controller", d.hook.controller(), "The only caller of the hook's controller functions."),
-            _row("hook.protocolRecipient", d.hook.protocolRecipient(), "Receives the protocol part of every fee (referrals)."),
             _row("vault.hook", d.vault.hook(), "The only source of fees the vault accepts."),
             _row("vault.controller", d.vault.controller(), "The only caller that registers Memes."),
             _row("vault.swapAdapter", d.vault.swapAdapter(), "Converts USDG into reward assets."),
-            _row("referrals.hook", d.referrals.hook(), "The only caller of `notifyFee`."),
+            _row("vault.protocolRecipient", d.vault.protocolRecipient(), "Receives the protocol part of every fee (referrals)."),
+            _row("referrals.vault", d.referrals.vault(), "The only caller of `notifyFee`."),
             _row("referrals.controller", d.referrals.controller(), "The only caller of `registerToken`."),
             _row("adapter.vault", d.adapter.i_vault(), "The only caller of `swap` (immutable)."),
             _row("adapter.factory", address(d.adapter.i_factory()), "Pools are looked up here, never taken from calldata (immutable).")
@@ -884,7 +889,7 @@ contract DeployGemoon is GemoonDeployBase {
             "\n## Configuration\n\n",
             "| Setting | Value | Meaning |\n|---|---|---|\n",
             _rowStr("hook.TOTAL_FEE_BIPS", vm.toString(d.hook.TOTAL_FEE_BIPS()), "Fallback swap fee in bips of the trade, every Meme sets its own in `deployToken`."),
-            _rowStr("hook.PROTOCOL_SHARE_BIPS", vm.toString(d.hook.PROTOCOL_SHARE_BIPS()), "Protocol part of every fee in bips of the fee, the rest goes to the creator via the vault."),
+            _rowStr("vault.protocolShareBps", vm.toString(d.vault.protocolShareBps()), "Protocol part of every fee in bps of the fee, the rest goes to the creator and stakers; the vault owner can change it."),
             _rowStr("referrals.refShareBips", vm.toString(d.referrals.refShareBips()), "Referrer part of the protocol fee, in bips."),
             _rowStr("vault.conversionThreshold", vm.toString(d.vault.conversionThreshold()), "Pending USDG (raw units) of a Meme that closes its epoch and triggers the conversion; 0 disables it."),
             _rowStr("adapter.twapWindow", string.concat(vm.toString(d.adapter.twapWindow()), " s"), "Window of the TWAP the minimum output is derived from."),
@@ -1043,7 +1048,9 @@ contract DeployGemoon is GemoonDeployBase {
                 hook: address(0),
                 conversionThreshold: params.conversionThreshold,
                 swapAdapter: params.swapAdapter,
-                allowedAssets: params.allowedAssets
+                allowedAssets: params.allowedAssets,
+                protocolRecipient: params.protocolRecipient,
+                protocolShareBps: params.protocolShareBps
             })
         );
         controller = deployController(
@@ -1068,11 +1075,9 @@ contract DeployGemoon is GemoonDeployBase {
                 owner: params.owner,
                 poolManager: params.poolManager,
                 pairToken: params.usdg,
-                protocolRecipient: params.protocolRecipient,
                 vault: address(vault),
                 controller: address(controller),
-                feeBips: params.feeBips,
-                protocolShareBips: params.protocolShareBips
+                feeBips: params.feeBips
             })
         );
     }
@@ -1103,6 +1108,9 @@ contract DeployGemoon is GemoonDeployBase {
 ///  - VAULT_ALLOWED_ASSETS         comma-separated reward assets allowlist (optional)
 ///  - CONTROLLER_PROXY_ADDRESS     GemoonController proxy (optional, can be set later)
 ///  - HOOK_ADDRESS                 HookManager (optional, can be set later)
+///  - VAULT_PROTOCOL_RECIPIENT     receiver of the protocol share, e.g. Referrals (optional, can be
+///                                 set later; required before the first fee if the share is non-zero)
+///  - VAULT_PROTOCOL_SHARE_BPS     protocol share of every fee, in bps of the fee (default: 2500)
 /// After the run: owner of the controller calls `GemoonController.setVault`, owner of the hook
 /// calls `HookManager.setVault` (both with the vault PROXY address), and GEMOON_OWNER calls
 /// `acceptOwnership` if it differs from the broadcaster.
@@ -1120,7 +1128,9 @@ contract DeployVault is GemoonDeployBase {
             hook: _envAddressOr("HOOK_ADDRESS", address(0)),
             conversionThreshold: vm.envUint("VAULT_CONVERSION_THRESHOLD"),
             swapAdapter: _envAddressOr("VAULT_SWAP_ADAPTER", address(0)),
-            allowedAssets: _envAddressList("VAULT_ALLOWED_ASSETS")
+            allowedAssets: _envAddressList("VAULT_ALLOWED_ASSETS"),
+            protocolRecipient: _envAddressOr("VAULT_PROTOCOL_RECIPIENT", address(0)),
+            protocolShareBps: _envUintOr("VAULT_PROTOCOL_SHARE_BPS", 2_500)
         });
 
         Vault vault = deployVault(deployer, params);
@@ -1134,6 +1144,8 @@ contract DeployVault is GemoonDeployBase {
         console.log("HOOK: ", params.hook);
         console.log("CONVERSION THRESHOLD: ", params.conversionThreshold);
         console.log("SWAP ADAPTER: ", params.swapAdapter);
+        console.log("PROTOCOL RECIPIENT: ", params.protocolRecipient);
+        console.log("PROTOCOL SHARE BPS: ", params.protocolShareBps);
         for (uint256 i; i < params.allowedAssets.length; ++i) {
             console.log("ALLOWED ASSET: ", params.allowedAssets[i]);
         }
@@ -1251,10 +1263,11 @@ contract VerifyWiring is GemoonDeployBase {
         console.log("VAULT OWNER: ", vault.owner());
         console.log("VAULT PENDING OWNER: ", vault.pendingOwner());
         console.log("VAULT CONVERSION THRESHOLD: ", vault.conversionThreshold());
+        console.log("VAULT PROTOCOL RECIPIENT: ", vault.protocolRecipient());
+        console.log("VAULT PROTOCOL SHARE BPS: ", vault.protocolShareBps());
         console.log("HOOK: ", address(hook));
         console.log("HOOK OWNER: ", hook.owner());
         console.log("HOOK PENDING OWNER: ", hook.pendingOwner());
-        console.log("HOOK PROTOCOL RECIPIENT: ", hook.protocolRecipient());
         _logProxy("CONTROLLER", address(controller));
         console.log("CONTROLLER OWNER: ", controller.owner());
         console.log("CONTROLLER POSITION MANAGER: ", address(controller.positionManager()));
@@ -1264,7 +1277,7 @@ contract VerifyWiring is GemoonDeployBase {
         address referralsAddress = _envAddressOr("REFERRALS_PROXY_ADDRESS", address(0));
         if (referralsAddress != address(0)) {
             GmoonReferrals referrals = GmoonReferrals(referralsAddress);
-            checkReferralsWiring(controller, hook, referrals);
+            checkReferralsWiring(controller, vault, referrals);
             _logProxy("REFERRALS", referralsAddress);
             console.log("REFERRALS OWNER: ", referrals.owner());
             console.log("REFERRALS REF SHARE BIPS: ", referrals.refShareBips());
@@ -1329,9 +1342,11 @@ contract DeployUniswapV3SwapAdapter is GemoonDeployBase {
 ///  - GEMOON_PROXY_ADMIN_OWNER     owner of the ProxyAdmin, i.e. who can upgrade (default: GEMOON_OWNER)
 ///  - CONTROLLER_PROXY_ADDRESS     GemoonController proxy (optional, can be set later)
 ///  - HOOK_ADDRESS                 HookManager (optional, can be set later); its pair token
-///                                 must equal USDG_ADDRESS
-/// After the run: `make wire-referrals` with REFERRALS_PROXY_ADDRESS set (owner of the controller
-/// and the hook), so the hook pays the protocol share here and the controller registers new Memes.
+///                                 must equal USDG_ADDRESS. Only hooks of the older design, that
+///                                 paid the protocol share themselves, need it.
+/// After the run: `make wire-referrals` with REFERRALS_PROXY_ADDRESS set (owner of the controller,
+/// the vault and the referrals), so the vault pays the protocol share here and the controller
+/// registers new Memes.
 contract DeployReferrals is GemoonDeployBase {
     function run() external {
         vm.startBroadcast();
@@ -1344,7 +1359,7 @@ contract DeployReferrals is GemoonDeployBase {
             pairToken: vm.envAddress("USDG_ADDRESS"),
             controller: _envAddressOr("CONTROLLER_PROXY_ADDRESS", address(0)),
             hook: _envAddressOr("HOOK_ADDRESS", address(0)),
-            refShareBips: _envUintOr("REFERRALS_REF_SHARE_BIPS", 1_000)
+            refShareBips: _envUintOr("REFERRALS_REF_SHARE_BIPS", 2_500)
         });
         if (
             params.hook != address(0)
@@ -1364,36 +1379,39 @@ contract DeployReferrals is GemoonDeployBase {
     }
 }
 
-/// @notice Points the controller and the hook at the Referrals contract and checks the wiring.
-/// @dev Env: REFERRALS_PROXY_ADDRESS, CONTROLLER_PROXY_ADDRESS, HOOK_ADDRESS. The broadcaster
-/// must own the controller and the hook. From now on the protocol share of every fee goes to the
-/// referrals contract instead of the previous protocol recipient.
+/// @notice Points the controller and the vault at the Referrals contract, the referrals at the
+///         vault, and checks the wiring.
+/// @dev Env: REFERRALS_PROXY_ADDRESS, CONTROLLER_PROXY_ADDRESS, VAULT_PROXY_ADDRESS. The broadcaster
+/// must own the controller, the vault and the referrals. From now on the protocol share of every
+/// fee goes to the referrals contract instead of the previous protocol recipient.
 contract WireReferrals is GemoonDeployBase {
     function run() external {
         GmoonReferrals referrals = GmoonReferrals(vm.envAddress("REFERRALS_PROXY_ADDRESS"));
         GemoonController controller =
             GemoonController(payable(vm.envAddress("CONTROLLER_PROXY_ADDRESS")));
-        HookManager hook = HookManager(payable(vm.envAddress("HOOK_ADDRESS")));
+        Vault vault = Vault(vm.envAddress("VAULT_PROXY_ADDRESS"));
 
         vm.startBroadcast();
-        wireReferrals(controller, hook, referrals);
+        wireReferrals(controller, vault, referrals);
         vm.stopBroadcast();
 
         console.log("PREVIOUS PROTOCOL RECIPIENT REPLACED BY: ", address(referrals));
         console.log("REFERRALS WIRING OK");
     }
 
-    /// @notice Sets the referrals on the controller and as protocol recipient of the hook.
-    /// @dev Must be called by the owner of both. Reverts if the referrals contract does not point
-    /// at the same controller and hook.
+    /// @notice Sets the referrals on the controller and as protocol recipient of the vault, and
+    ///         the vault as fee source of the referrals.
+    /// @dev Must be called by the owner of all three. Reverts if the referrals contract does not
+    /// point at the same controller.
     function wireReferrals(
         GemoonController controller,
-        HookManager hook,
+        Vault vault,
         GmoonReferrals referrals
     ) public {
         controller.setReferrals(address(referrals));
-        hook.setProtocolRecipient(address(referrals));
-        checkReferralsWiring(controller, hook, referrals);
+        referrals.setVault(address(vault));
+        vault.setProtocolRecipient(address(referrals));
+        checkReferralsWiring(controller, vault, referrals);
     }
 }
 

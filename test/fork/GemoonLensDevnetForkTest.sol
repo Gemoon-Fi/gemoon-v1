@@ -24,11 +24,17 @@ interface IStateView {
 /// is a CREATE of the controller, so the last N nonces are the last N Memes.
 contract GemoonLensDevnetForkTest is Test {
     uint256 constant CHAIN_ID = 1488;
-    address constant CONTROLLER = 0xEd81B09c9EB3af64CE573ece2fe74e272f9ba586;
-    address constant VAULT = 0xBEe2253Ef8B47FC9c54D32ec9560cec962B79573;
-    address constant HOOK = 0xB5e8dB4dB0Aa808d6843fA85D0935B92B0a870cc;
-    address constant POOL_MANAGER = 0x8366a39CC670B4001A1121B8F6A443A643e40951;
+    /// @dev Current devnet deployment, overridden by CONTROLLER_PROXY_ADDRESS / VAULT_PROXY_ADDRESS
+    /// / HOOK_ADDRESS / POOL_MANAGER of env/dev.mk when `make devnet-tests` exports them.
+    address constant DEVNET_CONTROLLER = 0x642c1B61F34AcC0b1CA599349b75b5Ba783EfB8E;
+    address constant DEVNET_VAULT = 0xB04b1CC84dedf45E25Ce24f493aFEa3c414013B3;
+    address constant DEVNET_HOOK = 0xE1c669Ac693F92417C953DBA793Eb1593Dd170cC;
+    address constant DEVNET_POOL_MANAGER = 0x8366a39CC670B4001A1121B8F6A443A643e40951;
     address constant STATE_VIEW = 0xF3334192D15450CdD385c8B70e03f9A6bD9E673b;
+    address CONTROLLER;
+    address VAULT;
+    address HOOK;
+    address POOL_MANAGER;
     address constant DEAD = 0x000000000000000000000000000000000000dEaD;
 
     uint256 constant BATCH = 70;
@@ -42,6 +48,10 @@ contract GemoonLensDevnetForkTest is Test {
         uint256 blockNumber = vm.envOr("DEVNET_BLOCK", uint256(0));
         if (blockNumber == 0) vm.createSelectFork(rpc);
         else vm.createSelectFork(rpc, blockNumber);
+        CONTROLLER = vm.envOr("CONTROLLER_PROXY_ADDRESS", DEVNET_CONTROLLER);
+        VAULT = vm.envOr("VAULT_PROXY_ADDRESS", DEVNET_VAULT);
+        HOOK = vm.envOr("HOOK_ADDRESS", DEVNET_HOOK);
+        POOL_MANAGER = vm.envOr("POOL_MANAGER", DEVNET_POOL_MANAGER);
         if (block.chainid != CHAIN_ID || VAULT.code.length == 0) return;
 
         lens = new GemoonLens(CONTROLLER, VAULT, HOOK, POOL_MANAGER);

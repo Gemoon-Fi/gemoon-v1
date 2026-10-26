@@ -70,7 +70,9 @@ contract VaultUpgradeTest is Test {
                 hook: hook,
                 conversionThreshold: 0,
                 swapAdapter: address(adapter),
-                allowedAssets: allowed
+                allowedAssets: allowed,
+                protocolRecipient: address(0),
+                protocolShareBps: 0
             })
         );
         proxyAdmin = Upgrades.getAdminAddress(address(vault));
@@ -143,7 +145,9 @@ contract VaultUpgradeTest is Test {
                 hook: address(0),
                 conversionThreshold: 5e6,
                 swapAdapter: address(0),
-                allowedAssets: allowed
+                allowedAssets: allowed,
+                protocolRecipient: address(0),
+                protocolShareBps: 0
             })
         );
         assertEq(fresh.owner(), address(deployScript));

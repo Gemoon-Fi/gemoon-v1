@@ -44,11 +44,11 @@ contract GmoonReferralsV2 is GmoonReferrals {
 
 /// @notice End-to-end: real PoolManager and PositionManager, Gemoon deployed by the deploy script,
 /// Referrals deployed and wired by the referrals scripts, Memes deployed through the controller
-/// and traded, protocol fees flowing hook -> referrals -> referrer / protocol.
+/// and traded, fees flowing hook -> vault (splits) -> referrals -> referrer / protocol.
 contract ReferralsIntegrationTest is Test {
     uint256 constant PAIR_UNIT = 1e6;
-    uint256 constant PROTOCOL_SHARE = 3_333;
-    uint256 constant REF_SHARE = 1_000;
+    uint256 constant PROTOCOL_SHARE = 2_500;
+    uint256 constant REF_SHARE = 2_500;
     uint256 constant FEE_BIPS = 125;
 
     MintableToken usdg;
@@ -84,7 +84,8 @@ contract ReferralsIntegrationTest is Test {
         upgradeScript = new ProxyReferralsUpgrade();
         address[] memory assets = new address[](1);
         assets[0] = address(usdg);
-        // `wire` owns hook and controller, as the broadcaster of `make wire-referrals` would.
+        // `wire` owns controller, vault and referrals, as the broadcaster of `make wire-referrals`
+        // would.
         DeployGemoon.Deployment memory d = script.deployAll(
             address(script),
             address(script),
@@ -97,7 +98,7 @@ contract ReferralsIntegrationTest is Test {
                 usdg: address(usdg),
                 protocolRecipient: makeAddr("oldProtocolRecipient"),
                 feeBips: FEE_BIPS,
-                protocolShareBips: PROTOCOL_SHARE,
+                protocolShareBps: PROTOCOL_SHARE,
                 conversionThreshold: 0,
                 swapAdapter: address(0),
                 allowedAssets: assets
@@ -106,10 +107,12 @@ contract ReferralsIntegrationTest is Test {
         vault = d.vault;
         hook = d.hook;
         controller = d.controller;
+        vm.prank(address(wire));
+        vault.acceptOwnership();
 
         referrals = script.deployReferrals(
             GemoonDeployBase.ReferralsDeployParams({
-                owner: refOwner,
+                owner: address(wire),
                 proxyAdminOwner: address(upgradeScript),
                 pairToken: address(usdg),
                 controller: address(controller),
@@ -117,7 +120,11 @@ contract ReferralsIntegrationTest is Test {
                 refShareBips: REF_SHARE
             })
         );
-        wire.wireReferrals(controller, hook, referrals);
+        wire.wireReferrals(controller, vault, referrals);
+        vm.prank(address(wire));
+        referrals.transferOwnership(refOwner);
+        vm.prank(refOwner);
+        referrals.acceptOwnership();
 
         vm.prank(alice);
         referrals.registerCode("alice");
@@ -186,25 +193,42 @@ contract ReferralsIntegrationTest is Test {
         vm.stopPrank();
     }
 
-    function _protocol(uint256 usdgIn) internal pure returns (uint256) {
-        return (((usdgIn * FEE_BIPS) / 10_000) * PROTOCOL_SHARE) / 10_000;
+    function _fee(uint256 usdgIn) internal pure returns (uint256) {
+        return (usdgIn * FEE_BIPS) / 10_000;
+    }
+
+    /// @dev Protocol part of one payout of `fee`, rounded down like `Vault.notifyFees`.
+    function _protocol(uint256 fee) internal pure returns (uint256) {
+        return (fee * PROTOCOL_SHARE) / 10_000;
     }
 
     // ------------------------------------------------------------------ wiring
 
     function test_WireReferrals_Valid_EverythingPointsAtReferrals() external view {
-        script.checkReferralsWiring(controller, hook, referrals);
-        assertEq(hook.protocolRecipient(), address(referrals));
+        script.checkReferralsWiring(controller, vault, referrals);
+        assertEq(vault.protocolRecipient(), address(referrals));
+        assertEq(referrals.vault(), address(vault));
         assertEq(address(controller.referrals()), address(referrals));
     }
 
-    function test_WireReferrals_ReferralsPointAtOtherHook_Reverts() external {
-        vm.prank(refOwner);
-        referrals.setHook(makeAddr("otherHook"));
+    function test_CheckReferralsWiring_VaultPaysElsewhere_Reverts() external {
+        vm.prank(address(wire));
+        vault.setProtocolRecipient(makeAddr("elsewhere"));
         vm.expectRevert(
-            abi.encodeWithSelector(GemoonDeployBase.WiringMismatch.selector, "referrals.hook")
+            abi.encodeWithSelector(
+                GemoonDeployBase.WiringMismatch.selector, "vault.protocolRecipient"
+            )
         );
-        wire.wireReferrals(controller, hook, referrals);
+        script.checkReferralsWiring(controller, vault, referrals);
+    }
+
+    function test_CheckReferralsWiring_ReferralsPointAtOtherVault_Reverts() external {
+        vm.prank(refOwner);
+        referrals.setVault(makeAddr("otherVault"));
+        vm.expectRevert(
+            abi.encodeWithSelector(GemoonDeployBase.WiringMismatch.selector, "referrals.vault")
+        );
+        script.checkReferralsWiring(controller, vault, referrals);
     }
 
     function test_SetReferrals_NotOwner_Reverts() external {
@@ -226,7 +250,7 @@ contract ReferralsIntegrationTest is Test {
         _buy(token, 1_000 * PAIR_UNIT);
         _buy(token, 400 * PAIR_UNIT);
 
-        uint256 toProtocol = _protocol(1_000 * PAIR_UNIT) + _protocol(400 * PAIR_UNIT);
+        uint256 toProtocol = _protocol(_fee(1_000 * PAIR_UNIT) + _fee(400 * PAIR_UNIT));
         uint256 toReferrer = (toProtocol * REF_SHARE) / 10_000;
         assertEq(hook.pendingFees(token), 0, "paid out");
         assertEq(usdg.balanceOf(address(referrals)), toProtocol, "protocol share arrived");
@@ -249,7 +273,7 @@ contract ReferralsIntegrationTest is Test {
         _buy(token, 1_000 * PAIR_UNIT);
         _buy(token, 400 * PAIR_UNIT);
 
-        uint256 toProtocol = _protocol(1_000 * PAIR_UNIT) + _protocol(400 * PAIR_UNIT);
+        uint256 toProtocol = _protocol(_fee(1_000 * PAIR_UNIT) + _fee(400 * PAIR_UNIT));
         assertEq(referrals.totalPending(), 0);
         assertEq(referrals.protocolBalance(), toProtocol);
     }
@@ -274,9 +298,9 @@ contract ReferralsIntegrationTest is Test {
         assertEq(referrals.memeReferrer(token), address(0));
     }
 
-    /// @dev A rejecting protocol recipient fails the payout but never the swap: the fee stays
-    /// accrued in the hook and is paid once the wiring is fixed.
-    function test_Payout_ReferralsRejectsHook_FeesStayAccruedUntilFixed() external {
+    /// @dev A rejecting protocol recipient fails the vault split and with it the hook payout, but
+    /// never the swap: the fee stays accrued in the hook and is paid once the wiring is fixed.
+    function test_Payout_ReferralsRejectsVault_FeesStayAccruedUntilFixed() external {
         address token = _deployMeme(bob);
         _buy(token, 1_000 * PAIR_UNIT);
 
@@ -284,7 +308,7 @@ contract ReferralsIntegrationTest is Test {
         vm.mockCallRevert(
             address(referrals),
             abi.encodeWithSelector(IProtocolFeeReceiver.notifyFee.selector),
-            abi.encodeWithSelector(IReferrals.NotHook.selector)
+            abi.encodeWithSelector(IReferrals.NotFeeSource.selector)
         );
         vm.recordLogs();
         _buy(token, 400 * PAIR_UNIT);
@@ -297,6 +321,7 @@ contract ReferralsIntegrationTest is Test {
         uint256 fee = ((1_400 * PAIR_UNIT) * FEE_BIPS) / 10_000;
         assertApproxEqAbs(hook.pendingFees(token), fee, 1, "still accrued");
         assertEq(usdg.balanceOf(address(referrals)), 0);
+        assertEq(usdg.balanceOf(address(vault)), 0, "vault split rolled back");
 
         vm.clearMockedCalls();
         hook.distribute(token);
@@ -304,9 +329,9 @@ contract ReferralsIntegrationTest is Test {
         assertGt(referrals.pendingOf(alice), 0);
     }
 
-    /// @dev The hook is not upgradeable: after referrals switch to a new hook, the pools of
-    /// older Memes keep paying the protocol fee through the old one.
-    function test_Payout_ReferralsHookReplaced_OldHookStillPaysOut() external {
+    /// @dev The hook holds nothing of the split: the referrals hook setting is irrelevant to new
+    /// hooks, the vault keeps paying the protocol share whatever it is.
+    function test_Payout_ReferralsHookReplaced_VaultStillPaysProtocolShare() external {
         address token = _deployMeme(bob);
         _buy(token, 1_000 * PAIR_UNIT);
 
@@ -314,7 +339,7 @@ contract ReferralsIntegrationTest is Test {
         referrals.setHook(makeAddr("newHook"));
         _buy(token, 400 * PAIR_UNIT);
 
-        assertEq(hook.pendingFees(token), 0, "old hook paid out");
+        assertEq(hook.pendingFees(token), 0, "hook paid out");
         assertGt(referrals.pendingOf(alice), 0, "referrer credited");
     }
 
@@ -322,17 +347,56 @@ contract ReferralsIntegrationTest is Test {
     function test_Payout_EoaProtocolRecipient_PaysWithoutNotify() external {
         address eoa = makeAddr("eoa");
         vm.prank(address(wire));
-        hook.setProtocolRecipient(eoa);
+        vault.setProtocolRecipient(eoa);
         address token = _deployMeme(carol);
         _buy(token, 1_000 * PAIR_UNIT);
         _buy(token, 400 * PAIR_UNIT);
-        assertEq(usdg.balanceOf(eoa), _protocol(1_000 * PAIR_UNIT) + _protocol(400 * PAIR_UNIT));
+        assertEq(usdg.balanceOf(eoa), _protocol(_fee(1_000 * PAIR_UNIT) + _fee(400 * PAIR_UNIT)));
+    }
+
+    /// @dev Heaviest payout the hook budgets for: first credit of a referrer (cold referral
+    /// slots) and first fee of a vault with a staker (cold accumulator and pending slots), all
+    /// inside `PAYOUT_GAS_OVERHEAD`. It must succeed on the first try, not fail and wait.
+    function test_Payout_FirstFeeWithStakerAndReferrer_FitsPayoutGasOverhead() external {
+        address token = _deployMeme(bob);
+        _buy(token, 1_000 * PAIR_UNIT); // accrues only, the PoolManager holds no pair token yet
+        uint256 staked = IERC20(token).balanceOf(trader) / 2;
+        vm.startPrank(trader);
+        IERC20(token).approve(address(vault), staked);
+        vault.stake(token, staked);
+        vm.stopPrank();
+
+        vm.recordLogs();
+        _buy(token, 400 * PAIR_UNIT);
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        for (uint256 i; i < logs.length; ++i) {
+            assertTrue(logs[i].topics[0] != IHookManager.PayoutFailed.selector, "payout failed");
+        }
+        assertEq(hook.pendingFees(token), 0, "paid out at once");
+        assertGt(referrals.pendingOf(alice), 0, "referrer credited");
+        assertGt(vault.vaultInfo(token).pendingStakerUSDG, 0, "stakers credited");
+    }
+
+    /// @dev The protocol share is a vault setting, changed without touching the hook: the next
+    /// payout already uses the new share.
+    function test_Payout_ProtocolShareChangedInVault_AppliesToNextPayout() external {
+        address token = _deployMeme(carol);
+        _buy(token, 1_000 * PAIR_UNIT);
+        vm.prank(address(wire));
+        vault.setProtocolShare(5_000);
+        _buy(token, 400 * PAIR_UNIT);
+
+        uint256 fee = _fee(1_000 * PAIR_UNIT) + _fee(400 * PAIR_UNIT);
+        assertEq(hook.pendingFees(token), 0, "paid out");
+        assertEq(usdg.balanceOf(address(referrals)), fee / 2, "half to the protocol");
+        assertEq(usdg.balanceOf(address(vault)), fee - fee / 2, "half to the vault");
     }
 
     /// @dev Whatever the trade sizes, referrals hold exactly the protocol share, split between
     /// referrer credit and protocol part. A payout the PoolManager cannot cover yet stays accrued
     /// (see ControllerDeployTokenTest), so everything is flushed with `distribute` first. Fees may
-    /// arrive in one or two payouts, each credit rounds down: at most 1 unit off per payout.
+    /// arrive in one or two payouts, each split and credit rounds down: at most 1 unit off per
+    /// payout.
     function testFuzz_Swap_ReferredMeme_SplitConserved(uint64 a, uint64 b) external {
         uint256 first = bound(a, PAIR_UNIT, 50_000 * PAIR_UNIT);
         uint256 second = bound(b, PAIR_UNIT, 50_000 * PAIR_UNIT);
@@ -341,13 +405,14 @@ contract ReferralsIntegrationTest is Test {
         _buy(token, second);
         hook.distribute(token);
 
-        uint256 toProtocol = _protocol(first) + _protocol(second);
+        uint256 toProtocol = _protocol(_fee(first) + _fee(second));
         uint256 balance = usdg.balanceOf(address(referrals));
-        assertEq(balance, toProtocol, "protocol share");
+        assertApproxEqAbs(balance, toProtocol, 1, "protocol share");
+        assertLe(balance, toProtocol, "split rounds down");
         assertApproxEqAbs(
-            referrals.pendingOf(alice), (toProtocol * REF_SHARE) / 10_000, 1, "credit"
+            referrals.pendingOf(alice), (balance * REF_SHARE) / 10_000, 1, "credit"
         );
-        assertLe(referrals.pendingOf(alice), (toProtocol * REF_SHARE) / 10_000, "rounds down");
+        assertLe(referrals.pendingOf(alice), (balance * REF_SHARE) / 10_000, "rounds down");
         assertEq(referrals.pendingOf(alice) + referrals.protocolBalance(), balance, "conservation");
     }
 

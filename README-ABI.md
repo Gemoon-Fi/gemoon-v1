@@ -16,16 +16,17 @@
 хук конкретного мема берите из `GemoonController.hookOf(meme)` (ноль — мем старого контроллера, тогда
 `controller.hook()`), а не из `controller.hook()`: тот указывает на хук для новых мемов. Ключ пула и
 `pendingFees`/`currentFeeBips` читайте у хука мема. GemoonLens делает это сам.
-Волт и рефералы принимают комиссии от любого хука, когда-либо назначенного через `setHook`
-(`vault.isHook(addr)`, `referrals.isHook(addr)`), поэтому после смены хука старые мемы продолжают
-получать выплаты.
+Волт принимает комиссии от любого хука, когда-либо назначенного через `setHook`
+(`vault.isHook(addr)`), поэтому после смены хука старые мемы продолжают получать выплаты. Хук
+отдаёт всю комиссию волту, протокольную долю рефералам переводит уже волт; рефералы принимают
+`notifyFee` от волта и от хуков старой схемы (`referrals.isFeeSource(addr)`).
 
 ## Что нужно знать сразу
 
 - Каждый мем торгуется в паре с USDG в пуле Uniswap V4. Эмиссия 1 000 000 000 токенов,
   18 знаков, вся сразу в пуле. Стартовая капитализация 20 000 USDG: 50 000 мемов за 1 USDG. Создатель получает токены, только если сделал dev buy
   (см. ниже).
-- Хук удерживает комиссию в USDG с каждой сделки. Ставку от 1% до 10% выбирает создатель мема,
+- Хук удерживает комиссию в USDG с каждой сделки. Ставку от 1% до 5% выбирает создатель мема,
   но **первые 30 секунд после создания пула она до 80%** (защита от снайперов). Закладывайте
   это в расчёт минимального выхода, ставку на момент сделки даёт `currentFeeBips(meme)`.
 - Награды стейкерам и создателю выплачиваются не в USDG, а в наградных активах мема, и только
@@ -89,7 +90,7 @@ const config = {
     admins: [{ admin: "0x...", removable: true }], // минимум один
   },
   rewardsConfig: {
-    swapFeeBips: 300n,                // комиссия свопа мема, 100..1000 (1%..10%)
+    swapFeeBips: 300n,                // комиссия свопа мема, 100..500 (1%..5%)
     creatorAddress: "0x...",          // обязательно, получает долю создателя
     rewardRecipient: "0x0000000000000000000000000000000000000000", // ноль = creatorAddress
   },
@@ -97,7 +98,7 @@ const config = {
     { token: "0x...", weightBps: 6000 },
     { token: "0x...", weightBps: 4000 },
   ],
-  vaultCreatorShareBps: 1000,         // доля создателя в комиссиях волта, 0..10000 (1000 = 10%)
+  vaultCreatorShareBps: 1000,         // доля создателя в комиссиях волта, 0..5000 (1000 = 10%)
   devBuy: {                           // первая покупка создателем, в той же транзакции
     memeAmount: 0n,                   // сколько мема купить, raw units (18 знаков). 0 = без dev buy
     maxPairIn: 0n,                    // максимум USDG с комиссией, иначе revert DevBuySlippage
@@ -110,7 +111,7 @@ allowlist отдаёт `Vault.allowedAssets()`, проверка одного а
 Какие из них показывать в форме, см. `indexing.md`, раздел 2a. Набор активов после создания не меняется.
 
 `vaultCreatorShareBps` — доля каждой комиссии волта, которая идёт создателю (`rewardRecipient`),
-остальное получают стейкеры. От 0 до 10000 bips, больше — revert `InvalidCreatorShare`. После
+остальное получают стейкеры. От 0 до 5000 bips (`Vault.MAX_CREATOR_SHARE_BPS()`), больше — revert `InvalidCreatorShare`. После
 создания не меняется, читается через `Vault.creatorShareBpsOf(meme)`, `vaultInfo(meme).creatorShareBps`
 или `vault.creatorShareBps` в `GemoonLens.tokens`. Пока стейкеров нет, вся комиссия идёт создателю
 при любой доле.
@@ -179,27 +180,29 @@ allowlist отдаёт `Vault.allowedAssets()`, проверка одного а
 Комиссия в USDG берётся хуком: при покупке за фиксированную сумму USDG из этой суммы,
 при продаже из полученного USDG. LP-комиссии у пула нет.
 
-Базовую ставку мема задаёт создатель в `rewardsConfig.swapFeeBips`, от 100 до 1000 bips (1%..10%).
-Из неё протокол получает треть (`PROTOCOL_SHARE_BIPS` = 3333, то есть 33.33%), волт мема
-остальное: при 3% это ~1% от сделки протоколу и ~2% волту, при 1% — ~0.33% и ~0.67%, при 10% —
-~3.33% и ~6.67%.
+Базовую ставку мема задаёт создатель в `rewardsConfig.swapFeeBips`, от 100 до 500 bips (1%..5%).
+Хук отдаёт всю комиссию волту, разбивку делает волт: протокол получает `Vault.protocolShareBps()`
+(по умолчанию 2500, то есть 25%), мем остальное: при 1% это 0.25% от сделки протоколу и 0.75% мему,
+при 5% — 1.25% и 3.75%. Долю меняет владелец волта, новое значение
+действует для всех мемов с ближайшей выплаты; `feeInfo()` токена хранит долю на момент деплоя.
 
 Ставка зависит от возраста пула: в момент создания 80%, дальше линейно падает и через
 `DYNAMIC_FEE_THRESHOLD()` секунд (сейчас 30) становится базовой. Dev buy внутри `deployToken`
-платит сразу базовую ставку. Доля протокола (треть) действует и в этом окне, от всей
+платит сразу базовую ставку. Доля протокола действует и в этом окне, от всей
 комиссии вместе с надбавкой. Время создания пула берётся из блока `deployToken`.
 
 HookManager для интеграций (`IHookManager.json`):
 
-- `pendingFees(meme) → uint256`: комиссия по мему, ещё не выплаченная волту и протоколу.
+- `pendingFees(meme) → uint256`: комиссия по мему, ещё не выплаченная волту.
 - `distribute(meme)`: выплатить накопленное. Может вызвать любой. Нужна, если после сделок
   `pendingFees` не обнулился, такое бывает у пулов с малым оборотом.
 - `currentFeeBips(meme) → uint256`: ставка комиссии в bips прямо сейчас, с учётом окна
   после создания пула. `feeBipsAt(meme, timestamp)` — то же на заданный момент.
 - `memeFeeBips(meme)`, `baseFeeBips(meme)`: ставка, выбранная создателем, и ставка после окна.
-- `PROTOCOL_SHARE_BIPS()`, `BIPS()`: доля протокола в bips от комиссии (3333 = треть), `TOTAL_FEE_BIPS()` —
-  резервная ставка; обе заданы в конструкторе и не меняются. `initialize`/`reinitialize` у хука нет.
-  До этой версии назывался `PROTOCOL_FEE_BIPS()` и означал bips от суммы сделки. `MIN_MEME_FEE_BIPS()`,
+- `BIPS()`, `TOTAL_FEE_BIPS()` — резервная ставка, задана в конструкторе и не меняется.
+  `initialize`/`reinitialize` у хука нет. `PROTOCOL_SHARE_BIPS()`, `protocolRecipient()`,
+  `accruedProtocol(meme)` и `setProtocolRecipient` из хука удалены: доля протокола и получатель
+  теперь в волте (`Vault.protocolShareBps()`, `Vault.protocolRecipient()`). `MIN_MEME_FEE_BIPS()`,
   `MAX_MEME_FEE_BIPS()` — границы ставки создателя. `MAX_FEE_BIPS()` (8000) и
   `DYNAMIC_FEE_THRESHOLD()` задают окно повышенной комиссии, `poolTimestamps(meme)` — время
   создания первого пула мема, его записывает сам хук при `initialize` пула контроллером.
@@ -209,7 +212,18 @@ HookManager для интеграций (`IHookManager.json`):
 - Событие `PoolTimestampRecorded(meme, createdAt)`: создан первый пул мема, начало окна.
 - Событие `MemeFeeConfigured(meme, feeBips, createdAt)`: выбранная ставка и начало окна.
 - События `MemeSwapped`, `FeeCharged`, `FeesDistributed`, `PayoutFailed`: сигнатуры в
-  `indexing.md`.
+  `indexing.md`. `FeesDistributed(meme, vault, amount)` теперь несёт одну сумму — всё, что ушло в
+  волт; событие `ProtocolRecipientUpdated` у хука удалено.
+
+Vault, разбивка комиссии:
+
+- `protocolShareBps() → uint256`, `protocolRecipient() → address`: доля протокола (bps комиссии) и
+  её получатель. `setProtocolShare(bps)` (0..10000, иначе `InvalidProtocolShare`) и
+  `setProtocolRecipient(addr)` — только владелец, события `ProtocolShareUpdated`,
+  `ProtocolRecipientUpdated`.
+- `notifyFees(meme, amount)` (только хук) получает всю комиссию и сразу переводит долю протокола
+  получателю (событие `ProtocolFeePaid(meme, recipient, amount)`); получателю-контракту зовёт
+  `notifyFee`. Доля > 0 без получателя — `ProtocolRecipientNotSet`.
 
 ## Стейкинг
 
@@ -251,7 +265,8 @@ HookManager для интеграций (`IHookManager.json`):
   создателю (получателю наград) через волт, `vaultPpm` — стейкерам в волте, `protocolPpm` —
   протоколу (контракт рефералов). `creatorPpm + vaultPpm + protocolPpm == totalPpm`. Это базовая
   комиссия, без повышенной антиснайп-комиссии первых 30 секунд. Значения не меняются, даже если
-  позже поменять долю протокола в хуке. Есть только у мемов, созданных после этого обновления.
+  позже владелец волта поменяет долю протокола (`setProtocolShare`): тогда фактическая разбивка
+  разойдётся с `feeInfo()`. Есть только у мемов, созданных после этого обновления.
 - `totalHolders()`: число адресов с ненулевым балансом. Считаются все адреса, включая контракты:
   PoolManager (ликвидность пула), контроллер (пыль после минта позиции), волт (стейки). Есть
   только у мемов, созданных после этого обновления: у старых токенов вызов откатится.
@@ -259,10 +274,18 @@ HookManager для интеграций (`IHookManager.json`):
   `data:application/json;base64,<json>`. Отдельно ничего задавать не нужно, после `updateImage` /
   `changeDescription` URI меняется сам. JSON:
   ```json
-  {"name":"Meme","symbol":"MEME","decimals":18,"description":"...","image":"ipfs://...",
+  {"name":"Meme","symbol":"MEME","decimals":18,"description":"...","image":"https://...",
+   "twitter":"https://x.com/...","telegram":"https://t.me/...","website":"https://...",
    "socialMedia":{"farcaster":"...","twitterX":"...","telegram":"...","website":"..."},
    "fees":{"totalPercent":1.25,"creatorPercent":0.0833,"vaultPercent":0.7501,"protocolPercent":0.4166}}
   ```
+  `twitter`, `telegram`, `website` на верхнем уровне — стандартные ключи (как в метаданных
+  pump.fun), их читают агрегаторы. Ключ есть только если создатель задал ссылку: незаданная ссылка
+  в JSON отсутствует целиком (не пустая строка). Значения берутся из `socialMedia` как есть,
+  контракт формат не проверяет: фронт при создании токена должен передавать полные `https://` URL,
+  а `imgUrl` — прямую публично доступную ссылку на картинку. `socialMedia` (все четыре ссылки,
+  пустая строка если не задана) и `fees` остаются для нашего приложения. Новый формат только у
+  мемов, созданных после этого обновления.
   Строки экранированы по JSON, кавычки и переводы строк в описании безопасны. `fees` — то же, что
   `feeInfo()`, но числами в процентах от суммы свопа, до 4 знаков после точки, без хвостовых нулей
   (`10`, `1.25`, `0.0833`).
@@ -281,7 +304,8 @@ HookManager для интеграций (`IHookManager.json`):
 |---|---|---|
 | Controller | `TokenCreated`, `PoolCreated`, `PositionCreated` | новый мем |
 | Vault | `VaultRegistered(meme, creator, creatorShareBps, assets)` | волт мема создан |
-| Vault | `FeesNotified(meme, toStakers, toCreator)` | пришла комиссия в USDG |
+| Vault | `FeesNotified(meme, toStakers, toCreator)` | пришла комиссия в USDG (часть мема, после доли протокола) |
+| Vault | `ProtocolFeePaid(meme, recipient, amount)` | доля протокола из комиссии мема ушла получателю |
 | Vault | `FeesConverted(meme, epoch, usdgIn, toStakers[], toCreator[])` | USDG сконвертирован, награды стали claimable |
 | Vault | `Staked`, `Unstaked`, `RewardPaid`, `CreatorRewardPaid` | действия пользователей |
 | Vault | `CreatorTransferStarted`, `CreatorTransferred` | смена создателя |
@@ -294,7 +318,7 @@ HookManager для интеграций (`IHookManager.json`):
 
 ## Рефералы
 
-Реферер получает `refShareBips()` (по умолчанию 10%) от **протокольной** доли комиссии каждого
+Реферер получает `refShareBips()` (по умолчанию 25%) от **протокольной** доли комиссии каждого
 мема, созданного приведённым им пользователем.
 
 ```js
@@ -323,10 +347,10 @@ await referrals.paused();                      // true — выплаты вре
 | Ошибка | Причина |
 |---|---|
 | `HookNotSet`, `VaultNotSet`, `PositionManagerNotSet` | контроллер ещё не сконфигурирован |
-| `InvalidMemeFeeBips(feeBips)` | `swapFeeBips` вне 100..1000 |
+| `InvalidMemeFeeBips(feeBips)` | `swapFeeBips` вне 100..500 |
 | `Token symbol is required`, `Token name is required`, `Token image required.`, `At least one admin address is required.` | пустые поля конфига |
 | `AssetNotAllowed`, `DuplicateAsset`, `InvalidAssetsLength`, `InvalidWeights` | неверный `vaultAssets` |
-| `InvalidCreatorShare(creatorShareBps)` | `vaultCreatorShareBps` больше 10000 |
+| `InvalidCreatorShare(creatorShareBps)` | `vaultCreatorShareBps` больше 5000 (`MAX_CREATOR_SHARE_BPS`) |
 | `VaultNotRegistered` | адрес не является мемом Gemoon |
 | `InsufficientStake` | снятие больше стейка |
 | `EnforcedPause` | волт на паузе: стейк, клейм и конвертация недоступны, вывод стейка работает |

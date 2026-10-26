@@ -47,7 +47,7 @@ contract TransferToGovernanceTest is Test {
                 usdg: address(usdg),
                 protocolRecipient: makeAddr("protocolRecipient"),
                 feeBips: 125,
-                protocolShareBips: 3_333,
+                protocolShareBps: 3_333,
                 conversionThreshold: 0,
                 swapAdapter: address(0),
                 allowedAssets: assets

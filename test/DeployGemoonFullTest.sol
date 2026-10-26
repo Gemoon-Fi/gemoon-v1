@@ -104,12 +104,12 @@ contract DeployGemoonFullTest is Test {
             usdg: address(usdg),
             protocolRecipient: address(0),
             feeBips: 125,
-            protocolShareBips: 3_333,
+            protocolShareBps: 2_500,
             conversionThreshold: 5e6,
             swapAdapter: address(0),
             allowedAssets: new address[](0)
         });
-        p.refShareBips = 1_000;
+        p.refShareBips = 2_500;
         p.v3Factory = address(factory);
         p.twapWindow = WINDOW;
         p.maxSlippageBps = SLIPPAGE;
@@ -141,15 +141,17 @@ contract DeployGemoonFullTest is Test {
         DeployGemoon.FullDeployment memory d = _deploy(owner, new DeployGemoon.AssetRow[](0));
 
         script.checkWiring(d.controller, d.hook, d.vault);
-        script.checkReferralsWiring(d.controller, d.hook, d.referrals);
+        script.checkReferralsWiring(d.controller, d.vault, d.referrals);
         script.checkAdapterWiring(d.vault, d.adapter);
 
-        assertEq(d.hook.protocolRecipient(), address(d.referrals), "referrals get protocol fee");
+        assertEq(d.vault.protocolRecipient(), address(d.referrals), "referrals get protocol fee");
+        assertEq(d.referrals.vault(), address(d.vault), "referrals accept the vault");
+        assertEq(d.vault.protocolShareBps(), 2_500, "protocol share in the vault");
         assertEq(address(d.controller.referrals()), address(d.referrals), "controller.referrals");
         assertEq(d.vault.swapAdapter(), address(d.adapter), "vault.swapAdapter");
         assertEq(address(d.adapter.i_factory()), address(factory), "adapter.factory");
         assertEq(d.adapter.twapWindow(), WINDOW, "adapter.twapWindow");
-        assertEq(d.referrals.refShareBips(), 1_000, "refShareBips");
+        assertEq(d.referrals.refShareBips(), 2_500, "refShareBips");
         assertEq(d.vault.conversionThreshold(), 5e6, "threshold");
         uint160 flags = uint160(address(d.hook)) & Hooks.ALL_HOOK_MASK;
         assertTrue(flags != 0, "hook address carries permission bits");
@@ -419,7 +421,7 @@ contract DeployGemoonFullTest is Test {
         vm.setEnv("GEMOON_OWNER", vm.toString(owner));
         vm.setEnv("GEMOON_PROXY_ADMIN_OWNER", "");
         vm.setEnv("HOOK_TOTAL_FEE_BIPS", "300");
-        vm.setEnv("HOOK_PROTOCOL_SHARE_BIPS", "");
+        vm.setEnv("VAULT_PROTOCOL_SHARE_BPS", "");
         vm.setEnv("REFERRALS_REF_SHARE_BIPS", "");
         vm.setEnv("ADAPTER_TWAP_WINDOW", "");
         vm.setEnv("ADAPTER_MAX_SLIPPAGE_BPS", "");
@@ -434,11 +436,11 @@ contract DeployGemoonFullTest is Test {
         UniswapV3SwapAdapter adapter = script.deployedAdapter();
 
         script.checkWiring(controller, hook, vault);
-        script.checkReferralsWiring(controller, hook, referrals);
+        script.checkReferralsWiring(controller, vault, referrals);
         script.checkAdapterWiring(vault, adapter);
         assertEq(hook.TOTAL_FEE_BIPS(), 300);
-        assertEq(hook.PROTOCOL_SHARE_BIPS(), 3_333, "default protocol share");
-        assertEq(referrals.refShareBips(), 1_000, "default ref share");
+        assertEq(vault.protocolShareBps(), 2_500, "default protocol share");
+        assertEq(referrals.refShareBips(), 2_500, "default ref share");
         assertEq(adapter.twapWindow(), 600, "default window");
         assertEq(adapter.routeOf(row.asset).maxSlippageBps, 100, "default slippage");
         assertTrue(vault.isAssetAllowed(row.asset), "asset from file");

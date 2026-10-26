@@ -9,6 +9,9 @@ ast = true
 build_info = true
 extra_output = ["storageLayout"]
 optimizer = true
+# Gas of the local test EVM (default 2^30). GemoonLensGasTest deploys 340 Memes in setUp and sat
+# at the edge of the default. Gas limits that matter are asserted by the tests themselves.
+gas_limit = 4_000_000_000
 # DeployGemoon reads the reward asset list and writes its report into deploy-logs/ (gitignored).
 fs_permissions = [
   { access = "read", path = "./tools/scripts" },

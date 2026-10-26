@@ -9,7 +9,7 @@
 
 ## test/ControllerDeployTokenTest.sol
 
-End-to-end в процессе теста: настоящие PoolManager, PositionManager и Permit2, деплой через скрипт. Базовая ставка мема 1.25%, доля протокола треть комиссии, 3333 bips (если не сказано иное).
+End-to-end в процессе теста: настоящие PoolManager, PositionManager и Permit2, деплой через скрипт. Базовая ставка мема 1.25%, доля протокола четверть комиссии, 2500 bips (если не сказано иное).
 
 ### Создание мема и позиция
 
@@ -34,7 +34,7 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
 | `test_Swap_FirstBuy_FeeStaysAccruedUntilPoolManagerHoldsPairToken` | Первая покупка в пустом PoolManager | Неудачная выплата не ломает своп, комиссия не теряется | Трейдер получил мем, комиссия в `pendingFees`, протокол и волт пока 0 |
-| `test_Swap_SecondBuy_PaysOutBothFeesSplitBetweenProtocolAndVault` | Вторая покупка выплачивает обе комиссии | Протокол + волт = вся взятая комиссия, протоколу треть каждой комиссии | `pendingFees` = 0, протокол треть комиссии, волт остальное, `vault.accounted` = доля волта |
+| `test_Swap_SecondBuy_PaysOutBothFeesSplitBetweenProtocolAndVault` | Вторая покупка выплачивает обе комиссии одной выплатой, делит волт | Протокол + волт = вся взятая комиссия, протоколу четверть выплаты | `pendingFees` = 0, протокол = floor(сумма × 2500 / 10000), волт остальное, `vault.accounted` = доля волта |
 | `test_Distribute_AfterFirstBuy_PaysAccruedFee` | Ручная выплата `distribute` | Начисленное выплачивается полностью и с тем же делением | `pendingFees` = 0, деление протокол/волт как у автоматической выплаты |
 
 ### Стартовая цена
@@ -65,30 +65,31 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | `test_Swap_BuyHalfWindowAfterLaunch_ChargesMidpointFee` | Покупка в середине окна | Ставка падает линейно | `fee` = линейная середина между 80% и базовой |
 | `test_Swap_SellAtLaunch_ChargesMaxFeeOnOutput` | Продажа в момент создания | Анти-снайп и на продажу | `fee` = 80% от выхода пула |
 | `test_Swap_BuyOneMinuteAfterLaunch_ChargesBaseFee` | Покупка после окна | После окна только базовая ставка | `fee` = 1.25% |
-| `testFuzz_Swap_DynamicFee_ProtocolPlusVaultPlusAccruedEqualsCharged` (fuzz) | Две покупки в любые моменты окна | Протокол + волт + начислено = вся комиссия; протокол получает треть каждой комиссии, включая анти-снайп надбавку; ставка не растёт со временем | Равенства сохраняются, `accruedProtocol <= pendingFees` |
+| `testFuzz_Swap_DynamicFee_ProtocolPlusVaultPlusAccruedEqualsCharged` (fuzz) | Две покупки в любые моменты окна | Протокол + волт + начислено = вся комиссия; протокол получает четверть выплаченного, включая анти-снайп надбавку; волт учитывает только свою часть; ставка не растёт со временем | Равенства сохраняются, протокол = floor(выплачено × 2500 / 10000), `vault.accounted` = доля волта |
 
 ### Ставка, выбранная создателем
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
-| `test_DeployToken_SwapFee_StoredInHook` | Ставка 10% | Ставка создателя доходит до хука | `memeFeeBips` и `currentFeeBips` после окна = 1000 |
+| `test_DeployToken_SwapFee_StoredInHook` | Ставка 5% | Ставка создателя доходит до хука | `memeFeeBips` и `currentFeeBips` после окна = 500 |
 | `test_DeployToken_SwapFeeBelowOnePercent_Revert` | Ставка 0.99% | Нижняя граница 1% | revert `InvalidMemeFeeBips(99)` |
-| `test_DeployToken_SwapFeeAboveTenPercent_Revert` | Ставка 10.01% | Верхняя граница 10% | revert `InvalidMemeFeeBips(1001)` |
+| `test_DeployToken_SwapFeeAboveFivePercent_Revert` | Ставка 5.01% | Верхняя граница 5% | revert `InvalidMemeFeeBips(501)` |
 | `test_DeployToken_CreatorShare_StoredInVault` | `vaultCreatorShareBps = 3500` | Доля создателя из конфига доходит до волта | `creatorShareBpsOf(token)` и `vaultInfo(token).creatorShareBps` = 3500 |
-| `test_DeployToken_CreatorShareAboveBps_Revert` | `vaultCreatorShareBps = 10001` | Доля создателя ≤ 100% | revert `InvalidCreatorShare(10001)`, мем не создан |
+| `test_DeployToken_CreatorShareAboveCap_Revert` | `vaultCreatorShareBps = 5001` | Доля создателя ≤ 50% (`MAX_CREATOR_SHARE_BPS`) | revert `InvalidCreatorShare(5001)`, мем не создан |
+| `test_DeployToken_CreatorShareAboveBps_Revert` | `vaultCreatorShareBps = 10001` | Доля создателя ≤ 50% | revert `InvalidCreatorShare(10001)`, мем не создан |
 | `test_DeployToken_CreatorShareMaxUint16_RevertsWithVaultError` | `vaultCreatorShareBps = 65535` | Расчёт `feeInfo` не падает раньше волта на неверной доле | revert `InvalidCreatorShare(65535)` |
-| `test_DeployToken_FeeInfo_WrittenIntoToken` | `feeInfo()` мема с комиссией 1.25%, доля протокола 3333, доля создателя 1000 | Распределение записано в токен при деплое | total 12 500, protocol 4 166, creator 833, vault 7 501 ppm |
-| `testFuzz_DeployToken_FeeInfo_MirrorsHookAndVault` (fuzz) | Любая комиссия 100..1000 bips и доля создателя 0..10 000 | total = `baseFeeBips` хука × 100; protocol = total × `PROTOCOL_SHARE_BIPS` / 10 000; creator = (total − protocol) × доля создателя волта / 10 000; части в сумме = total | все равенства выполняются |
-| `test_Swap_TenPercentFee_ProtocolGetsOneThirdVaultRest` | Две покупки при 10% | Протокол получает треть комиссии, волт остальное | Протокол ~3.33% объёма, волт остальное, сумма = 10% объёма |
-| `test_Swap_ProtocolShare_OneThirdOfAnyMemeFee` | Покупка на 1000 USDG при ставках 1%, 3%, 10% | Треть комиссии протоколу при любой ставке | Протокол/волт ≈ 1/3 и 2/3 комиссии: при 3% ~1%/~2% объёма |
-| `testFuzz_Swap_AnySwapFee_ProtocolGetsOneThirdFeeConserved` (fuzz) | Любая ставка 1%..10% | Комиссия сохраняется; протокол получает 3333 bips каждой комиссии с округлением вниз, не больше трети | Протокол + волт + начислено = вся комиссия; протокол = Σ floor(fee × 3333 / 10000) |
+| `test_DeployToken_FeeInfo_WrittenIntoToken` | `feeInfo()` мема с комиссией 1.25%, доля протокола 2500, доля создателя 1000 | Распределение записано в токен при деплое | total 12 500, protocol 3 125, creator 937, vault 8 438 ppm |
+| `testFuzz_DeployToken_FeeInfo_MirrorsHookAndVault` (fuzz) | Любая комиссия 100..1000 bips и доля создателя 0..10 000 | total = `baseFeeBips` хука × 100; protocol = total × `vault.protocolShareBps()` / 10 000; creator = (total − protocol) × доля создателя волта / 10 000; части в сумме = total | все равенства выполняются |
+| `test_Swap_FivePercentFee_ProtocolGetsQuarterVaultRest` | Две покупки при 5% | Протокол получает четверть комиссии, волт остальное | Протокол 1.25% объёма (±1), волт остальное, сумма = 5% объёма |
+| `test_Swap_ProtocolShare_QuarterOfAnyMemeFee` | Покупка на 1000 USDG при ставках 1%, 3%, 5% | Четверть комиссии протоколу при любой ставке | Протокол/волт = 1/4 и 3/4 комиссии (±1): при 1% 0.25%/0.75%, при 5% 1.25%/3.75% объёма |
+| `testFuzz_Swap_AnySwapFee_ProtocolGetsQuarterFeeConserved` (fuzz) | Любая ставка 1%..5% | Комиссия сохраняется; протокол получает 2500 bps выплаты с округлением вниз, не больше четверти | Протокол + волт + начислено = вся комиссия; протокол = floor(выплачено × 2500 / 10000) |
 
 ### Dev buy
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
 | `test_DeployToken_DevBuy_BuyerReceivesExactAmountAndPaysPairIn` | Dev buy 1% эмиссии | Покупатель получает ровно запрошенное и платит ровно `pairIn`; контроллер ничего не держит | Баланс мема = 1%, списано `pairIn`, у контроллера 0 USDG, апрув уменьшен ровно на `pairIn` |
-| `test_DeployToken_DevBuy_ChargesBaseFeeNotSnipeFee` | Ставка dev buy при 10% | Dev buy платит базовую ставку, остальные анти-снайп | `fee` = 10% от `pairAmount`, `router` = контроллер, `trader` = покупатель; `currentFeeBips` = 80% |
+| `test_DeployToken_DevBuy_ChargesBaseFeeNotSnipeFee` | Ставка dev buy при 5% | Dev buy платит базовую ставку, остальные анти-снайп | `fee` = 5% от `pairAmount`, `router` = контроллер, `trader` = покупатель; `currentFeeBips` = 80% |
 | `test_DeployToken_DevBuy_FeeAccruedThenPaidByNextSwap` | Судьба комиссии dev buy | Комиссия dev buy не теряется | После деплоя в `pendingFees`, следующий своп выплачивает её вместе со своей |
 | `test_DeployToken_DevBuy_SameBlockBuyPaysMaxFee` | Снайпер в том же блоке | Исключение работает только для контроллера | Покупка трейдера после dev buy платит 80% |
 | `test_DeployToken_DevBuy_MovesPriceForLaterBuyers` | Цена после dev buy 80% | Dev buy двигает цену как обычная покупка | Следующий покупатель получает меньше мема за 1 USDG, чем dev в среднем |
@@ -124,7 +125,7 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
-| `test_DeployFull_Wiring_AllContractsPointAtEachOther` | Связка всех пяти контрактов | Каждый указывает на нужных соседей, рефералы — получатель протокольной доли | `checkWiring`, `checkReferralsWiring`, `checkAdapterWiring` проходят; `hook.protocolRecipient = referrals`, `vault.swapAdapter = adapter`, параметры адаптера и рефералов из params |
+| `test_DeployFull_Wiring_AllContractsPointAtEachOther` | Связка всех пяти контрактов | Каждый указывает на нужных соседей, рефералы — получатель протокольной доли | `checkWiring`, `checkReferralsWiring`, `checkAdapterWiring` проходят; `vault.protocolRecipient = referrals`, `referrals.vault = vault`, `vault.protocolShareBps = 2500`, `vault.swapAdapter = adapter`, параметры адаптера и рефералов из params |
 | `test_DeployFull_Ownership_TwoStepPendingUntilAccepted` | Передача владения при `owner ≠ deployer` | Ownable2Step не отдаёт владение без accept; ProxyAdmin у `proxyAdminOwner` | Контроллер и хук сразу у owner; vault, referrals, adapter — pending до `acceptOwnership`, после — у owner; ProxyAdmin vault, controller, referrals у `proxyAdminOwner`; у хука ProxyAdmin нет |
 | `test_DeployFull_OwnerIsDeployer_NothingPending` | Владелец = деплоер | Нет лишних pending-передач | Все контракты у деплоера, `pendingOwner = 0` |
 | `test_DeployFull_RoutableAssets_AllowedAndRouted` | Активы с фабричным пулом и историей TWAP | Разрешён ⇔ есть маршрут на пул из файла | Статус `Routed`, актив в allowlist, маршрут: пул, fee 3000, допуск 100; allowlist = 2 |
@@ -137,11 +138,11 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | `test_ParseAssets_RowWithoutAddress_Revert` | Строка без колонки адреса | Битый файл не проходит молча | revert `InvalidAssetRow(2)` |
 | `test_ParseAssets_RepoAssetFile_AllRowsHaveAssetAndPool` | Реальный `tools/scripts/robinhood-assets.csv` | Файл в репозитории разбирается целиком | Все строки с тикером, адресом актива и пула |
 | `test_BuildReport_ListsContractsOwnershipAndAssets` | Отчёт деплоя | В отчёте есть всё, что нужно оператору | Адреса пяти контрактов, строка актива, причина пропуска, to-do `acceptOwnership`, итог «Allowed: 1, skipped: 1» |
-| `test_Run_FromEnv_DeploysWiresAndWritesReport` | `run()` из env, активы из файла, отчёт в файл | Пустые env-переменные = значения по умолчанию | Связка проходит; комиссия хука 300, доля протокола 3333, реферера 1000, окно 600, допуск 100; актив из файла и USDG из `VAULT_ALLOWED_ASSETS` разрешены; ProxyAdmin у `GEMOON_OWNER`; отчёт записан и содержит адаптер |
+| `test_Run_FromEnv_DeploysWiresAndWritesReport` | `run()` из env, активы из файла, отчёт в файл | Пустые env-переменные = значения по умолчанию | Связка проходит; комиссия хука 300, доля протокола 2500, реферера 2500, окно 600, допуск 100; актив из файла и USDG из `VAULT_ALLOWED_ASSETS` разрешены; ProxyAdmin у `GEMOON_OWNER`; отчёт записан и содержит адаптер |
 
 ## test/fork/ControllerDevnetForkTest.sol
 
-Девнет: Sepolia-форк на anvil (chain id 1337) с каноническими Uniswap V4, mock USDG. Запуск `make devnet-tests`, без `DEVNET_RPC` пропускается.
+Девнет: anvil-форк Robinhood Chain (chain id 1488) с его Uniswap V4 (адреса из `env/dev.mk`, по умолчанию зашиты в тест), mock USDG. Запуск `make devnet-tests`, без `DEVNET_RPC` пропускается.
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
@@ -154,13 +155,13 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 
 ## test/fork/DevBuyDevnetForkTest.sol
 
-Сквозной dev buy на девнете. Ставка мема 3%, доля протокола треть комиссии (3333 bips), наградный актив сам USDG (на форке нет V3-пулов для mock USDG), порог конверсии 1 USDG.
+Сквозной dev buy на девнете. Ставка мема 3%, доля протокола четверть комиссии (2500 bips), наградный актив сам USDG (на форке нет V3-пулов для mock USDG), порог конверсии 1 USDG.
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
 | `test_DeployToken_DevBuyThreePercent_CreatorHoldsThreePercentAndFeeAccrued` | Деплой с dev buy 3% эмиссии | Создатель получает ровно 3%; платит цену пула + базовую ставку, не 80%; комиссия не теряется | Баланс = 3% эмиссии, списано `pairIn` = `pairAmount + fee`, комиссия в `pendingFees`, у контроллера 0 USDG |
-| `test_Distribute_AfterDevBuy_FeeReachesVaultAndProtocolAndClosesEpoch` | `distribute` после dev buy | Протокол получает треть комиссии, волт остальное; порог закрывает эпоху | Протоколу треть комиссии dev buy, волту остальное, эпоха 0 закрыта, всё создателю (стейкеров нет) |
-| `test_DeployToken_DevBuyThenTrading_FeesConvertedOverSeveralEpochs` | Dev buy, стейк половины, две покупки после окна | Протокол получил ровно треть (3333 bips) каждой комиссии, dev buy включительно; волт остальное и должен всё создателю и стейкерам; каждая выплата закрывает эпоху | Закрыты 2 эпохи, суммы протокола и волта точные, создатель забирает всё через `claim` и `claimCreatorRewards`, в волте ≤ 2 wei пыли |
+| `test_Distribute_AfterDevBuy_FeeReachesVaultAndProtocolAndClosesEpoch` | `distribute` после dev buy | Хук отдаёт всё волту, волт отправляет протоколу четверть, остальное оставляет; порог закрывает эпоху | Протоколу четверть комиссии dev buy, волту остальное, эпоха 0 закрыта, всё создателю (стейкеров нет) |
+| `test_DeployToken_DevBuyThenTrading_FeesConvertedOverSeveralEpochs` | Dev buy, стейк половины, две покупки после окна | Протокол получил ровно четверть (2500 bps) каждой выплаты (первая сделка выплачивает комиссию dev buy вместе со своей), dev buy включительно; волт остальное и должен всё создателю и стейкерам; каждая выплата закрывает эпоху | Закрыты 2 эпохи, суммы протокола и волта точные, создатель забирает всё через `claim` и `claimCreatorRewards`, в волте ≤ 2 wei пыли |
 
 ## test/GemoonLensTest.sol
 
@@ -235,7 +236,7 @@ End-to-end в процессе теста: настоящие PoolManager/Positi
 
 ## test/ReferralsTest.sol
 
-Юнит-тесты `GmoonReferrals` за прокси, mock USDG (6 dec). Тест играет хук и контроллер через `prank`. `refShareBips` = 1000 (10%). alice — реферер с кодом `alice`, bob привязан к нему и деплоит `meme`, carol без реферера.
+Юнит-тесты `GmoonReferrals` за прокси, mock USDG (6 dec). Тест играет хук (источник комиссий старой схемы), волт и контроллер через `prank`. `refShareBips` = 1000 (10%). alice — реферер с кодом `alice`, bob привязан к нему и деплоит `meme`, carol без реферера.
 
 ### Инициализация и админ
 
@@ -249,7 +250,11 @@ End-to-end в процессе теста: настоящие PoolManager/Positi
 | `test_SetRefShare_AboveBips_Reverts`, `test_SetRefShare_NotOwner_Reverts` | `setRefShare` | Граница и доступ | revert `InvalidRefShare` / `OwnableUnauthorizedAccount` |
 | `test_SetHook_Zero_Reverts`, `test_SetController_Zero_Reverts`, `test_SetHook_NotOwner_Reverts` | Сеттеры | Нельзя обнулить, только владелец | revert `ZeroAddress` / `OwnableUnauthorizedAccount` |
 | `test_SetHook_NewHook_OldHookStillNotifies` | Смена хука | Хук не обновляемый: старые мемы платят через старый хук | `hook()` = новый, `isHook` для обоих, `notifyFee` от обоих зачислен (200 000 рефереру) |
-| `testFuzz_SetHook_AnySequence_OnlySetHooksNotify` (fuzz) | Любая последовательность из 3 хуков и посторонний адрес | `notifyFee` принимается от любого когда-либо назначенного хука и ни от кого больше | все хуки проходят, посторонний — revert `NotHook` |
+| `testFuzz_SetHook_AnySequence_OnlySetHooksNotify` (fuzz) | Любая последовательность из 3 хуков и посторонний адрес | `notifyFee` принимается от любого когда-либо назначенного хука и ни от кого больше (волт не задан) | все хуки проходят, посторонний — `isFeeSource` false и revert `NotFeeSource` |
+| `test_SetVault_StoresAndEmits` | `setVault` | Волт задаёт владелец | `vault()` = адрес, событие `VaultUpdated` |
+| `test_SetVault_Zero_Reverts`, `test_SetVault_NotOwner_Reverts` | Ограничения `setVault` | Нельзя обнулить, только владелец | revert `ZeroAddress` / `OwnableUnauthorizedAccount` |
+| `test_IsFeeSource_VaultUnset_ZeroAddressRejected` | Волт не задан | Нулевой адрес никогда не источник комиссий | `isFeeSource(0)` = false |
+| `test_SetVault_Replaced_OldVaultRejected` | Смена волта | Источник — только текущий волт | старый волт revert `NotFeeSource`, новый проходит |
 
 ### Коды и привязка
 
@@ -280,7 +285,8 @@ End-to-end в процессе теста: настоящие PoolManager/Positi
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
-| `test_NotifyFee_NotHook_Reverts` | Не хук | Только хук | revert `NotHook` |
+| `test_NotifyFee_NotFeeSource_Reverts` | Не волт и не хук | Только источник комиссий (`isFeeSource`) | revert `NotFeeSource` |
+| `test_NotifyFee_FromVault_CreditsRefShare` | `notifyFee` от волта | Волт — основной источник протокольной доли | `isFeeSource(vault)`, рефереру 100 000, протоколу 900 000 |
 | `test_NotifyFee_ReferredMeme_CreditsRefShare` | Комиссия мема реферала | 10% рефереру, остальное протоколу | pending 100 000, protocolBalance 900 000, `FeeReceived` |
 | `test_NotifyFee_MemeWithoutReferrer_AllToProtocol` | Мем без реферера | Всё протоколу | totalPending 0 |
 | `test_NotifyFee_UnregisteredMeme_NoRevertAllToProtocol` | Неизвестный мем | Не блокирует выплату хука | без revert, всё протоколу |
@@ -318,22 +324,25 @@ End-to-end в процессе теста: настоящие PoolManager/Positi
 
 ## test/ReferralsIntegrationTest.sol
 
-End-to-end: настоящие PoolManager и PositionManager, Gemoon через `DeployGemoon`, рефералы через `deployReferrals` и `WireReferrals`. Комиссия 1.25%, протоколу 3333 bips, рефереру 1000 bips протокольной доли. alice — реферер, bob привязан к ней.
+End-to-end: настоящие PoolManager и PositionManager, Gemoon через `DeployGemoon`, рефералы через `deployReferrals` и `WireReferrals`. Хук отдаёт всю комиссию волту, волт переводит протокольную долю рефералам. Комиссия 1.25%, протоколу 2500 bps (доля в волте), рефереру 2500 bips протокольной доли. alice — реферер, bob привязан к ней.
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
-| `test_WireReferrals_Valid_EverythingPointsAtReferrals` | Связка после `wireReferrals` | Контроллер, хук и рефералы указывают друг на друга | `checkReferralsWiring` проходит |
-| `test_WireReferrals_ReferralsPointAtOtherHook_Reverts` | Рефералы смотрят на другой хук | Скрипт не оставляет битую связку | revert `WiringMismatch("referrals.hook")` |
+| `test_WireReferrals_Valid_EverythingPointsAtReferrals` | Связка после `wireReferrals` | Контроллер, волт и рефералы указывают друг на друга | `checkReferralsWiring` проходит, `vault.protocolRecipient` = рефералы, `referrals.vault` = волт |
+| `test_CheckReferralsWiring_VaultPaysElsewhere_Reverts` | Волт платит протокол другому адресу | Проверка ловит битую связку | revert `WiringMismatch("vault.protocolRecipient")` |
+| `test_CheckReferralsWiring_ReferralsPointAtOtherVault_Reverts` | Рефералы смотрят на другой волт | Проверка ловит битую связку | revert `WiringMismatch("referrals.vault")` |
 | `test_SetReferrals_NotOwner_Reverts` | `setReferrals` не от владельца | Только владелец контроллера | revert |
 | `test_DeployToken_ReferredCreator_MemeAttributedToReferrer` | `deployToken` приведённого | Контроллер регистрирует мем | `memeReferrer` = alice |
-| `test_Swap_ReferredMeme_ReferrerEarnsRefShareOfProtocolFee` | Две покупки, claim, вывод протокола | В рефералы приходит ровно протокольная доля, рефереру 10% её | точные суммы, после claim и withdraw баланс 0 |
+| `test_Swap_ReferredMeme_ReferrerEarnsRefShareOfProtocolFee` | Две покупки, claim, вывод протокола | В рефералы приходит ровно протокольная доля, рефереру 25% её | точные суммы, после claim и withdraw баланс 0 |
 | `test_Swap_MemeWithoutReferrer_AllToProtocol` | Мем без реферера | Всё протоколу | totalPending 0 |
 | `test_Distribute_AfterTrades_PaysReferrer` | `distribute` после торгов | — | alice получила начисленное |
 | `test_DeployToken_ReferralsUnset_NotRegistered` | Рефералы выключены в контроллере | Ноль выключает регистрацию | `memeReferrer` = 0 |
-| `test_Payout_ReferralsRejectsHook_FeesStayAccruedUntilFixed` | Рефералы откатывают `notifyFee` (mock) | Сбой получателя не ломает своп, комиссия не теряется | `PayoutFailed`, комиссия в хуке, после починки `distribute` выплачивает |
-| `test_Payout_ReferralsHookReplaced_OldHookStillPaysOut` | Рефералы переключены на новый хук | Старые мемы продолжают платить через старый хук | `pendingFees` старого хука 0, реферер получил долю |
-| `test_Payout_EoaProtocolRecipient_PaysWithoutNotify` | EOA как получатель | Хук не уведомляет EOA | EOA получает протокольную долю |
-| `testFuzz_Swap_ReferredMeme_SplitConserved` (fuzz) | Любые объёмы сделок | Баланс рефералов = протокольная доля; credit ≈ floor(доля·10%) (±1 на выплату, вниз); credit + протокол = баланс | точное сохранение |
+| `test_Payout_ReferralsRejectsVault_FeesStayAccruedUntilFixed` | Рефералы откатывают `notifyFee` (mock) | Сбой получателя откатывает разбивку в волте и выплату хука, но не своп; комиссия не теряется | `PayoutFailed`, комиссия в хуке, у волта и рефералов 0, после починки `distribute` выплачивает |
+| `test_Payout_ReferralsHookReplaced_VaultStillPaysProtocolShare` | Рефералы переключены на другой хук | Хук новой схемы с рефералами не связан: долю платит волт | `pendingFees` 0, реферер получил долю |
+| `test_Payout_EoaProtocolRecipient_PaysWithoutNotify` | EOA как получатель в волте | Волт не уведомляет EOA | EOA получает протокольную долю |
+| `test_Payout_ProtocolShareChangedInVault_AppliesToNextPayout` | Владелец волта меняет долю на 50% между сделками | Доля глобальная, хук не трогается, действует с ближайшей выплаты | рефералы = половина выплаты, волт — остальное |
+| `test_Payout_FirstFeeWithStakerAndReferrer_FitsPayoutGasOverhead` | Первая выплата мема со стейкером и реферером (холодные слоты везде) | Самая тяжёлая выплата укладывается в `PAYOUT_GAS_OVERHEAD` и проходит с первого раза | нет `PayoutFailed`, `pendingFees` = 0, реферер и стейкеры начислены |
+| `testFuzz_Swap_ReferredMeme_SplitConserved` (fuzz) | Любые объёмы сделок | Баланс рефералов = протокольная доля (±1 на выплату, вниз); credit ≈ floor(доля·25%) (±1 на выплату, вниз); credit + протокол = баланс | точное сохранение |
 | `test_UpgradeReferrals_NewVersion_KeepsState` | Апгрейд на v2 | Состояние и владелец сохраняются, reinitialize | версия 2, pending и memeReferrer прежние |
 | `test_UpgradeReferrals_NotProxyAdminOwner_Reverts` | Апгрейд не владельцем ProxyAdmin | — | revert |
 
@@ -353,7 +362,10 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 | `test_RegisterVault_DuplicateAsset_Reverts` | Один актив указан дважды. | Активы хранилища уникальны | Revert `DuplicateAsset(aapl)` |
 | `test_RegisterVault_NoAssets_Reverts` | Пустой список активов. | Хотя бы один актив | Revert `InvalidAssetsLength` |
 | `test_RegisterVault_CreatorShare_StoredAndEmitted` | Регистрация с долей создателя 25%. | Доля создателя хранится per-vault | `VaultRegistered(meme, creator, 2500, assets)`, `creatorShareBpsOf` и `vaultInfo.creatorShareBps` = 2500 |
-| `test_RegisterVault_CreatorShareAboveBps_Reverts` | Доля 10 001 bps. | Доля создателя ≤ BPS | Revert `InvalidCreatorShare(10001)` |
+| `test_RegisterVault_CreatorShareAboveBps_Reverts` | Доля 10 001 bps. | Доля создателя ≤ `MAX_CREATOR_SHARE_BPS` | Revert `InvalidCreatorShare(10001)` |
+| `test_RegisterVault_CreatorShareAtCap_Stored` | Доля ровно 5000 bps. | Потолок включительный, `MAX_CREATOR_SHARE_BPS` = 5000 | Волт зарегистрирован, `creatorShareBpsOf` = 5000 |
+| `test_RegisterVault_CreatorShareAboveCap_Reverts` | Доля 5001 bps. | Доля создателя ≤ 50% | Revert `InvalidCreatorShare(5001)` |
+| `testFuzz_RegisterVault_CreatorShare_RevertsAboveCap` (fuzz) | Любая доля `uint16`. | Ни один волт не регистрируется с долей создателя выше 50%: стейкерам всегда не меньше половины | > 5000 — revert `InvalidCreatorShare(share)`, иначе доля сохранена как есть |
 | `test_CreatorShareBpsOf_Unregistered_ReturnsZero` | Доля для незарегистрированного мема. | — | 0 |
 
 ### Приём комиссий
@@ -370,9 +382,30 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 | `test_NotifyFees_NoStakers_AllToCreator` | Комиссия при отсутствии стейкеров. | Без стейкеров всё идёт создателю | `pendingCreatorUSDG = 100e6`, `pendingStakerUSDG = 0` |
 | `test_NotifyFees_WithStakers_TenPercentToCreator` | Комиссия при наличии стейкера, доля 10%. | Сплит 10% создателю / 90% стейкерам | Создатель 10e6, стейкеры 90e6, `pendingCreditOf(alice) = 90e6` |
 | `test_NotifyFees_ZeroCreatorShare_AllToStakers` | Доля 0%, есть стейкер. | При доле 0 всё стейкерам | Создатель 0, стейкеры 100e6, `pendingCreditOf(alice) = 100e6` |
-| `test_NotifyFees_FullCreatorShare_AllToCreator` | Доля 100%, есть стейкер. | При доле 100% стейкерам ничего, аккумулятор не растёт | Создатель 100e6, стейкеры 0, `accUsdPerShare = 0`, credit alice 0 |
+| `test_NotifyFees_MaxCreatorShare_HalfToCreator` | Доля 50% (потолок), есть стейкер. | При максимальной доле стейкеры получают половину | Создатель 50e6, стейкеры 50e6, credit alice 50e6 |
 | `test_NotifyFees_ZeroCreatorShareNoStakers_AllToCreator` | Доля 0%, стейкеров нет. | Без стейкеров всё создателю при любой доле | `pendingCreatorUSDG = 100e6` |
-| `testFuzz_NotifyFees_AnyCreatorShare_SplitConserved` (fuzz) | Любая доля 0..10000, любой объём и стейк. | toCreator + toStakers = комиссия; toCreator = floor(amount × share / BPS); credit единственного стейкера ≤ доли стейкеров (±1); доля неизменна | Все равенства выполняются |
+| `testFuzz_NotifyFees_AnyCreatorShare_SplitConserved` (fuzz) | Любая доля 0..5000, любой объём и стейк. | toCreator + toStakers = комиссия; toCreator = floor(amount × share / BPS); credit единственного стейкера ≤ доли стейкеров (±1); доля неизменна | Все равенства выполняются |
+
+### Разбивка комиссии: доля протокола
+
+Хук отдаёт волту всю комиссию; `notifyFees` сразу переводит `protocolShareBps` получателю протокола и делит остаток между создателем и стейкерами. В фикстуре доля 0 и получатель не задан, кейсы ниже задают их явно.
+
+| Тест | Что проверяет | Инварианты | Ожидаемый результат |
+|---|---|---|---|
+| `test_ProtocolSplit_FreshVault_ShareZeroRecipientUnset` | Свежий волт. | После деплоя/апгрейда волт ведёт себя по-старому | `protocolShareBps = 0`, `protocolRecipient = 0` |
+| `test_SetProtocolShare_Owner_SetsAndEmits` | Владелец задаёт долю 3333. | Доля — настройка владельца волта | `protocolShareBps = 3333`, `ProtocolShareUpdated(3333)` |
+| `test_SetProtocolShare_AboveBps_Reverts` | Доля 10 001. | Доля протокола ≤ BPS | Revert `InvalidProtocolShare(10001)` |
+| `test_SetProtocolShare_NotOwner_Reverts`, `test_SetProtocolRecipient_NotOwner_Reverts` | Сеттеры не от владельца. | Доступ только владельцу | Revert `OwnableUnauthorizedAccount` |
+| `test_SetProtocolRecipient_Owner_SetsAndEmits` | Владелец задаёт получателя. | — | `protocolRecipient` = адрес, `ProtocolRecipientUpdated` |
+| `test_SetProtocolRecipient_Zero_Reverts` | Нулевой получатель. | Получатель не нулевой | Revert `ZeroAddress` |
+| `test_NotifyFees_ProtocolShare_SendsShareAndCreditsRest` | 100e6 при доле 3333, стейкер есть, доля создателя 10%. | Протокольная часть уходит сразу и не учитывается; остаток делится как раньше | EOA 33.33e6, в волте 66.67e6 = `accounted`, создатель 6.667e6, стейкеры 60.003e6; события `FeesNotified`, `ProtocolFeePaid` |
+| `test_NotifyFees_ShareWithoutRecipient_Reverts` | Доля > 0, получатель не задан. | Протокольная доля не теряется и не уходит мему | Revert `ProtocolRecipientNotSet` (хук держит комиссию) |
+| `test_NotifyFees_ShareRoundsToZeroWithoutRecipient_CreditsAll` | Доля 1 bps, сумма 9 999. | Нулевая протокольная часть не требует получателя | Всё в `pendingUSDG` |
+| `test_NotifyFees_ContractRecipient_Notified` | Получатель-контракт. | Контракт уведомляется после перевода | Один `notifyFee(meme, 33.33e6)`, токены уже на балансе |
+| `test_NotifyFees_RecipientReverts_WholeNotifyReverts` | Получатель откатывает `notifyFee`. | Сбой получателя откатывает весь `notifyFees` | Revert, `pendingUSDG = 0`, `accounted = 0` |
+| `test_NotifyFees_FullProtocolShare_NothingCredited` | Доля 100%. | Мему ничего | Получатель 100e6, `pendingUSDG = 0`, `accounted = 0` |
+| `test_SetProtocolShare_Changed_AppliesToNextNotify` | Доля 3333 → 5000 между уведомлениями. | Доля глобальная, действует со следующей выплаты | Получатель 33.33e6 + 50e6, мему 66.67e6 + 50e6 |
+| `testFuzz_NotifyFees_AnyProtocolShare_SplitConserved` (fuzz) | Любая доля протокола 0..10000, доля создателя, сумма, стейк. | protocol + creator + stakers = сумма; protocol = floor(amount × share / BPS); `accounted` = сумма − protocol | Все равенства, баланс волта = `accounted` |
 
 ### Конвертация
 
@@ -469,7 +502,7 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 | `test_NotifyFees_FailedThenFixed_ConvertsAccumulatedEpochAtOnce` | Сбой, накопление, починка, автоконвертация после cooldown. | Накопленная эпоха конвертируется целиком | `epoch = 1`, alice 324 AAPL (90% от 360) |
 | `testFuzz_NotifyFees_AutoConversion_ClosesEpochExactlyAtThreshold` (fuzz) | Случайный порог и 8 комиссий. | pending < порога после каждого notify; эпоха закрывается ровно при пересечении; баланс ≥ учтённого | `pendingUSDG < threshold`, `epoch` = числу пересечений, баланс ≥ `accounted` для USDG/AAPL/WBTC |
 
-### Инварианты (VaultInvariantTest, handler: stake/unstake/notify/convert/claim/claimCreator, актив — только USDG, порог 5e14)
+### Инварианты (VaultInvariantTest, handler: stake/unstake/notify/convert/claim/claimCreator/setProtocolShare, актив — только USDG, порог 5e14, доля протокола от 3333 и меняется handler'ом, получатель — EOA)
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
@@ -477,8 +510,9 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 | `invariant_TotalStaked_EqualsSumOfStakes` | Сумма стейков акторов. | `totalStaked` = Σ стейков | Равенство |
 | `invariant_CreatorShare_Immutable` | Доля создателя после любой последовательности действий. | `creatorShareBps` не меняется после регистрации | `creatorShareBpsOf(meme)` = 1000 |
 | `invariant_Balances_CoverAccounted` | Балансы хранилища против учёта. | Баланс ≥ учтённого; баланс MEME = `totalStaked` | `usdg ≥ accounted`, `meme ≥ accounted`, `meme == totalStaked` |
-| `invariant_Claimable_NeverExceedsNotified` | pending + выплаченное + начисленное (стейкеры + создатель). | Сумма наград ≤ всей пришедшей комиссии | ≤ `ghostNotified` |
-| `invariant_Accounted_CoversClaimable` | Все обязательства против учтённого USDG. | Учтённое покрывает все долги | pending + earned + creatorAccrued ≤ `accounted(usdg)` |
+| `invariant_Claimable_NeverExceedsNotified` | pending + выплаченное + начисленное (стейкеры + создатель). | Сумма наград ≤ пришедшей комиссии за вычетом доли протокола | ≤ `ghostNotified` |
+| `invariant_Accounted_CoversClaimable` | Все обязательства против учтённого USDG. | Учтённое покрывает все долги | pending + earned + creatorAccrued ≤ `accounted(usdg)` || `invariant_ProtocolRecipient_GetsExactShareOfEveryNotify` | Баланс получателя протокола. | Протокол получает ровно floor(amount × share / BPS) каждой выплаты при текущей доле, ни единицы из части мема | баланс получателя = `ghostProtocol` |
+| `invariant_ProtocolShare_NeverAboveBps` | Доля после любых `setProtocolShare`. | Доля ≤ BPS | `protocolShareBps ≤ 10000` |
 
 ## test/VaultUpgradeTest.sol
 
@@ -524,7 +558,7 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 | `test_Constructor_SetsOwnerDirectly` | Начальное состояние после деплоя. | Владелец назначается сразу, без pending | `owner == owner`, `pendingOwner == 0`, `i_vault`, `i_usdg`, `twapWindow == 600` заданы |
 | `test_SetRoute_NotOwner_Reverts` | `setRoute` от постороннего адреса. | Маршруты меняет только владелец | Откат `OwnableUnauthorizedAccount(alice)` |
 | `test_SetRoute_PoolNotFound_Reverts` | `setRoute` с тиром комиссии 500, для которого нет пула. | Маршрут указывает только на существующий пул | Откат `PoolNotFound(assetHigh, 500)` |
-| `test_SetRoute_SlippageAboveCap_Reverts` | `setRoute` с допуском 501 bps. | Допуск проскальзывания не выше 5% | Откат `SlippageTooHigh(501)` |
+| `test_SetRoute_SlippageAboveCap_Reverts` | `setRoute` с допуском `MAX_SLIPPAGE_BPS + 1` (1001 bps). | Допуск проскальзывания не выше 10% | Откат `SlippageTooHigh(1001)` |
 | `test_SetRoute_Usdg_Reverts` | Маршрут для самого USDG. | Нельзя менять USDG на USDG | Откат `InvalidAsset(usdg)` |
 | `test_SetRoute_PoolCannotServeWindow_Reverts` | Пул не отдаёт историю на окно TWAP (`observe` падает). | Маршрут только для пула с оракулом на всё окно | Откат с причиной пула `"OLD"` |
 | `test_SetRoute_StoresAndEmits` | Успешный `setRoute` с допуском 250 bps. | — | Событие `RouteSet(assetHigh, poolHigh, 3000, 250)`; `routeOf` возвращает pool, fee, 250 |
@@ -568,11 +602,11 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
 | `test_DeployAll_Wiring_AllContractsPointAtEachOther` | Взаимные ссылки controller, hook и vault после `deployAll`. | Контракты связаны друг с другом и с одним USDG | Все ссылки совпадают, `checkWiring` не откатывается |
-| `test_DeployAll_Config_AppliedFromParams` | Применение параметров деплоя. | — | Порог 5e6; AAPL разрешён, USDG нет; recipient, fee 125, доля протокола 2000 (20% комиссии), poolManager, positionManager, permit2 заданы |
+| `test_DeployAll_Config_AppliedFromParams` | Применение параметров деплоя. | — | Порог 5e6; AAPL разрешён, USDG нет; `vault.protocolRecipient`, fee 125, `vault.protocolShareBps` 2000 (20% комиссии), poolManager, positionManager, permit2 заданы |
 | `test_DeployAll_Ownership_HandedToOwner` | Передача владения и прав ProxyAdmin. | Владение у заданного owner; апгрейды у proxyAdminOwner | Hook и controller принадлежат owner; vault ждёт `acceptOwnership` (pending = owner), после принятия owner = owner; ProxyAdmin vault и controller у proxyAdminOwner |
 | `test_DeployAll_OwnerIsDeployer_NoTransfer` | Owner совпадает с деплоером. | — | Все контракты принадлежат скрипту, pending у vault = 0 |
 | `test_DeployAll_HookAddress_CarriesPermissionBits` | Биты разрешений в адресе hook. | Адрес hook несёт ровно нужные флаги Uniswap v4 | `addr & ALL_HOOK_MASK == HOOK_FLAGS` |
-| `test_DeployAll_Hook_NotAProxy` | Hook задеплоен без прокси. | Hook не обновляемый: ни код, ни комиссии не меняются под живым пулом | EIP-1967 implementation и admin = 0; `TOTAL_FEE_BIPS` = 125, `PROTOCOL_SHARE_BIPS` = 2000 из конструктора |
+| `test_DeployAll_Hook_NotAProxy` | Hook задеплоен без прокси. | Hook не обновляемый: ни код, ни комиссии не меняются под живым пулом | EIP-1967 implementation и admin = 0; `TOTAL_FEE_BIPS` = 125 из конструктора |
 | `test_DeployAll_Twice_FreshAddresses` | Повторный деплой. | Повторный деплой не сталкивается по CREATE2 | Новый адрес hook; второй деплой корректно связан |
 | `test_Run_FromEnv_DeploysAndWires` | `run()` с конфигом из переменных окружения, часть пустая. | Пустые env берут значения по умолчанию | Связи корректны; владелец owner, vault pending = owner; ProxyAdmin = owner (fallback); fee 300, доля протокола по умолчанию 3333 (треть); AAPL разрешён; порог 5e6; биты hook верны |
 | `test_SetVault_UsdgMismatch_Revert` | Подключение к контроллеру vault с другим USDG. | Пара-токен контроллера и USDG vault совпадают | Откат `VaultPairTokenMismatch(aapl, usdg)` |
@@ -605,27 +639,26 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
-| `test_Constants_MaxFee80Percent_MemeFeeBounds1To10Percent` | Значения констант хука | Потолок комиссии 80%, комиссия мема в пределах 1–10% | `MAX_FEE_BIPS`=8000, `MIN_MEME_FEE_BIPS`=100, `MAX_MEME_FEE_BIPS`=1000, окно `DYNAMIC_FEE_THRESHOLD` > 1 с |
+| `test_Constants_MaxFee80Percent_MemeFeeBounds1To5Percent` | Значения констант хука | Потолок комиссии 80%, комиссия мема в пределах 1–5% | `MAX_FEE_BIPS`=8000, `MIN_MEME_FEE_BIPS`=100, `MAX_MEME_FEE_BIPS`=500, окно `DYNAMIC_FEE_THRESHOLD` > 1 с |
 | `test_FeeBipsAt_AtCreation_ReturnsMax` | Комиссия в момент создания пула | Старт кривой — максимум | `feeBipsAt(meme, createdAt)` = 8000 |
 | `test_FeeBipsAt_BeforeCreation_ReturnsMax` | Комиссия для времени раньше создания пула | Комиссия до создания не ниже максимума | `feeBipsAt(createdAt-1)` = 8000 |
 | `test_FeeBipsAt_OneSecond_BelowMax` | Комиссия через 1 с после создания | Спад начинается сразу | Равна линейной формуле `_expected(1)`, < 8000 |
-| `test_FeeBipsAt_HalfWindow_ReturnsMidpoint` | Комиссия в середине окна | Линейность кривой | `_expected(window/2)`; при чётном окне = 4500 |
-| `test_FeeBipsAt_LastSecond_AboveMemeFee` | Комиссия за 1 с до конца окна | Внутри окна комиссия строго выше комиссии мема | `_expected(window-1)`, > 1000 |
-| `test_FeeBipsAt_WindowEnd_ReturnsMemeFee` | Комиссия ровно в конце окна | После окна — комиссия, выбранная создателем | 1000 |
-| `test_FeeBipsAt_LongAfter_ReturnsMemeFee` | Комиссия через 365 дней | Комиссия не уходит ниже комиссии мема | 1000 |
+| `test_FeeBipsAt_HalfWindow_ReturnsMidpoint` | Комиссия в середине окна | Линейность кривой | `_expected(window/2)`; при чётном окне = 4250 (между 80% и 5%) |
+| `test_FeeBipsAt_LastSecond_AboveMemeFee` | Комиссия за 1 с до конца окна | Внутри окна комиссия строго выше комиссии мема | `_expected(window-1)`, > 500 |
+| `test_FeeBipsAt_WindowEnd_ReturnsMemeFee` | Комиссия ровно в конце окна | После окна — комиссия, выбранная создателем | 500 |
+| `test_FeeBipsAt_LongAfter_ReturnsMemeFee` | Комиссия через 365 дней | Комиссия не уходит ниже комиссии мема | 500 |
 | `test_FeeBipsAt_UnknownPool_ReturnsFallbackFee` | Комиссия для незарегистрированного мема | Неизвестный пул получает дефолтную комиссию | `feeBipsAt` и `baseFeeBips` = 125 |
-| `test_CurrentFeeBips_FollowsBlockTimestamp` | `currentFeeBips` при разных `block.timestamp` | `currentFeeBips` = `feeBipsAt(block.timestamp)` | 8000 → `_expected(window/2)` → 1000 |
-| `testFuzz_FeeBipsAt_AlwaysBetweenMemeFeeAndMax` (fuzz) | Комиссия для любого timestamp | Комиссия всегда в [memeFee, 80%] | 1000 ≤ fee ≤ 8000 |
+| `test_CurrentFeeBips_FollowsBlockTimestamp` | `currentFeeBips` при разных `block.timestamp` | `currentFeeBips` = `feeBipsAt(block.timestamp)` | 8000 → `_expected(window/2)` → 500 |
+| `testFuzz_FeeBipsAt_AlwaysBetweenMemeFeeAndMax` (fuzz) | Комиссия для любого timestamp | Комиссия всегда в [memeFee, 80%] | 500 ≤ fee ≤ 8000 |
 | `testFuzz_FeeBipsAt_NeverIncreasesOverTime` (fuzz) | Сравнение комиссии в t1 ≤ t2 | Комиссия монотонно не растёт со временем | `fee(t1)` ≥ `fee(t2)` |
 | `testFuzz_FeeBipsAt_InsideWindow_MatchesLinearFormula` (fuzz) | Комиссия для любого момента внутри окна | Кривая точно линейна: `MAX - (MAX-meme)*elapsed/window` | Совпадает с `_expected(elapsed)` |
 | `test_NotifyPoolCreated_StoresMemeFeeAndEmits` | Пул создан, контроллер в том же блоке задаёт комиссию 3% | Комиссия создателя сохраняется и логируется | Событие `MemeFeeConfigured(other, 300, createdAt)`; `memeFeeBips`=`baseFeeBips`=300 |
 | `test_NotifyPoolCreated_FeeBelowOnePercent_Revert` | Регистрация с комиссией 0,99% | Комиссия мема ≥ 1% | Revert `InvalidMemeFeeBips(99)` |
-| `test_NotifyPoolCreated_FeeAboveTenPercent_Revert` | Регистрация с комиссией 10,01% | Комиссия мема ≤ 10% | Revert `InvalidMemeFeeBips(1001)` |
-| `testFuzz_NotifyPoolCreated_FeeInBounds_BecomesBaseFee` (fuzz) | Любая допустимая комиссия 100–1000 | После окна действует ровно выбранная создателем комиссия | `feeBipsAt(createdAt+window)` = feeBips |
-| `testFuzz_NotifyPoolCreated_FeeOutOfBounds_Revert` (fuzz) | Любая комиссия вне 100–1000 | Нельзя задать комиссию вне границ | Revert `InvalidMemeFeeBips(feeBips)` |
-| `test_Constructor_ProtocolShare_StoredInBipsOfFee` | Доля протокола после инициализации | Доля хранится в bips комиссии | `PROTOCOL_SHARE_BIPS` = 3333 |
-| `test_Constructor_ProtocolShareAboveHundredPercent_Revert` | Инициализация с долей 100.01% | Протокол не может получить больше всей комиссии | Revert `InvalidFeeBips` |
-| `testFuzz_Constructor_ProtocolShareUpToHundredPercent_Accepted` (fuzz) | Любая доля 0..100% | Допустимая доля принимается как есть | `PROTOCOL_SHARE_BIPS` = переданной доле |
+| `test_NotifyPoolCreated_FeeAboveFivePercent_Revert` | Регистрация с комиссией 5,01% | Комиссия мема ≤ 5% | Revert `InvalidMemeFeeBips(501)` |
+| `testFuzz_NotifyPoolCreated_FeeInBounds_BecomesBaseFee` (fuzz) | Любая допустимая комиссия 100–500 | После окна действует ровно выбранная создателем комиссия | `feeBipsAt(createdAt+window)` = feeBips |
+| `testFuzz_NotifyPoolCreated_FeeOutOfBounds_Revert` (fuzz) | Любая комиссия вне 100–500 | Нельзя задать комиссию вне границ | Revert `InvalidMemeFeeBips(feeBips)` |
+| `test_Constructor_FallbackFeeAboveMax_Revert` | Резервная ставка 80.01% | Резервная ставка ≤ `MAX_FEE_BIPS` | Revert `InvalidFeeBips` |
+| `testFuzz_Constructor_FallbackFeeUpToMax_Accepted` (fuzz) | Любая резервная ставка 0..80% | Допустимая ставка принимается как есть; доли протокола в хуке нет, разбивка в волте | `TOTAL_FEE_BIPS` = переданной ставке |
 
 ## test/TokenTest.sol
 
@@ -666,7 +699,7 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 
 ## test/TokenURITest.sol
 
-ERC-1046 `tokenURI` токена: свой URI админа (`setTokenURI`), если задан, иначе `data:application/json;base64,` от JSON, собранного ончейн из name, symbol, decimals, description, image, ссылок на соцсети и распределения комиссии (`fees`). Каждый тест декодирует base64 и читает поля через `vm.parseJson`.
+ERC-1046 `tokenURI` токена: свой URI админа (`setTokenURI`), если задан, иначе `data:application/json;base64,` от JSON, собранного ончейн из name, symbol, decimals, description, image, ссылок на соцсети (стандартные ключи `twitter`/`telegram`/`website` на верхнем уровне, только заданные, плюс `socialMedia`) и распределения комиссии (`fees`). Каждый тест декодирует base64 и читает поля через `vm.parseJson`.
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
@@ -674,7 +707,11 @@ ERC-1046 `tokenURI` токена: свой URI админа (`setTokenURI`), е�
 | `test_TokenURI_Fields_MatchTokenData` | Основные поля | JSON = данные токена | name, symbol, decimals 18, description, image |
 | `test_TokenURI_SocialMedia_AllFourLinks` | Соцсети | Все 4 ссылки в `socialMedia` | farcaster, twitterX, telegram, website |
 | `test_TokenURI_EmptySocialMedia_EmptyStrings` | Пустые соцсети | JSON валиден и без ссылок | пустые строки |
-| `test_TokenURI_Json_ExactLayout` | Точная раскладка JSON | Формат стабилен для фронта | строка совпадает байт в байт, включая `fees` |
+| `test_TokenURI_TopLevelLinks_StandardKeys` | Ссылки на верхнем уровне | Стандартные ключи для агрегаторов, farcaster только в `socialMedia` | `twitter`, `telegram`, `website` = ссылки; `farcaster` нет |
+| `test_TokenURI_EmptySocialMedia_NoTopLevelLinks` | Без ссылок | Незаданная ссылка — нет ключа, JSON валиден | ключей `twitter`/`telegram`/`website` нет, JSON совпадает байт в байт |
+| `test_TokenURI_OnlyTelegram_OnlyTelegramKey` | Задан только telegram | Ключ есть только у заданной ссылки | есть только `telegram` |
+| `testFuzz_TokenURI_TopLevelLinks_PresentIffSet` (fuzz) | Любые ASCII-ссылки до 128 байт | Ключ есть ⇔ ссылка непустая, значение = ссылка = копия в `socialMedia`, инъекция полей невозможна | совпадает, `image` не задет |
+| `test_TokenURI_Json_ExactLayout` | Точная раскладка JSON | Формат стабилен для фронта и агрегаторов | строка совпадает байт в байт, включая `twitter`/`telegram`/`website` и `fees` |
 | `test_TokenURI_Fees_PercentOfSwap` | `fees` в JSON | Проценты от суммы свопа = ppm / 10 000 | 1.25, 0.0833, 0.7501, 0.4166 |
 | `test_FeeInfo_Getter_ReturnsConstructorValue` | `feeInfo()` | Геттер отдаёт значение из конструктора | 12 500, 833, 7 501, 4 166 |
 | `test_TokenURI_FeesFormatting_WholeAndLeadingZeros` | Целые проценты и нули в дробной части | Целое без точки, ведущие нули дроби сохраняются, хвостовые отброшены | `10`, `6.6664`, `0.0003`, `3.3333` |

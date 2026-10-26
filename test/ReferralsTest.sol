@@ -291,9 +291,67 @@ contract ReferralsTest is ReferralsBase {
 
     // ------------------------------------------------------------------ notifyFee
 
-    function test_NotifyFee_NotHook_Reverts() external {
-        vm.expectRevert(IReferrals.NotHook.selector);
+    function test_NotifyFee_NotFeeSource_Reverts() external {
+        vm.expectRevert(IReferrals.NotFeeSource.selector);
         referrals.notifyFee(meme, 1);
+    }
+
+    /// @dev The vault splits every fee and sends the protocol share: it notifies like a hook.
+    function test_NotifyFee_FromVault_CreditsRefShare() external {
+        address vault = makeAddr("vault");
+        vm.prank(owner);
+        referrals.setVault(vault);
+        _referBob();
+        usdg.mint(address(referrals), 1_000_000);
+        vm.prank(vault);
+        referrals.notifyFee(meme, 1_000_000);
+
+        assertTrue(referrals.isFeeSource(vault), "vault is a fee source");
+        assertEq(referrals.pendingOf(alice), 100_000, "10% to referrer");
+        assertEq(referrals.protocolBalance(), 900_000, "rest to protocol");
+    }
+
+    function test_SetVault_StoresAndEmits() external {
+        address vault = makeAddr("vault");
+        vm.expectEmit(address(referrals));
+        emit IReferrals.VaultUpdated(vault);
+        vm.prank(owner);
+        referrals.setVault(vault);
+        assertEq(referrals.vault(), vault);
+    }
+
+    function test_SetVault_Zero_Reverts() external {
+        vm.expectRevert(IReferrals.ZeroAddress.selector);
+        vm.prank(owner);
+        referrals.setVault(address(0));
+    }
+
+    function test_SetVault_NotOwner_Reverts() external {
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, alice));
+        vm.prank(alice);
+        referrals.setVault(alice);
+    }
+
+    /// @dev An unset vault (zero) is never a fee source, not even for the zero address.
+    function test_IsFeeSource_VaultUnset_ZeroAddressRejected() external view {
+        assertEq(referrals.vault(), address(0));
+        assertFalse(referrals.isFeeSource(address(0)));
+    }
+
+    /// @dev A replaced vault loses the right to notify, the new one gets it.
+    function test_SetVault_Replaced_OldVaultRejected() external {
+        address oldVault = makeAddr("oldVault");
+        address newVault = makeAddr("newVault");
+        vm.startPrank(owner);
+        referrals.setVault(oldVault);
+        referrals.setVault(newVault);
+        vm.stopPrank();
+
+        vm.prank(oldVault);
+        vm.expectRevert(IReferrals.NotFeeSource.selector);
+        referrals.notifyFee(meme, 0);
+        vm.prank(newVault);
+        referrals.notifyFee(meme, 0);
     }
 
     function test_NotifyFee_ReferredMeme_CreditsRefShare() external {
@@ -646,8 +704,9 @@ contract ReferralsTest is ReferralsBase {
             referrals.notifyFee(meme, 0);
         }
         assertFalse(referrals.isHook(stranger));
+        assertFalse(referrals.isFeeSource(stranger));
         vm.prank(stranger);
-        vm.expectRevert(IReferrals.NotHook.selector);
+        vm.expectRevert(IReferrals.NotFeeSource.selector);
         referrals.notifyFee(meme, 0);
     }
 

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
-/// @notice Receiver of the protocol share of the swap fees, notified by the hook after every
-///         payout. A contract set as `HookManager.protocolRecipient` must implement it.
+/// @notice Receiver of the protocol share of the swap fees, notified by the vault after every
+///         split. A contract set as `Vault.protocolRecipient` must implement it.
 interface IProtocolFeeReceiver {
-    /// @notice Called by the hook right after `amount` of the pair token was transferred to the
+    /// @notice Called by the vault right after `amount` of the pair token was transferred to the
     ///         receiver as the protocol share of the fees of `meme`.
     /// @dev A revert rolls the whole hook payout back (the fees stay accrued in the hook).
     /// @param meme   Meme whose pool generated the fees.
@@ -24,7 +24,8 @@ interface IReferrals is IProtocolFeeReceiver {
 
     error ZeroAddress();
     error NotController();
-    error NotHook();
+    /// @dev `notifyFee` called by anyone but the vault or a hook, see `isFeeSource`.
+    error NotFeeSource();
     /// @dev `refShareBips` above `BIPS`.
     error InvalidRefShare(uint256 refShareBips);
     /// @dev Code is empty, longer than `MAX_CODE_LENGTH` or has a char outside `[a-z0-9_-]`.
@@ -46,6 +47,7 @@ interface IReferrals is IProtocolFeeReceiver {
 
     event ControllerUpdated(address indexed controller);
     event HookUpdated(address indexed hook);
+    event VaultUpdated(address indexed vault);
     event RefShareUpdated(uint256 refShareBips);
     event CodeRegistered(address indexed referrer, bytes32 indexed codeHash, string code);
     event ReferrerSet(address indexed user, address indexed referrer, bytes32 indexed codeHash);
@@ -124,6 +126,10 @@ interface IReferrals is IProtocolFeeReceiver {
     /// are not upgradeable, the pools of older Memes keep paying through theirs.
     function setHook(address hook) external;
 
+    /// @notice Sets the vault that sends the protocol share of every fee here.
+    /// @dev Only owner, non-zero.
+    function setVault(address vault) external;
+
     // ---------------------------------------------------------------------------------------------
     // Views
     // ---------------------------------------------------------------------------------------------
@@ -132,8 +138,13 @@ interface IReferrals is IProtocolFeeReceiver {
     function controller() external view returns (address);
     /// @notice Hook of new Memes, the last one set by `setHook`.
     function hook() external view returns (address);
-    /// @notice Whether `account` may call `notifyFee`: the current hook or any hook set before.
+    /// @notice Whether `account` is the current hook or any hook set before.
     function isHook(address account) external view returns (bool);
+    /// @notice Vault that sends the protocol share of every fee, zero if not set.
+    function vault() external view returns (address);
+    /// @notice Whether `account` may call `notifyFee`: the vault, or any hook ever set (hooks of
+    ///         the older design paid the protocol share themselves).
+    function isFeeSource(address account) external view returns (bool);
     function refShareBips() external view returns (uint256);
     /// @notice True while referral payouts are paused.
     function paused() external view returns (bool);

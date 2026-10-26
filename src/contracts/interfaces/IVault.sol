@@ -20,8 +20,8 @@ struct AssetConfig {
 /// @param pendingCreatorUSDG USDG credited to the creator in the open epoch, not yet converted.
 /// @param lastConversionFailure Timestamp of the last failed automatic conversion, zero if none.
 ///                              Automatic conversion is not retried for CONVERSION_COOLDOWN after it.
-/// @param creatorShareBps    Share of every fee credited to the creator, 0..BPS. Chosen by the
-///                           creator at deployment, immutable after registration.
+/// @param creatorShareBps    Share of every fee credited to the creator, 0..MAX_CREATOR_SHARE_BPS.
+///                           Chosen by the creator at deployment, immutable after registration.
 struct VaultInfo {
     address creator;
     address pendingCreator;
@@ -42,11 +42,13 @@ struct VaultInfo {
 /// Flow:
 ///  1. `registerVault` - controller, on Meme deployment: fixes creator, creator share and reward
 ///                       assets.
-///  2. `notifyFees`    - hook, right after every swap in the Meme/USDG pool (1% of volume).
-///                       The fee is credited in USDG immediately: `creatorShareBps` to the creator,
-///                       the rest pro rata to current stakers. If nobody stakes, all of it goes
-///                       to the creator. So a staker earns only fees that arrive while staked, and
-///                       the reward rate follows pool volume.
+///  2. `notifyFees`    - hook, right after every swap in the Meme/USDG pool, with the whole swap
+///                       fee. `protocolShareBps` of it is sent to `protocolRecipient` at once
+///                       (a contract is notified via `IProtocolFeeReceiver.notifyFee`). The rest is
+///                       credited in USDG immediately: `creatorShareBps` to the creator, the rest
+///                       pro rata to current stakers. If nobody stakes, all of it goes to the
+///                       creator. So a staker earns only fees that arrive while staked, and the
+///                       reward rate follows pool volume.
 ///  3. `convertFees`   - swaps all USDG credited in the open epoch into the vault assets by weight
 ///                       and closes the epoch. Every credit of that epoch is paid out in the assets
 ///                       bought by that epoch's conversion, pro rata to its USDG amount.
@@ -55,7 +57,8 @@ struct VaultInfo {
 ///                       under the same condition. Price protection lives in the swap adapter.
 ///  4. `stake/unstake/claim` - Meme holders. Only converted rewards can be claimed.
 ///
-/// Roles: owner (Ownable2Step) - admin setters and pause; controller - registration;
+/// Roles: owner (Ownable2Step) - admin setters (protocol share and recipient included) and pause;
+/// controller - registration;
 /// hook - fee notification. Conversion is permissionless.
 ///
 /// Invariants (for invariant tests):
@@ -65,8 +68,10 @@ struct VaultInfo {
 ///  - Sum of stakers' USDG credits of an epoch <= pendingStakerUSDG of that epoch, so the sum of
 ///    claimable rewards never exceeds what the conversion bought.
 ///  - Sum of AssetConfig.weightBps of every registered vault == BPS.
-///  - creatorShareBps of every registered vault <= BPS and never changes; toCreator + toStakers of
-///    every `notifyFees` == the notified amount.
+///  - creatorShareBps of every registered vault <= MAX_CREATOR_SHARE_BPS and never changes.
+///  - protocolShareBps <= BPS. For every `notifyFees`: toProtocol + toCreator + toStakers == the
+///    notified amount, toProtocol == amount * protocolShareBps / BPS (rounded down), and
+///    `accounted(usdg)` grows by exactly toCreator + toStakers.
 ///  - Stakers can always withdraw principal via `unstake`, even when paused.
 ///  - `notifyFees` never reverts because of the automatic conversion: a failing conversion is
 ///    caught, the credited USDG stays pending and is converted later.
@@ -96,6 +101,10 @@ interface IVault {
     error BelowConversionThreshold(uint256 pending, uint256 threshold);
     error ZeroSwapOutput(address asset);
     error SwapAdapterNotSet();
+    /// @dev `setProtocolShare` above BPS.
+    error InvalidProtocolShare(uint256 shareBps);
+    /// @dev `notifyFees` owes the protocol a non-zero part but no protocol recipient is set.
+    error ProtocolRecipientNotSet();
     error RescueExceedsSurplus(
         address token,
         uint256 surplus,
@@ -116,6 +125,12 @@ interface IVault {
         address indexed meme,
         uint256 toStakers,
         uint256 toCreator
+    );
+    /// @notice Protocol part of a fee of `meme` sent to `recipient` inside `notifyFees`.
+    event ProtocolFeePaid(
+        address indexed meme,
+        address indexed recipient,
+        uint256 amount
     );
     event ConversionFailed(address indexed meme, bytes reason);
     event FeesConverted(
@@ -159,6 +174,8 @@ interface IVault {
     event HookUpdated(address indexed hook);
     event ConversionThresholdUpdated(uint256 threshold);
     event SwapAdapterUpdated(address indexed adapter);
+    event ProtocolRecipientUpdated(address indexed recipient);
+    event ProtocolShareUpdated(uint256 shareBps);
     event AssetAllowedUpdated(address indexed asset, bool allowed);
     event Rescued(address indexed token, address indexed to, uint256 amount);
 
@@ -168,11 +185,12 @@ interface IVault {
 
     /// @notice Creates the vault of a freshly deployed Meme token.
     /// @dev Only controller. Creator share and assets are immutable after registration.
-    /// Reverts if `creatorShareBps` > BPS, any asset is not allowlisted, duplicated, or weights do
-    /// not sum to BPS.
+    /// Reverts if `creatorShareBps` > MAX_CREATOR_SHARE_BPS, any asset is not allowlisted,
+    /// duplicated, or weights do not sum to BPS.
     /// @param meme            Meme token, also the staking token of this vault.
     /// @param creator         Receives the creator share of fees.
-    /// @param creatorShareBps Share of every fee credited to the creator, 0..BPS (1_000 = 10%).
+    /// @param creatorShareBps Share of every fee credited to the creator,
+    ///                        0..MAX_CREATOR_SHARE_BPS (1_000 = 10%).
     ///                        While nobody stakes the creator gets the whole fee regardless.
     /// @param assets          Reward assets and their weights, 1..MAX_ASSETS entries.
     function registerVault(
@@ -186,15 +204,19 @@ interface IVault {
     // Fee intake and conversion
     // ---------------------------------------------------------------------------------------------
 
-    /// @notice Credits USDG already transferred to the vault to the vault of `meme`, then converts
-    ///         the open epoch if its pending USDG reached `conversionThreshold`.
+    /// @notice Splits a swap fee of `meme` already transferred to the vault: sends
+    ///         `protocolShareBps` of it to `protocolRecipient`, credits the rest to the vault of
+    ///         `meme`, then converts the open epoch if its pending USDG reached
+    ///         `conversionThreshold`.
     /// @dev Only hook, in the same tx as the transfer. The credit is not affected by pause.
-    /// Reverts if USDG balance minus accounted USDG is below `usdgAmount`.
+    /// Reverts if USDG balance minus accounted USDG is below `usdgAmount`, if the protocol part is
+    /// non-zero while no recipient is set (`ProtocolRecipientNotSet`), or if the recipient's
+    /// `notifyFee` reverts; the hook then keeps the fee accrued.
     /// The conversion is skipped while paused, while the threshold is zero, or within
     /// CONVERSION_COOLDOWN of a failed attempt; if it reverts, `ConversionFailed` is emitted and
     /// the credit stays pending. A revert without data (out of gas) does not start the cooldown.
     /// @param meme       Meme whose pool generated the fees.
-    /// @param usdgAmount USDG amount transferred.
+    /// @param usdgAmount USDG amount transferred, the whole fee, protocol part included.
     function notifyFees(address meme, uint256 usdgAmount) external;
 
     /// @notice Swaps all USDG credited in the open epoch of `meme` into its reward assets by weight
@@ -287,6 +309,15 @@ interface IVault {
     ///         hooks are not upgradeable, the pools of older Memes keep paying through theirs.
     function setHook(address hook) external;
 
+    /// @notice Sets the receiver of the protocol part of every fee.
+    /// @dev Only owner, non-zero. A contract must implement `IProtocolFeeReceiver`, otherwise
+    /// every fee payout of the hooks fails (the fees stay accrued in the hooks).
+    function setProtocolRecipient(address recipient) external;
+
+    /// @notice Sets the protocol share of every fee, in BPS of the fee (3_333 = a third).
+    /// @dev Only owner, 0..BPS. Applies to every Meme from the next `notifyFees` on.
+    function setProtocolShare(uint256 shareBps) external;
+
     /// @notice Sets the pending USDG a vault needs before its epoch is converted, in USDG units.
     /// @dev Zero disables the automatic conversion in `notifyFees`; manual `convertFees` then
     /// only requires a non-zero pending amount.
@@ -316,6 +347,9 @@ interface IVault {
     /// @notice Basis points denominator (10_000).
     function BPS() external view returns (uint256);
 
+    /// @notice Highest creator share of every fee a vault can be registered with, in bps (5_000).
+    function MAX_CREATOR_SHARE_BPS() external view returns (uint256);
+
     /// @notice Maximum number of reward assets per vault.
     function MAX_ASSETS() external view returns (uint256);
 
@@ -337,6 +371,12 @@ interface IVault {
     function isHook(address account) external view returns (bool);
 
     function swapAdapter() external view returns (address);
+
+    /// @notice Receiver of the protocol part of every fee, zero if not set.
+    function protocolRecipient() external view returns (address);
+
+    /// @notice Protocol share of every fee, in BPS of the fee.
+    function protocolShareBps() external view returns (uint256);
 
     /// @notice Pending USDG a vault needs before its epoch is converted. Zero: automatic off.
     function conversionThreshold() external view returns (uint256);

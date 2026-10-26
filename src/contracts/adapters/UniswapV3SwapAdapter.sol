@@ -40,7 +40,7 @@ contract UniswapV3SwapAdapter is IUniswapV3SwapAdapter, IUniswapV3SwapCallback, 
     uint256 public constant BPS = 10_000;
     uint256 public constant FEE_DENOMINATOR = 1e6;
     /// @notice Hard cap of `maxSlippageBps`, so no route can be set to swap without protection.
-    uint16 public constant MAX_SLIPPAGE_BPS = 1000; // 5%
+    uint16 public constant MAX_SLIPPAGE_BPS = 1000; // 10%
     uint32 public constant MIN_TWAP_WINDOW = 1 minutes;
     uint32 public constant MAX_TWAP_WINDOW = 1 hours;
 

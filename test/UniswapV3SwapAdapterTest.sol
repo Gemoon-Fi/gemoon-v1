@@ -313,14 +313,13 @@ contract UniswapV3SwapAdapterTest is Test {
     }
 
     function test_SetRoute_SlippageAboveCap_Reverts() external {
+        uint16 aboveCap = adapter.MAX_SLIPPAGE_BPS() + 1;
+        assertEq(aboveCap, 1_001, "cap is 10%");
         vm.prank(owner);
         vm.expectRevert(
-            abi.encodeWithSelector(
-                IUniswapV3SwapAdapter.SlippageTooHigh.selector,
-                501
-            )
+            abi.encodeWithSelector(IUniswapV3SwapAdapter.SlippageTooHigh.selector, aboveCap)
         );
-        adapter.setRoute(address(assetHigh), FEE, 501);
+        adapter.setRoute(address(assetHigh), FEE, aboveCap);
     }
 
     function test_SetRoute_Usdg_Reverts() external {

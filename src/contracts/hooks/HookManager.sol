@@ -22,37 +22,34 @@ import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {IVault} from "../interfaces/IVault.sol";
-import {IProtocolFeeReceiver} from "../interfaces/IReferrals.sol";
 import {IHookManager} from "../interfaces/IHookManager.sol";
 import {SignedMath} from "@openzeppelin/contracts/utils/math/SignedMath.sol";
 
 /// @title Gemoon UniswapV4 hook manager.
 /// @notice Charges a swap fee, always denominated in `i_pairToken`.
-///         Base fee of a Meme is chosen by its creator at deployment (1%..10%). Out of every fee
-///         the protocol recipient gets `PROTOCOL_SHARE_BIPS` (a third, 33.33%) of the fee, the
-///         vault the rest: a 3% fee is ~1% of the swap to the protocol and ~2% to the vault, a 10%
-///         fee is ~3.33% and ~6.67%. The share applies to the whole fee, the anti-snipe excess
-///         included.
+///         Base fee of a Meme is chosen by its creator at deployment (1%..5%). The whole fee, the
+///         anti-snipe excess included, goes to the vault; the vault splits it between the protocol
+///         (`IVault.protocolShareBps`), the creator and the stakers. The hook knows nothing of the
+///         split.
 ///         Anti-snipe: the fee starts at `MAX_FEE_BIPS` (80%) when the pool is created and falls
 ///         linearly to the base fee over `DYNAMIC_FEE_THRESHOLD`. Swaps of the controller (the
 ///         dev buy inside `deployToken`) always pay the base fee.
-/// @dev Not upgradeable: no proxy, the code and the fee parameters (`TOTAL_FEE_BIPS`,
-/// `PROTOCOL_SHARE_BIPS`, `MAX_FEE_BIPS`, the meme fee bounds) are fixed at deployment. The
-/// address is CREATE2-mined to carry the bit pattern of `getHookPermissions`. A new version is a
-/// new hook at a new address: pools of existing Memes stay on the hook they were created with.
-/// The owner can only re-point the fee recipients and the controller (`setVault`,
-/// `setProtocolRecipient`, `setController`); it cannot change any fee.
+/// @dev Not upgradeable: no proxy, the code and the fee rate parameters (`TOTAL_FEE_BIPS`,
+/// `MAX_FEE_BIPS`, the meme fee bounds) are fixed at deployment. The address is CREATE2-mined to
+/// carry the bit pattern of `getHookPermissions`. A new version is a new hook at a new address:
+/// pools of existing Memes stay on the hook they were created with. The owner can only re-point
+/// the vault and the controller (`setVault`, `setController`); it cannot change any fee rate.
+/// How a fee is split is not the hook's business: it lives in the upgradeable vault.
 ///
 /// Fee flow:
 ///  - pools: only Meme/pairToken pools with LP fee 0 whose Meme has a registered vault.
 ///  - every swap: the fee is taken from the swapper via a hook delta and recorded inside the
 ///    PoolManager as ERC6909 claims owned by this hook (`poolManager.mint`), and per Meme in
-///    `accrued` (protocol part of it in `accruedProtocol`).
+///    `accrued`.
 ///  - end of every swap (`_afterSwap`): the claims accrued for the Meme of the pool are paid out as
-///    real tokens, `accruedProtocol` to the protocol recipient and the rest to the vault. A protocol
-///    recipient with code (the Referrals contract) is notified (`IProtocolFeeReceiver.notifyFee`),
-///    an EOA is not; the vault is always notified (`IVault.notifyFees`). The swapper pays the gas. The payout runs inside try/catch: if it
-///    fails, the swap still succeeds and the fee stays accrued until the next successful payout.
+///    real tokens, all of them to the vault, which is notified (`IVault.notifyFees`) and splits
+///    them. The swapper pays the gas. The payout runs inside try/catch: if it fails, the swap still
+///    succeeds and the fee stays accrued until the next successful payout.
 ///  - `distribute(meme)`: manual fallback that pays out whatever is accrued for `meme`.
 contract HookManager is IHookManager, BaseHook, IUnlockCallback, Ownable2Step {
     using SafeCast for uint256;
@@ -71,20 +68,20 @@ contract HookManager is IHookManager, BaseHook, IUnlockCallback, Ownable2Step {
     /// @notice Fallback base fee for a Meme the controller never reported, see `baseFeeBips`.
     ///         Fixed at deployment (1.25% in production).
     uint256 public immutable TOTAL_FEE_BIPS;
-    /// @notice Protocol share of every fee, in bips of the fee. The vault gets the rest.
-    ///         Fixed at deployment (3 333, a third, in production).
-    uint256 public immutable PROTOCOL_SHARE_BIPS;
     /// @notice Time after pool creation during which the fee falls from `MAX_FEE_BIPS` to
     ///         `baseFeeBips`.
     uint256 public constant DYNAMIC_FEE_THRESHOLD = 30 seconds;
     /// @notice Fee right at pool creation, 80%.
     uint256 public constant MAX_FEE_BIPS = 8_000;
-    /// @notice Bounds of the Meme fee its creator chooses at deployment: 1%..10%.
+    /// @notice Bounds of the Meme fee its creator chooses at deployment: 1%..5%.
     uint256 public constant MIN_MEME_FEE_BIPS = 100;
-    uint256 public constant MAX_MEME_FEE_BIPS = 1_000;
-    /// @notice Gas of the payout itself on top of the vault conversion: claims burn, two takes,
-    ///         protocol recipient `notifyFee` and vault `notifyFees` bookkeeping.
-    uint256 public constant PAYOUT_GAS_OVERHEAD = 220_000;
+    uint256 public constant MAX_MEME_FEE_BIPS = 500;
+    /// @notice Gas of the payout itself on top of the vault conversion: claims burn, take, vault
+    ///         `notifyFees` bookkeeping including its protocol transfer and `notifyFee`. The
+    ///         heaviest payout (first fee of a vault with stakers, first credit of a referrer:
+    ///         cold slots everywhere) measured ~240k; the rest is margin for the 63/64 rule of the
+    ///         nested calls.
+    uint256 public constant PAYOUT_GAS_OVERHEAD = 300_000;
     /// @notice Cap on the conversion gas a vault can demand from a swap. Above the most a Gemoon
     ///         vault reports (150k base + 8 assets x 300k = 2.55M), so a vault reporting more
     ///         cannot block trading; a conversion that really needs more fails inside the caught
@@ -100,7 +97,6 @@ contract HookManager is IHookManager, BaseHook, IUnlockCallback, Ownable2Step {
     // Storage
     // ---------------------------------------------------------------------------------------------
 
-    address public protocolRecipient;
     address public vault;
     /// @notice Fees charged and not yet paid out, per Meme, in `i_pairToken`.
     /// @dev Sum over all memes equals the ERC6909 claims of this hook.
@@ -113,8 +109,6 @@ contract HookManager is IHookManager, BaseHook, IUnlockCallback, Ownable2Step {
     /// @notice Base fee of a Meme chosen by its creator, in bips of the swap, zero if the
     ///         controller never reported it. Protocol part included.
     mapping(address meme => uint256) public memeFeeBips;
-    /// @notice Protocol part of `accrued`, per Meme. Always `<= accrued[meme]`.
-    mapping(address meme => uint256) public accruedProtocol;
 
     // ---------------------------------------------------------------------------------------------
     // Modifiers
@@ -131,31 +125,24 @@ contract HookManager is IHookManager, BaseHook, IUnlockCallback, Ownable2Step {
 
     /// @param poolManager_       Uniswap V4 PoolManager.
     /// @param pairToken_         Token every pool is paired with and fees are charged in.
-    /// @param owner_             Owner: may re-point vault, protocol recipient and controller.
-    /// @param protocolRecipient_ Receives the protocol part of every fee.
-    /// @param vault_             Receives the rest of every fee; must know Memes before their pools.
-    /// @param controller_        GemoonController, the only caller of `notifyPoolCreated`.
-    /// @param feeBips            `TOTAL_FEE_BIPS`, at most `MAX_FEE_BIPS`.
-    /// @param protocolShareBips  `PROTOCOL_SHARE_BIPS`, at most `BIPS`.
+    /// @param owner_      Owner: may re-point vault and controller.
+    /// @param vault_      Receives every fee and splits it; must know Memes before their pools.
+    /// @param controller_ GemoonController, the only caller of `notifyPoolCreated`.
+    /// @param feeBips     `TOTAL_FEE_BIPS`, at most `MAX_FEE_BIPS`.
     constructor(
         IPoolManager poolManager_,
         Currency pairToken_,
         address owner_,
-        address protocolRecipient_,
         address vault_,
         address controller_,
-        uint256 feeBips,
-        uint256 protocolShareBips
+        uint256 feeBips
     ) BaseHook(poolManager_) Ownable(owner_) {
         if (address(poolManager_) == address(0)) revert ZeroAddress();
-        if (feeBips > MAX_FEE_BIPS || protocolShareBips > BIPS)
-            revert InvalidFeeBips();
+        if (feeBips > MAX_FEE_BIPS) revert InvalidFeeBips();
 
         i_pairToken = pairToken_;
         TOTAL_FEE_BIPS = feeBips;
-        PROTOCOL_SHARE_BIPS = protocolShareBips;
 
-        _setProtocolRecipient(protocolRecipient_);
         _setVault(vault_);
         _setController(controller_);
     }
@@ -169,22 +156,12 @@ contract HookManager is IHookManager, BaseHook, IUnlockCallback, Ownable2Step {
     // Admin
     // ---------------------------------------------------------------------------------------------
 
-    function setProtocolRecipient(address recipient) external onlyOwner {
-        _setProtocolRecipient(recipient);
-    }
-
     function setVault(address vault_) external onlyOwner {
         _setVault(vault_);
     }
 
     function setController(address controller_) external onlyOwner {
         _setController(controller_);
-    }
-
-    function _setProtocolRecipient(address recipient) internal {
-        if (recipient == address(0)) revert ZeroAddress();
-        protocolRecipient = recipient;
-        emit ProtocolRecipientUpdated(recipient);
     }
 
     function _setVault(address vault_) internal {
@@ -395,9 +372,7 @@ contract HookManager is IHookManager, BaseHook, IUnlockCallback, Ownable2Step {
         uint256 fee = _feeOf(meme, sender, amount);
         if (fee == 0) return 0;
 
-        // protocol part <= fee: PROTOCOL_SHARE_BIPS <= BIPS. Rounds down, the dust goes to the vault.
         accrued[meme] += fee;
-        accruedProtocol[meme] += (fee * PROTOCOL_SHARE_BIPS) / BIPS;
         poolManager.mint(address(this), i_pairToken.toId(), fee);
         emit FeeCharged(key.toId(), sender, fee);
 
@@ -470,33 +445,22 @@ contract HookManager is IHookManager, BaseHook, IUnlockCallback, Ownable2Step {
         return "";
     }
 
-    /// @dev claims -> positive delta for the hook -> real tokens out -> delta back to zero,
-    /// then the protocol recipient (if it is a contract) and the vault are told which Meme the fees
-    /// belong to. A revert anywhere (including in `notifyFee` / `notifyFees`) rolls the whole payout
-    /// back, `accrued` included. So a contract protocol recipient MUST implement
-    /// `IProtocolFeeReceiver`, otherwise every payout fails.
+    /// @dev claims -> positive delta for the hook -> real tokens out to the vault -> delta back to
+    /// zero, then the vault is told which Meme the fees belong to and splits them itself. A revert
+    /// anywhere (including in `notifyFees`) rolls the whole payout back, `accrued` included.
     /// Requires the PoolManager to be unlocked.
     function _payout(address meme) internal {
-        uint256 total = accrued[meme];
-        if (total == 0) return;
+        uint256 amount = accrued[meme];
+        if (amount == 0) return;
 
-        uint256 toProtocol = accruedProtocol[meme];
-        uint256 toVault = total - toProtocol;
-
-        address protocol_ = protocolRecipient;
         address vault_ = vault;
-
         accrued[meme] = 0;
-        accruedProtocol[meme] = 0;
 
-        poolManager.burn(address(this), i_pairToken.toId(), total);
-        poolManager.take(i_pairToken, protocol_, toProtocol);
-        poolManager.take(i_pairToken, vault_, toVault);
-        if (toProtocol != 0 && protocol_.code.length != 0)
-            IProtocolFeeReceiver(protocol_).notifyFee(meme, toProtocol);
-        if (toVault != 0) IVault(vault_).notifyFees(meme, toVault);
+        poolManager.burn(address(this), i_pairToken.toId(), amount);
+        poolManager.take(i_pairToken, vault_, amount);
+        IVault(vault_).notifyFees(meme, amount);
 
-        emit FeesDistributed(meme, protocol_, vault_, toProtocol, toVault);
+        emit FeesDistributed(meme, vault_, amount);
     }
 
     // ---- Utils ----
