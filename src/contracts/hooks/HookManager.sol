@@ -69,7 +69,7 @@ contract HookManager is IHookManager, BaseHook, IUnlockCallback {
     uint256 public immutable TOTAL_FEE_BIPS;
     /// @notice Time after pool creation during which the fee falls from `MAX_FEE_BIPS` to
     ///         `baseFeeBips`.
-    uint256 public constant DYNAMIC_FEE_THRESHOLD = 30 seconds;
+    uint256 public constant DYNAMIC_FEE_THRESHOLD = 15 seconds;
     /// @notice Fee right at pool creation, 80%.
     uint256 public constant MAX_FEE_BIPS = 8_000;
     /// @notice Bounds of the Meme fee its creator chooses at deployment: 1%..5%.

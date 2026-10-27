@@ -9,7 +9,7 @@
 | Контракт | Файл | Роль |
 |---|---|---|
 | GemoonController | `src/contracts/Gemoon.sol` | Точка входа: деплой токена, пула и позиции. Прокси, OwnableUpgradeable. |
-| HookManager | `src/contracts/hooks/HookManager.sol`, интерфейс `IHookManager.sol` | Хук Uniswap V4: комиссия в USDG на каждом свопе (1%..5% по выбору создателя, первые 30 секунд пула от 80% линейно вниз), вся комиссия уходит в волт, делить её — дело волта. Не прокси (не обновляемый), без владельца: волт и контроллер заданы в конструкторе, админ-функций нет. Адрес майнится под биты разрешений. |
+| HookManager | `src/contracts/hooks/HookManager.sol`, интерфейс `IHookManager.sol` | Хук Uniswap V4: комиссия в USDG на каждом свопе (1%..5% по выбору создателя, первые 15 секунд пула от 80% линейно вниз), вся комиссия уходит в волт, делить её — дело волта. Не прокси (не обновляемый), без владельца: волт и контроллер заданы в конструкторе, админ-функций нет. Адрес майнится под биты разрешений. |
 | Vault | `src/contracts/vault/Vault.sol` | Один контракт, логический волт на каждый мем: приём всей комиссии от хука и её разбивка (доля протокола `protocolShareBps` → `protocolRecipient`, остальное создателю и стейкерам), стейкинг, конвертация, выплаты. Прокси, Ownable2Step. |
 | GmoonReferrals | `src/contracts/Referrals.sol`, интерфейс `IReferrals.sol` | Получатель протокольной доли (`Vault.protocolRecipient`): реферальные коды, привязка пользователя к рефереру, `refShareBips` протокольной комиссии мемов рефералов — рефереру, остальное протоколу. Прокси, Ownable2Step, Pausable (только выплаты рефералам). |
 | UniswapV3SwapAdapter | `src/contracts/adapters/UniswapV3SwapAdapter.sol` | Меняет USDG волта на наградные активы в пулах Uniswap V3, минимальный выход считает сам по TWAP пула. Ownable2Step, не прокси: волт меняет адаптер через `setSwapAdapter`. |
@@ -297,7 +297,7 @@ Devnet (chain 1488): `0xf5e9342Ffe373D9a3B4a986870cbC6E66dDCbF15`, блок 8435
 | Комиссия мема | 1%..5%, выбирает создатель в `deployToken` | `MIN_MEME_FEE_BIPS`, `MAX_MEME_FEE_BIPS`, `HookManager.sol` |
 | Доля протокола | четверть (2500 bps) от каждой выплаты комиссии (включая анти-снайп надбавку), остальное мему; хранится в волте, владелец волта меняет её глобально, не больше 100% | `protocolShareBps`, `setProtocolShare`, `Vault.sol` |
 | Резервная комиссия | 1.25% для мемов, о которых контроллер не сообщил; задаётся в конструкторе и не меняется | `TOTAL_FEE_BIPS`, конструктор `HookManager` |
-| Анти-снайп комиссия | 80% в момент создания пула, линейно до базовой за 30 секунд; dev buy платит базовую | `MAX_FEE_BIPS`, `DYNAMIC_FEE_THRESHOLD`, `HookManager.sol` |
+| Анти-снайп комиссия | 80% в момент создания пула, линейно до базовой за 15 секунд; dev buy платит базовую | `MAX_FEE_BIPS`, `DYNAMIC_FEE_THRESHOLD`, `HookManager.sol` |
 | Dev buy | до 80% эмиссии, exact output, в транзакции `deployToken` | `MAX_DEV_BUY_BIPS`, `MAX_DEV_BUY_X18`, `IGemoon.sol` |
 | Доля создателя | 0..50% от каждой комиссии волта (`MAX_CREATOR_SHARE_BPS` = 5000), выбирает создатель в `deployToken`, после регистрации не меняется | `VaultInfo.creatorShareBps`, `creatorShareBpsOf`, `MAX_CREATOR_SHARE_BPS`, `Vault.sol` |
 | Реферальная доля | 25% (2500 bips) протокольной доли мема реферала, задаётся владельцем, не больше 100% | `refShareBips`, `Referrals.sol` |

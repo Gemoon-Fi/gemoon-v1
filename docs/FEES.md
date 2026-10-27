@@ -25,7 +25,7 @@ Bips и bps в проекте — одно и то же (`/10_000`), разны�
                      своп в пуле Meme/USDG
                               │
                               │  ставка = swapFeeBips мема (1%..5%),
-                              │  первые 30 с — анти-снайп до 80%
+                              │  первые 15 с — анти-снайп до 80%
                               ▼
            ┌──────────────────────────────────┐
            │ HookManager  — считает РАЗМЕР     │   HookManager.sol:392 `_feeOf`
@@ -77,12 +77,12 @@ function _feeOf(address meme, address sender, uint256 amount) internal view retu
 | Границы базовой ставки | `MIN_MEME_FEE_BIPS = 100`, `MAX_MEME_FEE_BIPS = 500` | HookManager.sol:77-78 | Константы, не меняются |
 | Резервная ставка | 1.25% (125 bips) | `TOTAL_FEE_BIPS`, immutable, HookManager.sol:70 | Конструктор, `HOOK_TOTAL_FEE_BIPS` в env |
 | Анти-снайп, старт | 80% (`MAX_FEE_BIPS = 8_000`) | HookManager.sol:75 | Константа |
-| Анти-снайп, окно | 30 секунд (`DYNAMIC_FEE_THRESHOLD`) | HookManager.sol:73 | Константа |
+| Анти-снайп, окно | 15 секунд (`DYNAMIC_FEE_THRESHOLD`) | HookManager.sol:72 | Константа |
 
 `baseFeeBips(meme)` (HookManager.sol:493) отдаёт `memeFeeBips[meme]`, а если контроллер о меме не
 сообщал — `TOTAL_FEE_BIPS`.
 
-**Анти-снайп** — линейное падение от 80% до базовой ставки за 30 секунд
+**Анти-снайп** — линейное падение от 80% до базовой ставки за 15 секунд
 (`feeBipsAt`, HookManager.sol:506):
 
 ```solidity
