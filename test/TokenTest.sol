@@ -26,7 +26,7 @@ contract TokenTest is Test {
                 description: "A test token",
                 socialMedia: SocialMedia({
                     farcaster: "https://farcaster.xyz",
-                    twitterX: "https://twitter.com/test",
+                    twitter: "https://twitter.com/test",
                     telegram: "https://t.me/test",
                     website: "https://test.com"
                 }),
@@ -56,7 +56,7 @@ contract TokenTest is Test {
                 description: "A test token",
                 socialMedia: SocialMedia({
                     farcaster: "https://farcaster.xyz",
-                    twitterX: "https://twitter.com/test",
+                    twitter: "https://twitter.com/test",
                     telegram: "https://t.me/test",
                     website: "https://test.com"
                 }),
@@ -106,7 +106,7 @@ contract TokenTest is Test {
                 description: "A test token",
                 socialMedia: SocialMedia({
                     farcaster: "https://farcaster.xyz",
-                    twitterX: "https://twitter.com/test",
+                    twitter: "https://twitter.com/test",
                     telegram: "https://t.me/test",
                     website: "https://test.com"
                 }),
@@ -136,7 +136,7 @@ contract TokenTest is Test {
                 description: "A test token",
                 socialMedia: SocialMedia({
                     farcaster: "https://farcaster.xyz",
-                    twitterX: "https://twitter.com/test",
+                    twitter: "https://twitter.com/test",
                     telegram: "https://t.me/test",
                     website: "https://test.com"
                 }),
@@ -169,7 +169,7 @@ contract TokenTest is Test {
                 description: "A test token",
                 socialMedia: SocialMedia({
                     farcaster: "https://farcaster.xyz",
-                    twitterX: "https://twitter.com/test",
+                    twitter: "https://twitter.com/test",
                     telegram: "https://t.me/test",
                     website: "https://test.com"
                 }),
@@ -201,7 +201,7 @@ contract TokenTest is Test {
                 description: "A test token",
                 socialMedia: SocialMedia({
                     farcaster: "https://farcaster.xyz",
-                    twitterX: "https://twitter.com/test",
+                    twitter: "https://twitter.com/test",
                     telegram: "https://t.me/test",
                     website: "https://test.com"
                 }),
@@ -231,7 +231,7 @@ contract TokenTest is Test {
                 description: "A test token",
                 socialMedia: SocialMedia({
                     farcaster: "https://farcaster.xyz",
-                    twitterX: "https://twitter.com/test",
+                    twitter: "https://twitter.com/test",
                     telegram: "https://t.me/test",
                     website: "https://test.com"
                 }),
@@ -262,7 +262,7 @@ contract TokenTest is Test {
                 description: "A test token",
                 socialMedia: SocialMedia({
                     farcaster: "https://farcaster.xyz",
-                    twitterX: "https://twitter.com/test",
+                    twitter: "https://twitter.com/test",
                     telegram: "https://t.me/test",
                     website: "https://test.com"
                 }),
@@ -288,9 +288,9 @@ contract TokenTest is Test {
             "Invalid farcaster social media URL"
         );
         assertEq(
-            token.getSocialMedia().twitterX,
+            token.getSocialMedia().twitter,
             "https://twitter.com/test",
-            "Invalid twitterX social media URL"
+            "Invalid twitter social media URL"
         );
         assertEq(
             token.getSocialMedia().website,

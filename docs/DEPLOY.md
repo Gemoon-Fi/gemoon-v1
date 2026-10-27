@@ -119,7 +119,7 @@ ENVIRONMENT=prod ./deploy.sh --simulate  # то же для mainnet, из env/pr
 | 3 | `Vault.setConversionThreshold`, `setAssetAllowed` на активы из `VAULT_ALLOWED_ASSETS` | деплоер | порог пропускается, если равен 0 |
 | 4 | `GemoonController` имплементация и прокси, `initialize(POOL_MANAGER, USDG, deployer)` | деплоер | владелец пока деплоер |
 | 5 | `GmoonReferrals` имплементация и прокси, `initialize(deployer, USDG, controller, 0, refShare)` | деплоер | до хука: хук получает рефералы как получателя протокольной доли в `initialize` |
-| 6 | `HookManager` через CREATE2, без прокси: `constructor(POOL_MANAGER, USDG, GEMOON_OWNER, referrals, vault, controller, fee, protocolShare)` | деплоер | соль майнится под биты разрешений. Хук не обновляемый, комиссии зафиксированы. Хуку больше ничего не нужно, поэтому владелец сразу итоговый |
+| 6 | `HookManager` через CREATE2, без прокси: `constructor(POOL_MANAGER, USDG, vault, controller, fee)` | деплоер | соль майнится под биты разрешений. Хук не обновляемый и без владельца: волт, контроллер и комиссии зафиксированы в конструкторе |
 | 7 | `Controller.setReferrals`, `Referrals.setHook`; `Vault.setHook`, `setController`; `Controller.setHook`, `setVault`, `setPositionManager` | деплоер | рефералы подключаются первыми: `deployToken` открывается с `setPositionManager`, мем до `setReferrals` остался бы без реферера. `setHook`/`setVault` контроллера проверяют, что pair-токен совпадает |
 | 8 | `UniswapV3SwapAdapter(deployer, UNISWAP_V3_FACTORY, vault, USDG, window)`, `Vault.setSwapAdapter` | деплоер | адаптер не прокси, привязан к этому волту |
 | 9 | на каждую строку файла активов: `Vault.setAssetAllowed`, `Adapter.setRoute(asset, fee, slippage)` | деплоер | только если актив имеет код, пул — фабричный пул USDG/актив своего fee-tier и отдаёт TWAP за окно. Иначе строка пропускается, причина в отчёте. Уже разрешённое и с тем же маршрутом не отправляется |
@@ -169,8 +169,8 @@ forge verify-contract $VAULT_IMPL src/contracts/vault/Vault.sol:Vault --chain-id
 
 # хук (без прокси): все параметры в конструкторе
 forge verify-contract $HOOK_ADDRESS src/contracts/hooks/HookManager.sol:HookManager --chain-id $CHAIN_ID \
-  --constructor-args $(cast abi-encode "constructor(address,address,address,address,address,uint256)" \
-    $POOL_MANAGER $USDG_ADDRESS $GEMOON_OWNER $VAULT_PROXY_ADDRESS $CONTROLLER_PROXY_ADDRESS \
+  --constructor-args $(cast abi-encode "constructor(address,address,address,address,uint256)" \
+    $POOL_MANAGER $USDG_ADDRESS $VAULT_PROXY_ADDRESS $CONTROLLER_PROXY_ADDRESS \
     $HOOK_TOTAL_FEE_BIPS) ...
 
 # любой из трёх прокси: (имплементация, владелец ProxyAdmin, calldata initialize)
@@ -227,12 +227,12 @@ make deploy-swap-adapter
 ## 3b. Передача владения governance
 
 После деплоя всем владеет EOA деплоера. Сканеры (Serialized, GMGN) помечают это как critical:
-владелец может заменить код хука или перенаправить комиссии. `TransferToGovernance` передаёт:
+владелец может заменить код контрактов или перенаправить комиссии. У хука владельца нет (версия 3),
+его передавать не нужно. `TransferToGovernance` передаёт:
 
 | Что | Кому | Как вступает в силу |
 |---|---|---|
 | 4 ProxyAdmin (апгрейды), контроллер | `TimelockController` | сразу |
-| хук (`setVault`, `setController`) | `TimelockController` | после `acceptOwnership` через таймлок (schedule → задержка → execute) |
 | Vault (в том числе доля протокола и её получатель), GmoonReferrals, UniswapV3SwapAdapter | Safe | после `acceptOwnership()` из Safe |
 
 Таймлок новый: задержка `TIMELOCK_MIN_DELAY` (по умолчанию 172800 = 48 ч), proposer, executor и

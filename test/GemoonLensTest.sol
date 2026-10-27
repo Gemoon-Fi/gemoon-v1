@@ -172,7 +172,7 @@ abstract contract GemoonLensTestBase is Test {
     function _social() internal pure returns (SocialMedia memory) {
         return SocialMedia({
             farcaster: "fc/meme",
-            twitterX: "https://x.com/meme",
+            twitter: "https://x.com/meme",
             telegram: "",
             website: "https://meme.xyz"
         });
@@ -296,7 +296,7 @@ contract GemoonLensTest is GemoonLensTestBase {
         assertTrue(v.meta.creatorOk);
         assertTrue(v.meta.socialOk);
         assertEq(abi.encode(v.meta.social), abi.encode(GemoonToken(meme).getSocialMedia()));
-        assertEq(v.meta.social.twitterX, "https://x.com/meme");
+        assertEq(v.meta.social.twitter, "https://x.com/meme");
 
         // market
         PoolId id = _poolKey(meme).toId();
@@ -469,7 +469,6 @@ contract GemoonLensTest is GemoonLensTestBase {
         HookManager next = script.deployHook(
             address(script),
             GemoonDeployBase.HookDeployParams({
-                owner: address(this),
                 poolManager: address(poolManager),
                 pairToken: address(usdg),
                 vault: address(vault),

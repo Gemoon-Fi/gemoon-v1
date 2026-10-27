@@ -155,7 +155,7 @@ contract DevBuyDevnetForkTest is Test {
             tokenConfig: TokenConfig({
                 imgUrl: "ipfs://meme",
                 description: "devnet dev buy meme",
-                socialMedia: SocialMedia({farcaster: "", twitterX: "", telegram: "", website: ""}),
+                socialMedia: SocialMedia({farcaster: "", twitter: "", telegram: "", website: ""}),
                 name: "DevBuy",
                 symbol: "DEVB",
                 admins: admins

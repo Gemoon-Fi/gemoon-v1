@@ -464,7 +464,7 @@ contract GemoonLens is IGemoonLens {
 
         bool[4] memory valid;
         (valid[0], social.farcaster) = _stringAt(ret, tuple, tuple);
-        (valid[1], social.twitterX) = _stringAt(ret, tuple, tuple + 32);
+        (valid[1], social.twitter) = _stringAt(ret, tuple, tuple + 32);
         (valid[2], social.telegram) = _stringAt(ret, tuple, tuple + 64);
         (valid[3], social.website) = _stringAt(ret, tuple, tuple + 96);
         if (!(valid[0] && valid[1] && valid[2] && valid[3])) {
@@ -472,7 +472,7 @@ contract GemoonLens is IGemoonLens {
                 false,
                 SocialMedia({
                     farcaster: "",
-                    twitterX: "",
+                    twitter: "",
                     telegram: "",
                     website: ""
                 })

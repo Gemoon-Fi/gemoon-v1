@@ -37,7 +37,7 @@ interface IGemoonLens {
     /// @param image      `imageAddress()`, empty if it failed.
     /// @param creator    `creator()` of the token, zero if it failed (see `creatorOk`).
     /// @param creatorOk  Whether `creator()` returned an address. False on tokens without it.
-    /// @param social     `getSocialMedia()`: farcaster, twitterX, telegram, website. Empty if it
+    /// @param social     `getSocialMedia()`: farcaster, twitter, telegram, website. Empty if it
     ///                   failed (see `socialOk`).
     /// @param socialOk   Whether `getSocialMedia()` returned four strings.
     struct TokenMeta {

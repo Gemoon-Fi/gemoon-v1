@@ -106,8 +106,8 @@ contract DeployGemoonTest is Test {
     function test_DeployAll_Ownership_HandedToOwner() external {
         DeployGemoon.Deployment memory d = _deploy(owner);
 
-        assertEq(d.hook.owner(), owner, "hook owner");
-        assertEq(d.hook.pendingOwner(), address(0), "hook pending");
+        assertEq(d.hook.vault(), address(d.vault), "hook vault fixed");
+        assertEq(d.hook.controller(), address(d.controller), "hook controller fixed");
         assertEq(d.controller.owner(), owner, "controller owner");
         // Ownable2Step: the vault waits for acceptOwnership.
         assertEq(d.vault.owner(), address(script), "vault owner");
@@ -127,7 +127,6 @@ contract DeployGemoonTest is Test {
         assertEq(d.vault.owner(), address(script));
         assertEq(d.vault.pendingOwner(), address(0));
         assertEq(d.controller.owner(), address(script));
-        assertEq(d.hook.owner(), address(script));
     }
 
     function test_DeployAll_HookAddress_CarriesPermissionBits() external {
@@ -386,9 +385,9 @@ contract DeployGemoonTest is Test {
         }
     }
 
-    /// @dev The owner makes itself the controller and tries to restart the 80% ramp of a live
-    /// Meme, through a report and through a new pool. Every attempt fails, the fee stays the base fee.
-    function test_NotifyPoolCreated_OwnerAsController_CannotRestartRamp() external {
+    /// @dev The owner of the rest of the protocol has no role on the hook: it can neither become
+    /// its controller nor restart the 80% ramp of a live Meme, through a report or a new pool.
+    function test_NotifyPoolCreated_ProtocolOwner_CannotRestartRamp() external {
         DeployGemoon.Deployment memory d = _deploy(owner);
         address meme = makeAddr("meme");
         vm.warp(1_000);
@@ -398,12 +397,14 @@ contract DeployGemoonTest is Test {
         vm.warp(1_000 + d.hook.DYNAMIC_FEE_THRESHOLD());
 
         vm.startPrank(owner);
-        d.hook.setController(owner);
-        vm.expectRevert(abi.encodeWithSelector(IHookManager.PoolAlreadyNotified.selector, meme));
+        (bool ok,) = address(d.hook).call(abi.encodeWithSignature("setController(address)", owner));
+        assertFalse(ok, "no setController");
+        vm.expectRevert(IHookManager.NotController.selector);
         d.hook.notifyPoolCreated(meme, 1_000);
         vm.stopPrank();
-        _initPool(d.hook, meme, 200);
+        _initPool(d.hook, meme, 200, owner);
 
+        assertEq(d.hook.poolTimestamps(meme), 1_000, "window not moved");
         assertEq(d.hook.currentFeeBips(meme), 100, "still the base fee");
     }
 
@@ -452,22 +453,6 @@ contract DeployGemoonTest is Test {
         d.hook.notifyPoolCreated(makeAddr("meme"), 100);
     }
 
-    function test_NotifyPoolCreated_FromNewController_AfterSetController_Stores() external {
-        DeployGemoon.Deployment memory d = _deploy(owner);
-        address next = makeAddr("nextController");
-        address meme = makeAddr("meme");
-
-        vm.prank(owner);
-        d.hook.setController(next);
-
-        vm.warp(42);
-        _initPool(d.hook, meme);
-        vm.prank(next);
-        d.hook.notifyPoolCreated(meme, 100);
-
-        assertEq(d.hook.memeFeeBips(meme), 100);
-    }
-
     function testFuzz_NotifyPoolCreated_NotController_Revert(address caller, uint256 feeBips)
         external
     {
@@ -483,39 +468,76 @@ contract DeployGemoonTest is Test {
         assertEq(d.hook.memeFeeBips(meme), 0);
     }
 
-    function test_SetController_ByOwner_UpdatesAndEmits() external {
+    // ---- Ownerless: no admin function, vault and controller fixed in the constructor ----
+
+    /// @dev Every owner / re-pointing entry point the previous hook had is gone: the calls hit no
+    /// function and revert, for the deployer and the final owner alike.
+    function test_Hook_AdminFunctions_Absent() external {
         DeployGemoon.Deployment memory d = _deploy(owner);
-        address next = makeAddr("nextController");
-
-        vm.expectEmit(address(d.hook));
-        emit IHookManager.ControllerUpdated(next);
-        vm.prank(owner);
-        d.hook.setController(next);
-
-        assertEq(d.hook.controller(), next);
-
-        // The old controller loses access right away.
-        vm.prank(address(d.controller));
-        vm.expectRevert(IHookManager.NotController.selector);
-        d.hook.notifyPoolCreated(makeAddr("meme"), 100);
+        bytes[7] memory calls = [
+            abi.encodeWithSignature("owner()"),
+            abi.encodeWithSignature("pendingOwner()"),
+            abi.encodeWithSignature("transferOwnership(address)", owner),
+            abi.encodeWithSignature("acceptOwnership()"),
+            abi.encodeWithSignature("renounceOwnership()"),
+            abi.encodeWithSignature("setVault(address)", owner),
+            abi.encodeWithSignature("setController(address)", owner)
+        ];
+        address[2] memory callers = [owner, address(script)];
+        for (uint256 c; c < callers.length; ++c) {
+            for (uint256 i; i < calls.length; ++i) {
+                vm.prank(callers[c]);
+                (bool ok,) = address(d.hook).call(calls[i]);
+                assertFalse(ok, "admin call must not exist");
+            }
+        }
     }
 
-    function test_SetController_NotOwner_Revert() external {
+    /// @dev Invariant: whoever calls whatever re-pointing function with whatever target, the vault
+    /// and the controller of the hook stay the ones it was deployed with.
+    function testFuzz_Hook_AnyCallerAnyTarget_VaultAndControllerFixed(address caller, address target)
+        external
+    {
         DeployGemoon.Deployment memory d = _deploy(owner);
-        address stranger = makeAddr("stranger");
 
-        vm.prank(stranger);
-        vm.expectRevert(
-            abi.encodeWithSelector(OwnableUpgradeable.OwnableUnauthorizedAccount.selector, stranger)
-        );
-        d.hook.setController(stranger);
+        vm.startPrank(caller);
+        (bool okVault,) = address(d.hook).call(abi.encodeWithSignature("setVault(address)", target));
+        (bool okController,) =
+            address(d.hook).call(abi.encodeWithSignature("setController(address)", target));
+        (bool okTransfer,) =
+            address(d.hook).call(abi.encodeWithSignature("transferOwnership(address)", target));
+        vm.stopPrank();
+
+        assertFalse(okVault || okController || okTransfer, "no admin entry point");
+        assertEq(d.hook.vault(), address(d.vault), "vault fixed");
+        assertEq(d.hook.controller(), address(d.controller), "controller fixed");
     }
 
-    function test_SetController_ZeroAddress_Revert() external {
-        DeployGemoon.Deployment memory d = _deploy(owner);
-
-        vm.prank(owner);
+    function test_Constructor_ZeroVault_Revert() external {
         vm.expectRevert(IHookManager.ZeroAddress.selector);
-        d.hook.setController(address(0));
+        script.deployHook(
+            address(script),
+            GemoonDeployBase.HookDeployParams({
+                poolManager: poolManager,
+                pairToken: address(usdg),
+                vault: address(0),
+                controller: makeAddr("controller"),
+                feeBips: 125
+            })
+        );
+    }
+
+    function test_Constructor_ZeroController_Revert() external {
+        vm.expectRevert(IHookManager.ZeroAddress.selector);
+        script.deployHook(
+            address(script),
+            GemoonDeployBase.HookDeployParams({
+                poolManager: poolManager,
+                pairToken: address(usdg),
+                vault: makeAddr("vault"),
+                controller: address(0),
+                feeBips: 125
+            })
+        );
     }
 }

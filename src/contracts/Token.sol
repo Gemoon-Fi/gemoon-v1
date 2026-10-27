@@ -114,11 +114,9 @@ contract GemoonToken is
     ///         otherwise built on-chain from the current token data:
     ///         `data:application/json;base64,<json>` with
     ///         `{"name","symbol","decimals","description","image","twitter","telegram","website",
-    ///         "socialMedia":{"farcaster","twitterX","telegram","website"},
-    ///         "fees":{"totalPercent","creatorPercent","vaultPercent","protocolPercent"}}`.
-    ///         Top-level `twitter` / `telegram` / `website` are the standard (pump.fun-style) link
-    ///         keys read by aggregators; each is present only if the creator set that link.
-    ///         `socialMedia` always carries all four links (empty string if not set).
+    ///         "farcaster","fees":{"totalPercent","creatorPercent","vaultPercent","protocolPercent"}}`.
+    ///         The links are top-level keys (pump.fun-style metadata read by aggregators); each is
+    ///         present only if the creator set that link. There is no nested `socialMedia` object.
     ///         Fees are JSON numbers in percent of the swap amount, up to 4 decimals (`1.25`).
     /// @dev The on-chain JSON is always in sync with `updateImage` / `changeDescription`
     /// (`UpdateImage`, `UpdateDescription` signal a change). Creator-chosen strings are
@@ -168,18 +166,6 @@ contract GemoonToken is
 
     /// @dev Metadata JSON of `tokenURI`.
     function _metadataJson() internal view returns (string memory) {
-        SocialMedia memory social = _socialMedia;
-        string memory socials = string.concat(
-            '{"farcaster":"',
-            Json.escape(social.farcaster),
-            '","twitterX":"',
-            Json.escape(social.twitterX),
-            '","telegram":"',
-            Json.escape(social.telegram),
-            '","website":"',
-            Json.escape(social.website),
-            '"}'
-        );
         return
             string.concat(
                 '{"name":"',
@@ -193,24 +179,23 @@ contract GemoonToken is
                 '","image":"',
                 Json.escape(_imgUrl),
                 '"',
-                _linksJson(social),
-                ',"socialMedia":',
-                socials,
+                _linksJson(_socialMedia),
                 ',"fees":',
                 _feesJson(),
                 "}"
             );
     }
 
-    /// @dev Top-level `twitter`, `telegram`, `website` keys of the metadata JSON (pump.fun-style
-    /// metadata read by aggregators), each with a leading comma. A link the creator did not set is
-    /// left out.
+    /// @dev Top-level `twitter`, `telegram`, `website`, `farcaster` keys of the metadata JSON
+    /// (pump.fun-style metadata read by aggregators), each with a leading comma. A link the creator
+    /// did not set is left out.
     function _linksJson(SocialMedia memory social) internal pure returns (string memory) {
         return
             string.concat(
-                _optionalField("twitter", social.twitterX),
+                _optionalField("twitter", social.twitter),
                 _optionalField("telegram", social.telegram),
-                _optionalField("website", social.website)
+                _optionalField("website", social.website),
+                _optionalField("farcaster", social.farcaster)
             );
     }
 

@@ -52,6 +52,15 @@ simulate-gemoon:
 deploy-vault:
 	forge script --via-ir ./script/GemoonDeploy.sol:DeployVault --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
 
+# New ownerless HookManager for the existing vault and controller, wired into both (owner of
+# both must be the broadcaster). Put the printed HOOK into HOOK_ADDRESS, then make deploy-lens.
+deploy-hook:
+	forge script --via-ir ./script/GemoonDeploy.sol:DeployHook --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
+
+# Same as deploy-hook without --broadcast.
+simulate-deploy-hook:
+	forge script --via-ir ./script/GemoonDeploy.sol:DeployHook -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY)
+
 deploy-swap-adapter:
 	forge script --via-ir ./script/GemoonDeploy.sol:DeployUniswapV3SwapAdapter --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
 

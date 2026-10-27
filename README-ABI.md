@@ -55,7 +55,7 @@ creators(address[] memes) returns (CreatorRewards[])  // { creatorOf, ok, assets
 |---|---|
 | `meta.ok == false` | адрес не токен (нет кода или `totalSupply()` упал), остальное нули кроме `market.poolId` |
 | `meta.decimalsOk`, `meta.creatorOk` == `false` | функции нет или ответ некорректный, показывать `–` |
-| `meta.socialOk == false` | нет `getSocialMedia()` или ответ некорректный, все четыре ссылки (`farcaster`, `twitterX`, `telegram`, `website`) пустые |
+| `meta.socialOk == false` | нет `getSocialMedia()` или ответ некорректный, все четыре ссылки (`farcaster`, `twitter`, `telegram`, `website`) пустые |
 | `market.burnedOk`, `market.pendingFeesOk` == `false` | чтение не ответило, значение 0 — показывать `–` |
 | `vault.registeredOk == false` | волт не ответил: `registered` неизвестен, показывать `–` |
 | `vault.assets[i].symbolOk`, `decimalsOk` == `false` | у ассета нет `symbol()`/`decimals()`, показывать `–` |
@@ -84,7 +84,7 @@ const config = {
   tokenConfig: {
     imgUrl: "ipfs://...",             // обязательно
     description: "...",
-    socialMedia: { farcaster: "", twitterX: "", telegram: "", website: "" },
+    socialMedia: { farcaster: "", twitter: "", telegram: "", website: "" },
     name: "My Meme",                  // 1..150 символов
     symbol: "MEME",                   // 1..50 символов
     admins: [{ admin: "0x...", removable: true }], // минимум один
@@ -193,6 +193,12 @@ allowlist отдаёт `Vault.allowedAssets()`, проверка одного а
 
 HookManager для интеграций (`IHookManager.json`):
 
+- **Версия 3: владельца нет.** `owner()`, `pendingOwner()`, `transferOwnership`, `acceptOwnership`,
+  `renounceOwnership`, `setVault`, `setController` и события `VaultUpdated`, `ControllerUpdated`
+  удалены. `vault()` и `controller()` остались, но теперь фиксированы в конструкторе
+  `(poolManager, pairToken, vault, controller, feeBips)`. `getVersion()` возвращает 3. Хуки версии 2
+  (у старых мемов) по-прежнему имеют владельца и эти функции.
+
 - `pendingFees(meme) → uint256`: комиссия по мему, ещё не выплаченная волту.
 - `distribute(meme)`: выплатить накопленное. Может вызвать любой. Нужна, если после сделок
   `pendingFees` не обнулился, такое бывает у пулов с малым оборотом.
@@ -270,22 +276,24 @@ Vault, разбивка комиссии:
 - `totalHolders()`: число адресов с ненулевым балансом. Считаются все адреса, включая контракты:
   PoolManager (ликвидность пула), контроллер (пыль после минта позиции), волт (стейки). Есть
   только у мемов, созданных после этого обновления: у старых токенов вызов откатится.
+- Структура `SocialMedia` (в `DeployConfig.socialMedia` и `getSocialMedia()`): поле `twitterX`
+  переименовано в `twitter` — `{farcaster, twitter, telegram, website}`. Кодирование не изменилось
+  (те же типы и порядок), меняется только имя поля в JSON ABI.
 - `tokenURI()`: ERC-1046, метаданные собираются ончейн из текущих данных токена и отдаются как
   `data:application/json;base64,<json>`. Отдельно ничего задавать не нужно, после `updateImage` /
   `changeDescription` URI меняется сам. JSON:
   ```json
   {"name":"Meme","symbol":"MEME","decimals":18,"description":"...","image":"https://...",
    "twitter":"https://x.com/...","telegram":"https://t.me/...","website":"https://...",
-   "socialMedia":{"farcaster":"...","twitterX":"...","telegram":"...","website":"..."},
+   "farcaster":"https://...",
    "fees":{"totalPercent":1.25,"creatorPercent":0.0833,"vaultPercent":0.7501,"protocolPercent":0.4166}}
   ```
-  `twitter`, `telegram`, `website` на верхнем уровне — стандартные ключи (как в метаданных
-  pump.fun), их читают агрегаторы. Ключ есть только если создатель задал ссылку: незаданная ссылка
-  в JSON отсутствует целиком (не пустая строка). Значения берутся из `socialMedia` как есть,
-  контракт формат не проверяет: фронт при создании токена должен передавать полные `https://` URL,
-  а `imgUrl` — прямую публично доступную ссылку на картинку. `socialMedia` (все четыре ссылки,
-  пустая строка если не задана) и `fees` остаются для нашего приложения. Новый формат только у
-  мемов, созданных после этого обновления.
+  `twitter`, `telegram`, `website`, `farcaster` — ключи верхнего уровня (как в метаданных
+  pump.fun), их читают агрегаторы. Вложенного объекта `socialMedia` в JSON нет. Ключ есть только
+  если создатель задал ссылку: незаданная ссылка в JSON отсутствует целиком (не пустая строка).
+  Значения берутся из `DeployConfig.socialMedia` как есть, контракт формат не проверяет: фронт при
+  создании токена должен передавать полные `https://` URL, а `imgUrl` — прямую публично доступную
+  ссылку на картинку. Новый формат только у мемов, созданных после этого обновления.
   Строки экранированы по JSON, кавычки и переводы строк в описании безопасны. `fees` — то же, что
   `feeInfo()`, но числами в процентах от суммы свопа, до 4 знаков после точки, без хвостовых нулей
   (`10`, `1.25`, `0.0833`).

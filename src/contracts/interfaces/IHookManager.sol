@@ -11,7 +11,8 @@ import {IGemoonable} from "./IGemoonable.sol";
 ///         deployment (1%..5%). The whole fee goes to the vault, which splits it between the
 ///         protocol, the creator and the stakers (`IVault.notifyFees`).
 ///         Every swap ends with a payout of everything accrued for the Meme of the pool.
-///         Not upgradeable: everything is configured in the constructor, the fee rates are fixed.
+///         Not upgradeable and ownerless: everything (fee rates, vault, controller) is fixed in the
+///         constructor, there is no admin function.
 interface IHookManager is IGemoonable {
     // ---------------------------------------------------------------------------------------------
     // Errors
@@ -91,9 +92,6 @@ interface IHookManager is IGemoonable {
     /// @param reason Raw revert data of the failed payout.
     event PayoutFailed(bytes reason);
 
-    /// @notice Vault changed.
-    event VaultUpdated(address indexed vault);
-
     /// @notice Pool of `meme` created: its anti-snipe window starts at `createdAt`, after it every
     ///         swap pays `feeBips`.
     /// @param meme      Meme of the pool.
@@ -104,19 +102,6 @@ interface IHookManager is IGemoonable {
     /// @notice First pool of `meme` initialized: its anti-snipe window starts at `createdAt`.
     ///         Recorded by the hook itself, once per Meme.
     event PoolTimestampRecorded(address indexed meme, uint256 createdAt);
-
-    /// @notice Controller changed.
-    event ControllerUpdated(address indexed controller);
-
-    // ---------------------------------------------------------------------------------------------
-    // Admin (owner)
-    // ---------------------------------------------------------------------------------------------
-
-    /// @notice Sets the vault that receives every fee.
-    function setVault(address vault_) external;
-
-    /// @notice Sets the GemoonController allowed into `onlyController` functions.
-    function setController(address controller_) external;
 
     // ---------------------------------------------------------------------------------------------
     // Payout
@@ -146,10 +131,10 @@ interface IHookManager is IGemoonable {
     /// @notice Pair token every Meme pool is quoted in and every fee is charged in.
     function pairToken() external view returns (Currency);
 
-    /// @notice Vault that receives every fee and splits it.
+    /// @notice Vault that receives every fee and splits it, fixed at deployment.
     function vault() external view returns (address);
 
-    /// @notice GemoonController allowed into `onlyController` functions.
+    /// @notice GemoonController allowed into `onlyController` functions, fixed at deployment.
     function controller() external view returns (address);
 
     /// @notice Bips denominator, 10 000.

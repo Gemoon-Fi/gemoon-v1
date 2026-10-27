@@ -24,7 +24,7 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | `test_SetHook_NewHook_OldMemeKeepsHookAndPaysOut` | Новый хук в волте и контроллере, старый и новый мем | Старый мем остаётся на старом хуке и получает выплаты; новый мем — на новом хуке | `hookOf` старого = старый хук, нового = новый; после двух покупок старого мема его комиссия в волте; комиссия нового мема взята новым хуком |
 | `test_DeployToken_NotifiesHook_PoolTimestampIsBlockTimestamp` | Время создания пула в хуке | Окно анти-снайпа отсчитывается от блока деплоя | `poolTimestamps(token)` = `block.timestamp` деплоя |
 | `testFuzz_DeployToken_TwoMemes_EachKeepsOwnPoolTimestamp` (fuzz) | Два мема в разное время | Время создания хранится отдельно по мему | У каждого мема своё время создания |
-| `test_DeployToken_HookControllerIsOther_Revert` | Хук привязан к другому контроллеру | `notifyPoolCreated` только от контроллера | revert `NotController` |
+| `test_DeployToken_HookControllerIsOther_Revert` | Контроллеру и волту подключён хук, задеплоенный для другого контроллера | `notifyPoolCreated` только от контроллера, зашитого в хук | revert `NotController` |
 | `test_DeployToken_PositionManagerNotSet_Revert` | Контроллер без PositionManager | Деплой невозможен в полунастроенном состоянии | revert `PositionManagerNotSet` |
 | `test_SetPositionManager_ZeroAddress_Revert` | Нулевые адреса в `setPositionManager` | Нельзя сломать связку нулём | revert `InvalidAddress` для обоих параметров |
 | `test_SetPositionManager_NotOwner_Revert` | `setPositionManager` не от владельца | Доступ только владельцу | revert |
@@ -114,7 +114,7 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | `test_Swap_BelowThreshold_LowGas_RevertsToo` | Лимит 300k, порог далеко | Требование действует и до порога | Revert `NotEnoughGasForConversion` |
 | `test_Swap_ConversionOff_LowGas_Succeeds` | Лимит 300k, порог 0 | Без автоконвертации лишнего газа не нужно | Своп прошёл |
 | `test_Swap_VaultReportsHugeConversionGas_CappedSwapSucceeds` | Волт сообщает `type(uint256).max` газа под конвертацию, своп с лимитом 5M | Ответ волта не может заблокировать торговлю (`MAX_CONVERSION_GAS`) | Своп прошёл |
-| `test_Swap_VaultBurnsAllGas_SwapStillSucceeds` | Владелец ставит хуку vault, который сжигает весь газ (и в `conversionGasRequired`, и в выплате); своп с лимитом 5M | Ни один ответ или поведение vault не блокирует торговлю: вызовы vault ограничены по газу | Своп прошёл, выплата упала внутри try/catch, комиссия осталась накопленной |
+| `test_Swap_VaultBurnsAllGas_SwapStillSucceeds` | Код волта (прокси, обновляемый) заменён на сжигающий весь газ (и в `conversionGasRequired`, и в выплате); своп с лимитом 5M | Ни один ответ или поведение vault не блокирует торговлю: вызовы vault ограничены по газу | Своп прошёл, выплата упала внутри try/catch, комиссия осталась накопленной |
 | `testFuzz_Swap_AnyReportedConversionGas_SwapWithCapGasSucceeds` (fuzz) | Любой ответ `conversionGasRequired`, лимит 5M | Требуемый газ ограничен капом при любом ответе волта | Своп всегда проходит |
 | `test_Swap_EstimatedBelowThreshold_OthersFillIt_EstimateStillEnough` | Газ оценён при далёком пороге (минимальный лимит, как `eth_estimateGas`), затем чужая сделка набирает порог почти до конца, наш своп его пересекает | Оценка газа не устаревает из-за чужих сделок | Своп с прежней оценкой прошёл и закрыл эпоху |
 | `testFuzz_Swap_CrossesThreshold_AnyGas_ConvertsOrReverts` (fuzz) | Любой лимит 150k..3M | Своп, пересёкший порог, либо закрывает эпоху, либо откатывается целиком | Успех ⇒ `epoch` = 1 и нет `ConversionFailed`; откат ⇒ состояние не изменилось |
@@ -126,7 +126,7 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
 | `test_DeployFull_Wiring_AllContractsPointAtEachOther` | Связка всех пяти контрактов | Каждый указывает на нужных соседей, рефералы — получатель протокольной доли | `checkWiring`, `checkReferralsWiring`, `checkAdapterWiring` проходят; `vault.protocolRecipient = referrals`, `referrals.vault = vault`, `vault.protocolShareBps = 2500`, `vault.swapAdapter = adapter`, параметры адаптера и рефералов из params |
-| `test_DeployFull_Ownership_TwoStepPendingUntilAccepted` | Передача владения при `owner ≠ deployer` | Ownable2Step не отдаёт владение без accept; ProxyAdmin у `proxyAdminOwner` | Контроллер и хук сразу у owner; vault, referrals, adapter — pending до `acceptOwnership`, после — у owner; ProxyAdmin vault, controller, referrals у `proxyAdminOwner`; у хука ProxyAdmin нет |
+| `test_DeployFull_Ownership_TwoStepPendingUntilAccepted` | Передача владения при `owner ≠ deployer` | Ownable2Step не отдаёт владение без accept; ProxyAdmin у `proxyAdminOwner` | Контроллер сразу у owner; у хука владельца нет, контроллер зашит; vault, referrals, adapter — pending до `acceptOwnership`, после — у owner; ProxyAdmin vault, controller, referrals у `proxyAdminOwner`; у хука ProxyAdmin нет |
 | `test_DeployFull_OwnerIsDeployer_NothingPending` | Владелец = деплоер | Нет лишних pending-передач | Все контракты у деплоера, `pendingOwner = 0` |
 | `test_DeployFull_RoutableAssets_AllowedAndRouted` | Активы с фабричным пулом и историей TWAP | Разрешён ⇔ есть маршрут на пул из файла | Статус `Routed`, актив в allowlist, маршрут: пул, fee 3000, допуск 100; allowlist = 2 |
 | `test_DeployFull_UnroutableAssets_SkippedWithReason` | Актив без кода, без пула, чужой пул, пул без истории, сам USDG | Неконвертируемый актив не попадает в allowlist | Статусы `NoCode`, `NoPool`, `NotFactoryPool`, `NoTwapHistory`, `PairToken`; маршрутов нет; разрешён только USDG |
@@ -147,7 +147,7 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
 | `test_Fork_Deployment_WiredAgainstDevnetUniswap` | Связка после деплоя скриптом | Контроллер и хук смотрят на канонические адреса Uniswap девнета | `checkWiring` проходит, адреса PoolManager/PositionManager/Permit2 верны |
-| `test_Fork_Deployment_OwnedByDevnetAccount` | Владение после деплоя | Владение уходит на аккаунт девнета, волт в два шага | Хук и контроллер у аккаунта, волт после `acceptOwnership` |
+| `test_Fork_Deployment_OwnedByDevnetAccount` | Владение после деплоя | Владение уходит на аккаунт девнета, волт в два шага | Контроллер у аккаунта, волт после `acceptOwnership` (у хука владельца нет) |
 | `test_Fork_DeployToken_MintsPositionOnDevnetPositionManager` | Деплой мема на девнете | Вся эмиссия в позиции контроллера, апрувов не осталось | NFT у контроллера, ликвидность > 0, у создателя 0, апрувы 0 |
 | `test_Fork_DeployToken_PoolInitializedWithHookAtExpectedPrice` | Ключ пула и цена | Пул с нашим хуком, LP fee 0, позиция односторонняя | Ключ пула верен, цена = расчётной, диапазон по ту сторону тика |
 | `test_Fork_DeployToken_Buy_TraderReceivesMemeAndHookChargesFee` | Покупка после окна | Хук берёт базовую комиссию | Трейдер получил мем, `pendingFees` = 1.25% |
@@ -603,8 +603,8 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 |---|---|---|---|
 | `test_DeployAll_Wiring_AllContractsPointAtEachOther` | Взаимные ссылки controller, hook и vault после `deployAll`. | Контракты связаны друг с другом и с одним USDG | Все ссылки совпадают, `checkWiring` не откатывается |
 | `test_DeployAll_Config_AppliedFromParams` | Применение параметров деплоя. | — | Порог 5e6; AAPL разрешён, USDG нет; `vault.protocolRecipient`, fee 125, `vault.protocolShareBps` 2000 (20% комиссии), poolManager, positionManager, permit2 заданы |
-| `test_DeployAll_Ownership_HandedToOwner` | Передача владения и прав ProxyAdmin. | Владение у заданного owner; апгрейды у proxyAdminOwner | Hook и controller принадлежат owner; vault ждёт `acceptOwnership` (pending = owner), после принятия owner = owner; ProxyAdmin vault и controller у proxyAdminOwner |
-| `test_DeployAll_OwnerIsDeployer_NoTransfer` | Owner совпадает с деплоером. | — | Все контракты принадлежат скрипту, pending у vault = 0 |
+| `test_DeployAll_Ownership_HandedToOwner` | Передача владения и прав ProxyAdmin. | Владение у заданного owner; апгрейды у proxyAdminOwner; хук без владельца | Controller принадлежит owner; хук указывает на задеплоенные vault и controller; vault ждёт `acceptOwnership` (pending = owner), после принятия owner = owner; ProxyAdmin vault и controller у proxyAdminOwner |
+| `test_DeployAll_OwnerIsDeployer_NoTransfer` | Owner совпадает с деплоером. | — | Vault и controller принадлежат скрипту, pending у vault = 0 |
 | `test_DeployAll_HookAddress_CarriesPermissionBits` | Биты разрешений в адресе hook. | Адрес hook несёт ровно нужные флаги Uniswap v4 | `addr & ALL_HOOK_MASK == HOOK_FLAGS` |
 | `test_DeployAll_Hook_NotAProxy` | Hook задеплоен без прокси. | Hook не обновляемый: ни код, ни комиссии не меняются под живым пулом | EIP-1967 implementation и admin = 0; `TOTAL_FEE_BIPS` = 125 из конструктора |
 | `test_DeployAll_Twice_FreshAddresses` | Повторный деплой. | Повторный деплой не сталкивается по CREATE2 | Новый адрес hook; второй деплой корректно связан |
@@ -625,15 +625,14 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 | `test_NotifyPoolCreated_CalledTwice_RevertsPoolAlreadyNotified` | Второй вызов для того же meme с другой ставкой. | Ставка задаётся один раз на мем | Откат `PoolAlreadyNotified(meme)`, время 100 и ставка 100 прежние |
 | `test_NotifyPoolCreated_NoPool_RevertsPoolNotCreatedInThisBlock` | Вызов для мема без пула. | Без пула окно 80% не включить | Откат `PoolNotCreatedInThisBlock(meme, 0)`, комиссия = 125 |
 | `testFuzz_NotifyPoolCreated_LivePool_Reverts` (fuzz) | Сценарий аудита: пул торгуется, контроллер через ≥1 с пытается сообщить о нём с любой ставкой. | Контроллер не может включить 80% на живом пуле | Откат `PoolNotCreatedInThisBlock(meme, 1000)`, окно и ставка не изменились, после окна комиссия = 125 |
-| `test_NotifyPoolCreated_OwnerAsController_CannotRestartRamp` | Владелец делает себя контроллером, пытается сменить ставку и создаёт второй пул после окна. | Даже владелец хука не поднимет комиссию живого мема | `PoolAlreadyNotified`, комиссия остаётся базовой 100 |
+| `test_NotifyPoolCreated_ProtocolOwner_CannotRestartRamp` | Владелец протокола пытается вызвать `setController`, сменить ставку и создаёт второй пул после окна. | У хука нет владельца: никто не перезапустит 80% у живого мема | `setController` не существует, `notifyPoolCreated` — `NotController`, `poolTimestamps` не сдвинут, комиссия остаётся базовой 100 |
 | `testFuzz_NotifyPoolCreated_AfterFirst_AnyReport_RampUnchanged` (fuzz) | Повторный вызов в любой момент с любой ставкой. | После первого сообщения время и ставка мема неизменны; через 30 с комиссия базовая | Откат `PoolAlreadyNotified`, `poolTimestamps`/`memeFeeBips` прежние |
 | `test_NotifyPoolCreated_FromOwner_Revert` | Вызов от владельца hook. | Уведомлять может только контроллер | Откат `NotController` |
 | `test_NotifyPoolCreated_FromVault_Revert` | Вызов от vault. | Уведомлять может только контроллер | Откат `NotController` |
-| `test_NotifyPoolCreated_FromNewController_AfterSetController_Stores` | Новый контроллер после `setController`, в блоке создания пула. | Права переходят к новому контроллеру | `memeFeeBips(meme) == 100` |
 | `testFuzz_NotifyPoolCreated_NotController_Revert` (fuzz) | Вызов от любого адреса, кроме контроллера. | Уведомлять может только контроллер | Откат `NotController`, ставка остаётся 0 |
-| `test_SetController_ByOwner_UpdatesAndEmits` | Владелец меняет контроллер. | Старый контроллер сразу теряет доступ | Событие `ControllerUpdated(next)`, `controller == next`; старый получает откат `NotController` |
-| `test_SetController_NotOwner_Revert` | `setController` от постороннего. | Контроллер меняет только владелец | Откат `OwnableUnauthorizedAccount(stranger)` |
-| `test_SetController_ZeroAddress_Revert` | `setController(0)`. | Контроллер не нулевой | Откат `ZeroAddress` |
+| `test_Hook_AdminFunctions_Absent` | `owner`, `pendingOwner`, `transferOwnership`, `acceptOwnership`, `renounceOwnership`, `setVault`, `setController` от владельца протокола и от деплоера. | У хука нет ни одной админ-функции | Каждый вызов откатывается |
+| `testFuzz_Hook_AnyCallerAnyTarget_VaultAndControllerFixed` (fuzz) | `setVault`/`setController`/`transferOwnership` от любого адреса на любой адрес. | Инвариант: `vault()` и `controller()` хука всегда равны заданным при деплое | Все вызовы падают, `vault` и `controller` не изменились |
+| `test_Constructor_ZeroVault_Revert`, `test_Constructor_ZeroController_Revert` | Деплой хука с нулевым волтом или контроллером. | Хук нельзя создать без волта и контроллера (поменять их потом нельзя) | Откат `ZeroAddress` |
 
 ## test/HookFeeMath.sol
 
@@ -705,13 +704,11 @@ ERC-1046 `tokenURI` токена: свой URI админа (`setTokenURI`), е�
 |---|---|---|---|
 | `test_TokenURI_Prefix_DataJsonBase64` | Формат URI | `data:application/json;base64,` + OZ `Base64` от JSON | совпадает |
 | `test_TokenURI_Fields_MatchTokenData` | Основные поля | JSON = данные токена | name, symbol, decimals 18, description, image |
-| `test_TokenURI_SocialMedia_AllFourLinks` | Соцсети | Все 4 ссылки в `socialMedia` | farcaster, twitterX, telegram, website |
-| `test_TokenURI_EmptySocialMedia_EmptyStrings` | Пустые соцсети | JSON валиден и без ссылок | пустые строки |
-| `test_TokenURI_TopLevelLinks_StandardKeys` | Ссылки на верхнем уровне | Стандартные ключи для агрегаторов, farcaster только в `socialMedia` | `twitter`, `telegram`, `website` = ссылки; `farcaster` нет |
-| `test_TokenURI_EmptySocialMedia_NoTopLevelLinks` | Без ссылок | Незаданная ссылка — нет ключа, JSON валиден | ключей `twitter`/`telegram`/`website` нет, JSON совпадает байт в байт |
+| `test_TokenURI_TopLevelLinks_AllFour` | Все 4 ссылки заданы | Стандартные ключи верхнего уровня для агрегаторов, вложенного `socialMedia` нет | `twitter`, `telegram`, `website`, `farcaster` = ссылки; ключа `socialMedia` нет |
+| `test_TokenURI_EmptySocialMedia_NoLinkKeys` | Без ссылок | Незаданная ссылка — нет ключа, JSON валиден | ключей `twitter`/`telegram`/`website`/`farcaster` нет, JSON совпадает байт в байт |
 | `test_TokenURI_OnlyTelegram_OnlyTelegramKey` | Задан только telegram | Ключ есть только у заданной ссылки | есть только `telegram` |
-| `testFuzz_TokenURI_TopLevelLinks_PresentIffSet` (fuzz) | Любые ASCII-ссылки до 128 байт | Ключ есть ⇔ ссылка непустая, значение = ссылка = копия в `socialMedia`, инъекция полей невозможна | совпадает, `image` не задет |
-| `test_TokenURI_Json_ExactLayout` | Точная раскладка JSON | Формат стабилен для фронта и агрегаторов | строка совпадает байт в байт, включая `twitter`/`telegram`/`website` и `fees` |
+| `testFuzz_TokenURI_TopLevelLinks_PresentIffSet` (fuzz) | Любые ASCII-ссылки (все 4) до 128 байт | Ключ есть ⇔ ссылка непустая, значение = ссылка, `socialMedia` в JSON никогда нет, инъекция полей невозможна | совпадает |
+| `test_TokenURI_Json_ExactLayout` | Точная раскладка JSON | Формат стабилен для фронта и агрегаторов | строка совпадает байт в байт: `twitter`/`telegram`/`website`/`farcaster` на верхнем уровне, затем `fees` |
 | `test_TokenURI_Fees_PercentOfSwap` | `fees` в JSON | Проценты от суммы свопа = ppm / 10 000 | 1.25, 0.0833, 0.7501, 0.4166 |
 | `test_FeeInfo_Getter_ReturnsConstructorValue` | `feeInfo()` | Геттер отдаёт значение из конструктора | 12 500, 833, 7 501, 4 166 |
 | `test_TokenURI_FeesFormatting_WholeAndLeadingZeros` | Целые проценты и нули в дробной части | Целое без точки, ведущие нули дроби сохраняются, хвостовые отброшены | `10`, `6.6664`, `0.0003`, `3.3333` |
@@ -786,14 +783,14 @@ ERC-1046 `tokenURI` токена: свой URI админа (`setTokenURI`), е�
 
 ## test/TransferToGovernanceTest.sol
 
-Передача владения: ProxyAdmin, контроллер и хук под `TimelockController`, которым управляет Safe; волт (и рефералы, адаптер) — Safe. Деплой настоящий (`DeployGemoon.deployAll`), владелец всего — скрипт, как деплоер в сети.
+Передача владения: ProxyAdmin и контроллер под `TimelockController`, которым управляет Safe; волт (и рефералы, адаптер) — Safe. Деплой настоящий (`DeployGemoon.deployAll`), владелец всего — скрипт, как деплоер в сети.
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
 | `test_DeployTimelock_SafeOnlyRoles_NoAdmin` | Роли нового таймлока | Предлагать, исполнять и отменять может только Safe; админа нет | задержка 48 ч, роли у Safe, `DEFAULT_ADMIN_ROLE` ни у кого |
-| `test_TransferToGovernance_Owners_TimelockAndSafe` | Владельцы после передачи | Апгрейды и торговые настройки — за таймлоком, операционные — у Safe | ProxyAdmin ×3 и контроллер — таймлок, хук — pending таймлок, волт — pending Safe |
+| `test_TransferToGovernance_Owners_TimelockAndSafe` | Владельцы после передачи | Апгрейды и торговые настройки — за таймлоком, операционные — у Safe | ProxyAdmin ×3 и контроллер — таймлок, волт — pending Safe; хук без владельца не трогается |
 | `test_TransferToGovernance_Deployer_CannotUpgrade` | Деплоер после передачи | У деплоера нет права на апгрейд | `upgradeAndCall` от деплоера — `OwnableUnauthorizedAccount` |
-| `test_TransferToGovernance_HookAccept_OnlyAfterDelay` | Принятие хука через таймлок | Ничего не исполняется раньше задержки | `execute` до 48 ч откатывается, после — владелец хука таймлок |
+| `test_TransferToGovernance_ControllerSetHook_OnlyAfterDelay` | `controller.setHook` через таймлок | Ничего не исполняется раньше задержки | `execute` до 48 ч откатывается, после — `controller.hook()` обновлён |
 | `test_TransferToGovernance_SafeAcceptsVault` | Safe принимает волт | Ownable2Step завершается новым владельцем | владелец волта — Safe |
 | `testFuzz_Timelock_NotSafe_CannotSchedule` (fuzz) | `schedule` от любого адреса, кроме Safe | Ставить операции в таймлок может только Safe | откат |
 | `test_TransferToGovernance_NotOwner_Reverts` | Отправитель не владелец | Передать может только текущий владелец | откат |

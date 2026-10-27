@@ -70,7 +70,6 @@ abstract contract GemoonDeployBase is Script {
     }
 
     struct HookDeployParams {
-        address owner;
         address poolManager;
         address pairToken;
         address vault;
@@ -143,8 +142,8 @@ abstract contract GemoonDeployBase is Script {
     // HookManager
     // ---------------------------------------------------------------------------------------------
 
-    /// @notice Deploys a CREATE2-mined HookManager. Not upgradeable: no proxy, everything is
-    ///         set in the constructor and `params.owner` owns it right away.
+    /// @notice Deploys a CREATE2-mined HookManager. Not upgradeable and ownerless: no proxy, no
+    ///         owner, everything (vault and controller included) is set in the constructor.
     /// @param create2Deployer Account CREATE2 is executed from, see the contract docs.
     /// @param params          Hook configuration; `vault` and `controller` must already be deployed.
     /// @return hook           HookManager.
@@ -155,7 +154,6 @@ abstract contract GemoonDeployBase is Script {
         bytes memory args = abi.encode(
             params.poolManager,
             params.pairToken,
-            params.owner,
             params.vault,
             params.controller,
             params.feeBips
@@ -166,7 +164,6 @@ abstract contract GemoonDeployBase is Script {
         hook = new HookManager{salt: salt}(
             IPoolManager(params.poolManager),
             Currency.wrap(params.pairToken),
-            params.owner,
             params.vault,
             params.controller,
             params.feeBips
@@ -904,9 +901,8 @@ contract DeployGemoon is GemoonDeployBase {
             _ownerRow("Vault", d.vault.owner(), d.vault.pendingOwner()),
             _ownerRow("GemoonController", d.controller.owner(), address(0)),
             _ownerRow("GmoonReferrals", d.referrals.owner(), d.referrals.pendingOwner()),
-            _ownerRow("HookManager", d.hook.owner(), d.hook.pendingOwner()),
             _ownerRow("UniswapV3SwapAdapter", d.adapter.owner(), d.adapter.pendingOwner()),
-            "\nGemoonController is plain Ownable, ownership moves at once. The others are Ownable2Step: a pending owner becomes the owner only after calling `acceptOwnership()`.\n"
+            "\nGemoonController is plain Ownable, ownership moves at once. The others are Ownable2Step: a pending owner becomes the owner only after calling `acceptOwnership()`. HookManager has no owner: vault, controller and fees are fixed in its constructor.\n"
         );
     }
 
@@ -1072,7 +1068,6 @@ contract DeployGemoon is GemoonDeployBase {
         return deployHook(
             create2Deployer,
             HookDeployParams({
-                owner: params.owner,
                 poolManager: params.poolManager,
                 pairToken: params.usdg,
                 vault: address(vault),
@@ -1111,9 +1106,9 @@ contract DeployGemoon is GemoonDeployBase {
 ///  - VAULT_PROTOCOL_RECIPIENT     receiver of the protocol share, e.g. Referrals (optional, can be
 ///                                 set later; required before the first fee if the share is non-zero)
 ///  - VAULT_PROTOCOL_SHARE_BPS     protocol share of every fee, in bps of the fee (default: 2500)
-/// After the run: owner of the controller calls `GemoonController.setVault`, owner of the hook
-/// calls `HookManager.setVault` (both with the vault PROXY address), and GEMOON_OWNER calls
-/// `acceptOwnership` if it differs from the broadcaster.
+/// After the run: owner of the controller calls `GemoonController.setVault` with the vault PROXY
+/// address, and GEMOON_OWNER calls `acceptOwnership` if it differs from the broadcaster. The hook
+/// has its vault fixed in the constructor: a new vault address needs a new hook (`DeployHook`).
 contract DeployVault is GemoonDeployBase {
     function run() external {
         vm.startBroadcast();
@@ -1149,6 +1144,48 @@ contract DeployVault is GemoonDeployBase {
         for (uint256 i; i < params.allowedAssets.length; ++i) {
             console.log("ALLOWED ASSET: ", params.allowedAssets[i]);
         }
+    }
+}
+
+/// @notice Deploys a new HookManager for an existing deployment and points the vault and the
+///         controller at it. New Memes get pools on the new hook; pools of existing Memes stay on
+///         their hook, which the vault keeps accepting fees from.
+/// @dev Env:
+///  - POOL_MANAGER                 Uniswap V4 PoolManager (required)
+///  - USDG_ADDRESS                 pair token, must equal `Vault.usdg()` (required)
+///  - VAULT_PROXY_ADDRESS          Vault proxy (required)
+///  - CONTROLLER_PROXY_ADDRESS     GemoonController proxy (required)
+///  - HOOK_TOTAL_FEE_BIPS          fallback base fee of the hook (required)
+/// The hook is ownerless, so anyone can deploy it. The broadcaster must own the vault and the
+/// controller for the `setHook` calls; the wiring is checked at the end of the run.
+contract DeployHook is GemoonDeployBase {
+    function run() external {
+        Vault vault = Vault(vm.envAddress("VAULT_PROXY_ADDRESS"));
+        GemoonController controller =
+            GemoonController(payable(vm.envAddress("CONTROLLER_PROXY_ADDRESS")));
+        address usdg = vm.envAddress("USDG_ADDRESS");
+        if (vault.usdg() != usdg) revert WiringMismatch("vault.usdg != USDG_ADDRESS");
+
+        vm.startBroadcast();
+        HookManager hook = deployHook(
+            CREATE2_FACTORY,
+            HookDeployParams({
+                poolManager: vm.envAddress("POOL_MANAGER"),
+                pairToken: usdg,
+                vault: address(vault),
+                controller: address(controller),
+                feeBips: vm.envUint("HOOK_TOTAL_FEE_BIPS")
+            })
+        );
+        vault.setHook(address(hook));
+        controller.setHook(address(hook));
+        vm.stopBroadcast();
+
+        checkWiring(controller, hook, vault);
+        console.log("HOOK: ", address(hook));
+        console.log("HOOK VAULT: ", hook.vault());
+        console.log("HOOK CONTROLLER: ", hook.controller());
+        console.log("HOOK TOTAL FEE BIPS: ", hook.TOTAL_FEE_BIPS());
     }
 }
 
@@ -1266,8 +1303,7 @@ contract VerifyWiring is GemoonDeployBase {
         console.log("VAULT PROTOCOL RECIPIENT: ", vault.protocolRecipient());
         console.log("VAULT PROTOCOL SHARE BPS: ", vault.protocolShareBps());
         console.log("HOOK: ", address(hook));
-        console.log("HOOK OWNER: ", hook.owner());
-        console.log("HOOK PENDING OWNER: ", hook.pendingOwner());
+        console.log("HOOK OWNER: none (ownerless, vault and controller fixed at deployment)");
         _logProxy("CONTROLLER", address(controller));
         console.log("CONTROLLER OWNER: ", controller.owner());
         console.log("CONTROLLER POSITION MANAGER: ", address(controller.positionManager()));
@@ -1472,17 +1508,17 @@ contract ProxyReferralsUpgrade is GemoonDeployBase {
 }
 
 /// @notice Moves control of a deployment from the deployer to governance: a TimelockController run
-///         by a Safe for everything that can change trading (upgrades, hook and controller
-///         settings), the Safe itself for the operational owners (vault, referrals, adapter).
+///         by a Safe for everything that can change trading (upgrades, controller settings), the
+///         Safe itself for the operational owners (vault, referrals, adapter).
 /// @dev Env:
 ///  - GOVERNANCE_SAFE                Safe: proposer and executor of the timelock, owner of the rest (required)
 ///  - TIMELOCK_ADDRESS               existing TimelockController to reuse (optional: deploys one)
 ///  - TIMELOCK_MIN_DELAY             delay of a new timelock in seconds (optional, default 48 hours)
-///  - CONTROLLER/VAULT_PROXY_ADDRESS and their *_PROXY_ADMIN_ADDRESS, HOOK_ADDRESS (required)
+///  - CONTROLLER/VAULT_PROXY_ADDRESS and their *_PROXY_ADMIN_ADDRESS (required)
 ///  - REFERRALS_PROXY_ADDRESS, REFERRALS_PROXY_ADMIN_ADDRESS, SWAP_ADAPTER (optional: skipped if empty)
 /// The broadcaster must own every contract and ProxyAdmin it touches. To the timelock: every
-/// ProxyAdmin and the controller (one-step, effective at once) and the hook (no proxy; Ownable2Step: pending
-/// until the timelock runs `acceptOwnership`, scheduled by the Safe, executable after the delay).
+/// ProxyAdmin and the controller (one-step, effective at once). The hook has no owner, nothing to hand
+/// over.
 /// To the Safe: vault, referrals and adapter (Ownable2Step: the Safe calls `acceptOwnership`).
 /// The new timelock has no admin: its roles can only change through its own delayed operations.
 contract TransferToGovernance is GemoonDeployBase {
@@ -1497,7 +1533,6 @@ contract TransferToGovernance is GemoonDeployBase {
 
     struct Targets {
         address controller;
-        address hook;
         address vault;
         address referrals; // zero = skip
         address adapter; // zero = skip
@@ -1512,7 +1547,6 @@ contract TransferToGovernance is GemoonDeployBase {
         uint256 delay = _envUintOr("TIMELOCK_MIN_DELAY", DEFAULT_TIMELOCK_DELAY);
         Targets memory t = Targets({
             controller: vm.envAddress("CONTROLLER_PROXY_ADDRESS"),
-            hook: vm.envAddress("HOOK_ADDRESS"),
             vault: vm.envAddress("VAULT_PROXY_ADDRESS"),
             referrals: _envAddressOr("REFERRALS_PROXY_ADDRESS", address(0)),
             adapter: _envAddressOr("SWAP_ADAPTER", address(0)),
@@ -1534,9 +1568,6 @@ contract TransferToGovernance is GemoonDeployBase {
         console.log("TIMELOCK MIN DELAY: ", timelock.getMinDelay());
         console.log("Left to do, by the Safe:");
         console.log("  acceptOwnership() on the vault, referrals and adapter");
-        console.log("  timelock.schedule(hook, 0, acceptOwnership(), 0, 0, delay), then execute after the delay");
-        console.log("  HOOK acceptOwnership() CALLDATA: ");
-        console.logBytes(abi.encodeWithSignature("acceptOwnership()"));
     }
 
     /// @notice Deploys a TimelockController run by `safe`: sole proposer, executor and canceller,
@@ -1564,7 +1595,6 @@ contract TransferToGovernance is GemoonDeployBase {
         }
 
         _transferOwnable(sender, "CONTROLLER", t.controller, timelock);
-        _transferOwnable(sender, "HOOK", t.hook, timelock);
         _transferOwnable(sender, "VAULT", t.vault, safe);
         if (t.referrals != address(0)) _transferOwnable(sender, "REFERRALS", t.referrals, safe);
         if (t.adapter != address(0)) _transferOwnable(sender, "SWAP ADAPTER", t.adapter, safe);

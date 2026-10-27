@@ -63,7 +63,7 @@ contract TokenURITest is Test {
     function _social() internal pure returns (SocialMedia memory) {
         return SocialMedia({
             farcaster: "https://warpcast.com/meme",
-            twitterX: "https://x.com/meme",
+            twitter: "https://x.com/meme",
             telegram: "https://t.me/meme",
             website: "https://meme.xyz"
         });
@@ -127,43 +127,29 @@ contract TokenURITest is Test {
         assertEq(vm.parseJsonString(json, ".image"), "ipfs://image");
     }
 
-    function test_TokenURI_SocialMedia_AllFourLinks() external {
-        string memory json = _json(_deployDefault());
-        assertEq(vm.parseJsonString(json, ".socialMedia.farcaster"), "https://warpcast.com/meme");
-        assertEq(vm.parseJsonString(json, ".socialMedia.twitterX"), "https://x.com/meme");
-        assertEq(vm.parseJsonString(json, ".socialMedia.telegram"), "https://t.me/meme");
-        assertEq(vm.parseJsonString(json, ".socialMedia.website"), "https://meme.xyz");
-    }
-
-    function test_TokenURI_EmptySocialMedia_EmptyStrings() external {
-        string memory json = _json(
-            _deploy("Meme", "d", "i", SocialMedia({farcaster: "", twitterX: "", telegram: "", website: ""}))
-        );
-        assertEq(vm.parseJsonString(json, ".socialMedia.farcaster"), "");
-        assertEq(vm.parseJsonString(json, ".socialMedia.website"), "");
-    }
-
-    /// @dev Standard (pump.fun-style) link keys at the top level, read by aggregators.
-    function test_TokenURI_TopLevelLinks_StandardKeys() external {
+    /// @dev All four links are standard top-level keys, read by aggregators; no nested
+    /// `socialMedia` object.
+    function test_TokenURI_TopLevelLinks_AllFour() external {
         string memory json = _json(_deployDefault());
         assertEq(vm.parseJsonString(json, ".twitter"), "https://x.com/meme");
         assertEq(vm.parseJsonString(json, ".telegram"), "https://t.me/meme");
         assertEq(vm.parseJsonString(json, ".website"), "https://meme.xyz");
-        assertFalse(vm.keyExistsJson(json, ".farcaster"), "farcaster only in socialMedia");
+        assertEq(vm.parseJsonString(json, ".farcaster"), "https://warpcast.com/meme");
+        assertFalse(vm.keyExistsJson(json, ".socialMedia"), "no socialMedia object");
     }
 
-    /// @dev A link the creator did not set has no top-level key at all, the JSON stays valid.
-    function test_TokenURI_EmptySocialMedia_NoTopLevelLinks() external {
+    /// @dev A link the creator did not set has no key at all, the JSON stays valid.
+    function test_TokenURI_EmptySocialMedia_NoLinkKeys() external {
         string memory json = _json(
-            _deploy("Meme", "d", "i", SocialMedia({farcaster: "", twitterX: "", telegram: "", website: ""}))
+            _deploy("Meme", "d", "i", SocialMedia({farcaster: "", twitter: "", telegram: "", website: ""}))
         );
         assertFalse(vm.keyExistsJson(json, ".twitter"), "twitter");
         assertFalse(vm.keyExistsJson(json, ".telegram"), "telegram");
         assertFalse(vm.keyExistsJson(json, ".website"), "website");
+        assertFalse(vm.keyExistsJson(json, ".farcaster"), "farcaster");
         assertEq(
             json,
             '{"name":"Meme","symbol":"MEME","decimals":18,"description":"d","image":"i",'
-            '"socialMedia":{"farcaster":"","twitterX":"","telegram":"","website":""},'
             '"fees":{"totalPercent":1.25,"creatorPercent":0.0833,"vaultPercent":0.7501,"protocolPercent":0.4166}}'
         );
     }
@@ -171,42 +157,45 @@ contract TokenURITest is Test {
     function test_TokenURI_OnlyTelegram_OnlyTelegramKey() external {
         string memory json = _json(
             _deploy(
-                "Meme", "d", "i", SocialMedia({farcaster: "", twitterX: "", telegram: "https://t.me/meme", website: ""})
+                "Meme", "d", "i", SocialMedia({farcaster: "", twitter: "", telegram: "https://t.me/meme", website: ""})
             )
         );
         assertFalse(vm.keyExistsJson(json, ".twitter"), "twitter");
         assertEq(vm.parseJsonString(json, ".telegram"), "https://t.me/meme");
         assertFalse(vm.keyExistsJson(json, ".website"), "website");
+        assertFalse(vm.keyExistsJson(json, ".farcaster"), "farcaster");
     }
 
     /// @dev Any set of ASCII links: a top-level key exists iff the link is set, its value equals the
-    /// link and the nested `socialMedia` copy, and no link can inject fields.
+    /// link, there is never a `socialMedia` object, and no link can inject fields.
     function testFuzz_TokenURI_TopLevelLinks_PresentIffSet(
         bytes memory twitter,
         bytes memory telegram,
-        bytes memory website
+        bytes memory website,
+        bytes memory farcaster
     ) external {
-        vm.assume(twitter.length <= 128 && telegram.length <= 128 && website.length <= 128);
+        vm.assume(
+            twitter.length <= 128 && telegram.length <= 128 && website.length <= 128
+                && farcaster.length <= 128
+        );
         SocialMedia memory social = SocialMedia({
-            farcaster: "",
-            twitterX: string(_ascii(twitter)),
+            farcaster: string(_ascii(farcaster)),
+            twitter: string(_ascii(twitter)),
             telegram: string(_ascii(telegram)),
             website: string(_ascii(website))
         });
         string memory json = _json(_deploy("Meme", "d", "ipfs://image", social));
-        _assertLink(json, ".twitter", ".socialMedia.twitterX", social.twitterX);
-        _assertLink(json, ".telegram", ".socialMedia.telegram", social.telegram);
-        _assertLink(json, ".website", ".socialMedia.website", social.website);
+        _assertLink(json, ".twitter", social.twitter);
+        _assertLink(json, ".telegram", social.telegram);
+        _assertLink(json, ".website", social.website);
+        _assertLink(json, ".farcaster", social.farcaster);
+        assertFalse(vm.keyExistsJson(json, ".socialMedia"), "no socialMedia object");
         assertEq(vm.parseJsonString(json, ".image"), "ipfs://image");
     }
 
-    function _assertLink(string memory json, string memory key, string memory nested, string memory value)
-        internal
-        view
-    {
+    function _assertLink(string memory json, string memory key, string memory value) internal view {
         assertEq(vm.keyExistsJson(json, key), bytes(value).length != 0, key);
         if (bytes(value).length != 0) assertEq(vm.parseJsonString(json, key), value, key);
-        assertEq(vm.parseJsonString(json, nested), value, nested);
     }
 
     function _ascii(bytes memory raw) internal pure returns (bytes memory) {
@@ -220,8 +209,7 @@ contract TokenURITest is Test {
             _json(_deployDefault()),
             '{"name":"Meme","symbol":"MEME","decimals":18,"description":"a meme","image":"ipfs://image",'
             '"twitter":"https://x.com/meme","telegram":"https://t.me/meme","website":"https://meme.xyz",'
-            '"socialMedia":{"farcaster":"https://warpcast.com/meme","twitterX":"https://x.com/meme",'
-            '"telegram":"https://t.me/meme","website":"https://meme.xyz"},'
+            '"farcaster":"https://warpcast.com/meme",'
             '"fees":{"totalPercent":1.25,"creatorPercent":0.0833,"vaultPercent":0.7501,"protocolPercent":0.4166}}'
         );
     }
@@ -375,7 +363,7 @@ contract TokenURITest is Test {
         string memory json = _json(_deploy("Meme", description_, "ipfs://image", _social()));
         assertEq(vm.parseJsonString(json, ".description"), description_);
         assertEq(vm.parseJsonString(json, ".image"), "ipfs://image");
-        assertEq(vm.parseJsonString(json, ".socialMedia.website"), "https://meme.xyz");
+        assertEq(vm.parseJsonString(json, ".website"), "https://meme.xyz");
     }
 
     // ------------------------------------------------------------------ setTokenURI

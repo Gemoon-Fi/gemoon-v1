@@ -143,7 +143,7 @@ contract ControllerDevnetForkTest is Test {
             tokenConfig: TokenConfig({
                 imgUrl: "ipfs://meme",
                 description: "devnet meme",
-                socialMedia: SocialMedia({farcaster: "", twitterX: "", telegram: "", website: ""}),
+                socialMedia: SocialMedia({farcaster: "", twitter: "", telegram: "", website: ""}),
                 name: symbol,
                 symbol: symbol,
                 admins: admins
@@ -207,7 +207,6 @@ contract ControllerDevnetForkTest is Test {
 
     function test_Fork_Deployment_OwnedByDevnetAccount() external whenForked {
         assertGt(DEVNET_ACCOUNT.balance, 0, "devnet account is funded");
-        assertEq(hook.owner(), DEVNET_ACCOUNT, "hook owner");
         assertEq(controller.owner(), DEVNET_ACCOUNT, "controller owner");
         assertEq(vault.pendingOwner(), DEVNET_ACCOUNT, "vault pending owner");
 

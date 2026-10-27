@@ -9,7 +9,7 @@ uint8 constant DECIMALS = 18;
 
 struct SocialMedia {
     string farcaster;
-    string twitterX;
+    string twitter;
     string telegram;
     string website;
 }

@@ -10,6 +10,7 @@ out/
 # Docs (forge doc output), hand-written guides are kept
 docs/*
 !docs/DEPLOY.md
+!docs/FEES.md
 
 # Environment files env/<dev|prod>.mk and their backups made by deploy.sh (contain PRIVATE_KEY).
 # Plus .env: forge loads it on its own, a leftover one would leak into every environment.

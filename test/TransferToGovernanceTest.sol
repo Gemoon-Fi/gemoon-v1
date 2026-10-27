@@ -58,7 +58,6 @@ contract TransferToGovernanceTest is Test {
 
         t = TransferToGovernance.Targets({
             controller: address(d.controller),
-            hook: address(d.hook),
             vault: address(d.vault),
             referrals: address(0),
             adapter: address(0),
@@ -89,12 +88,11 @@ contract TransferToGovernanceTest is Test {
         assertEq(ProxyAdmin(t.controllerProxyAdmin).owner(), address(timelock), "controller admin");
         assertEq(ProxyAdmin(t.vaultProxyAdmin).owner(), address(timelock), "vault admin");
         assertEq(d.controller.owner(), address(timelock), "controller owner");
-        assertEq(d.hook.pendingOwner(), address(timelock), "hook pending owner");
         assertEq(d.vault.pendingOwner(), safe, "vault pending owner");
     }
 
-    /// @dev The deployer keeps no power over upgrades right away, the hook and the vault only until
-    /// the new owners accept.
+    /// @dev The deployer keeps no power over upgrades right away, the vault only until the Safe
+    /// accepts.
     function test_TransferToGovernance_Deployer_CannotUpgrade() external {
         _transfer();
         // onlyOwner reverts before the implementation is even looked at.
@@ -109,23 +107,23 @@ contract TransferToGovernanceTest is Test {
         );
     }
 
-    /// @dev Full hand-over of the hook: the Safe schedules `acceptOwnership` on the timelock, it can
-    /// only be executed after the delay, then the timelock owns the hook.
-    function test_TransferToGovernance_HookAccept_OnlyAfterDelay() external {
+    /// @dev Controller settings go through the timelock: a `setHook` scheduled by the Safe can only
+    /// be executed after the delay. The hook itself has no owner, there is nothing to hand over.
+    function test_TransferToGovernance_ControllerSetHook_OnlyAfterDelay() external {
         _transfer();
-        bytes memory accept = abi.encodeWithSignature("acceptOwnership()");
+        bytes memory call = abi.encodeCall(d.controller.setHook, (address(d.hook)));
 
         vm.prank(safe);
-        timelock.schedule(address(d.hook), 0, accept, bytes32(0), bytes32(0), DELAY);
+        timelock.schedule(address(d.controller), 0, call, bytes32(0), bytes32(0), DELAY);
 
         vm.prank(safe);
         vm.expectRevert();
-        timelock.execute(address(d.hook), 0, accept, bytes32(0), bytes32(0));
+        timelock.execute(address(d.controller), 0, call, bytes32(0), bytes32(0));
 
         vm.warp(block.timestamp + DELAY);
         vm.prank(safe);
-        timelock.execute(address(d.hook), 0, accept, bytes32(0), bytes32(0));
-        assertEq(d.hook.owner(), address(timelock));
+        timelock.execute(address(d.controller), 0, call, bytes32(0), bytes32(0));
+        assertEq(d.controller.hook(), address(d.hook));
     }
 
     function test_TransferToGovernance_SafeAcceptsVault() external {
@@ -141,7 +139,9 @@ contract TransferToGovernanceTest is Test {
         _transfer();
         vm.prank(caller);
         vm.expectRevert();
-        timelock.schedule(address(d.hook), 0, abi.encodeWithSignature("acceptOwnership()"), 0, 0, DELAY);
+        timelock.schedule(
+            address(d.controller), 0, abi.encodeCall(d.controller.setHook, (address(d.hook))), 0, 0, DELAY
+        );
     }
 
     function test_TransferToGovernance_NotOwner_Reverts() external {

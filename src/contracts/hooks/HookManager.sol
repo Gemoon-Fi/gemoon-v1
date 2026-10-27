@@ -19,8 +19,6 @@ import {
     toBeforeSwapDelta
 } from "@uniswap/v4-core/src/types/BeforeSwapDelta.sol";
 import {SwapParams} from "@uniswap/v4-core/src/types/PoolOperation.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {IVault} from "../interfaces/IVault.sol";
 import {IHookManager} from "../interfaces/IHookManager.sol";
 import {SignedMath} from "@openzeppelin/contracts/utils/math/SignedMath.sol";
@@ -34,11 +32,12 @@ import {SignedMath} from "@openzeppelin/contracts/utils/math/SignedMath.sol";
 ///         Anti-snipe: the fee starts at `MAX_FEE_BIPS` (80%) when the pool is created and falls
 ///         linearly to the base fee over `DYNAMIC_FEE_THRESHOLD`. Swaps of the controller (the
 ///         dev buy inside `deployToken`) always pay the base fee.
-/// @dev Not upgradeable: no proxy, the code and the fee rate parameters (`TOTAL_FEE_BIPS`,
-/// `MAX_FEE_BIPS`, the meme fee bounds) are fixed at deployment. The address is CREATE2-mined to
-/// carry the bit pattern of `getHookPermissions`. A new version is a new hook at a new address:
-/// pools of existing Memes stay on the hook they were created with. The owner can only re-point
-/// the vault and the controller (`setVault`, `setController`); it cannot change any fee rate.
+/// @dev Not upgradeable and ownerless: no proxy, no owner, no admin function. The code, the fee
+/// rate parameters (`TOTAL_FEE_BIPS`, `MAX_FEE_BIPS`, the meme fee bounds), the vault and the
+/// controller are fixed at deployment. Vault and controller are proxies, so their upgrades need
+/// no change here; moving to another vault or controller address takes a new hook. The address
+/// is CREATE2-mined to carry the bit pattern of `getHookPermissions`. A new version is a new hook
+/// at a new address: pools of existing Memes stay on the hook they were created with.
 /// How a fee is split is not the hook's business: it lives in the upgradeable vault.
 ///
 /// Fee flow:
@@ -51,7 +50,7 @@ import {SignedMath} from "@openzeppelin/contracts/utils/math/SignedMath.sol";
 ///    them. The swapper pays the gas. The payout runs inside try/catch: if it fails, the swap still
 ///    succeeds and the fee stays accrued until the next successful payout.
 ///  - `distribute(meme)`: manual fallback that pays out whatever is accrued for `meme`.
-contract HookManager is IHookManager, BaseHook, IUnlockCallback, Ownable2Step {
+contract HookManager is IHookManager, BaseHook, IUnlockCallback {
     using SafeCast for uint256;
     using PoolIdLibrary for PoolKey;
     using SignedMath for int256;
@@ -62,7 +61,7 @@ contract HookManager is IHookManager, BaseHook, IUnlockCallback, Ownable2Step {
     // Constants / immutables
     // ---------------------------------------------------------------------------------------------
 
-    uint64 public constant HOOK_MANAGER_VERSION = 2;
+    uint64 public constant HOOK_MANAGER_VERSION = 3;
 
     uint256 public constant BIPS = 10_000;
     /// @notice Fallback base fee for a Meme the controller never reported, see `baseFeeBips`.
@@ -92,20 +91,21 @@ contract HookManager is IHookManager, BaseHook, IUnlockCallback, Ownable2Step {
     uint256 public constant CONVERSION_QUERY_GAS = 100_000;
 
     Currency private immutable i_pairToken;
+    /// @dev Vault proxy: receives every fee and splits it.
+    address private immutable i_vault;
+    /// @dev GemoonController proxy, the only caller allowed into `onlyController` functions.
+    address private immutable i_controller;
 
     // ---------------------------------------------------------------------------------------------
     // Storage
     // ---------------------------------------------------------------------------------------------
 
-    address public vault;
     /// @notice Fees charged and not yet paid out, per Meme, in `i_pairToken`.
     /// @dev Sum over all memes equals the ERC6909 claims of this hook.
     mapping(address meme => uint256) public accrued;
     /// @notice Initialization time of the first pool of a Meme, set by the hook itself; zero if
     ///         no pool of it was initialized.
     mapping(address meme => uint256) public poolTimestamps;
-    /// @notice GemoonController, the only caller allowed into `onlyController` functions.
-    address public controller;
     /// @notice Base fee of a Meme chosen by its creator, in bips of the swap, zero if the
     ///         controller never reported it. Protocol part included.
     mapping(address meme => uint256) public memeFeeBips;
@@ -115,7 +115,7 @@ contract HookManager is IHookManager, BaseHook, IUnlockCallback, Ownable2Step {
     // ---------------------------------------------------------------------------------------------
 
     modifier onlyController() {
-        if (msg.sender != controller) revert NotController();
+        if (msg.sender != i_controller) revert NotController();
         _;
     }
 
@@ -125,55 +125,33 @@ contract HookManager is IHookManager, BaseHook, IUnlockCallback, Ownable2Step {
 
     /// @param poolManager_       Uniswap V4 PoolManager.
     /// @param pairToken_         Token every pool is paired with and fees are charged in.
-    /// @param owner_      Owner: may re-point vault and controller.
     /// @param vault_      Receives every fee and splits it; must know Memes before their pools.
     /// @param controller_ GemoonController, the only caller of `notifyPoolCreated`.
     /// @param feeBips     `TOTAL_FEE_BIPS`, at most `MAX_FEE_BIPS`.
     constructor(
         IPoolManager poolManager_,
         Currency pairToken_,
-        address owner_,
         address vault_,
         address controller_,
         uint256 feeBips
-    ) BaseHook(poolManager_) Ownable(owner_) {
-        if (address(poolManager_) == address(0)) revert ZeroAddress();
+    ) BaseHook(poolManager_) {
+        if (
+            address(poolManager_) == address(0) ||
+            vault_ == address(0) ||
+            controller_ == address(0)
+        ) revert ZeroAddress();
         if (feeBips > MAX_FEE_BIPS) revert InvalidFeeBips();
 
         i_pairToken = pairToken_;
         TOTAL_FEE_BIPS = feeBips;
 
-        _setVault(vault_);
-        _setController(controller_);
+        i_vault = vault_;
+        i_controller = controller_;
     }
 
     /// @notice Version of this hook contract. Informational only: the hook is not upgradeable.
     function getVersion() public pure returns (uint64) {
         return HOOK_MANAGER_VERSION;
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // Admin
-    // ---------------------------------------------------------------------------------------------
-
-    function setVault(address vault_) external onlyOwner {
-        _setVault(vault_);
-    }
-
-    function setController(address controller_) external onlyOwner {
-        _setController(controller_);
-    }
-
-    function _setVault(address vault_) internal {
-        if (vault_ == address(0)) revert ZeroAddress();
-        vault = vault_;
-        emit VaultUpdated(vault_);
-    }
-
-    function _setController(address controller_) internal {
-        if (controller_ == address(0)) revert ZeroAddress();
-        controller = controller_;
-        emit ControllerUpdated(controller_);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -222,7 +200,7 @@ contract HookManager is IHookManager, BaseHook, IUnlockCallback, Ownable2Step {
         ) revert InvalidPoolPair();
         if (poolKey.fee != 0) revert InvalidPoolFee();
         address meme = _meme(poolKey);
-        if (!IVault(vault).isRegistered(meme)) revert VaultNotRegistered(meme);
+        if (!IVault(i_vault).isRegistered(meme)) revert VaultNotRegistered(meme);
         return IHooks.beforeInitialize.selector;
     }
 
@@ -238,7 +216,7 @@ contract HookManager is IHookManager, BaseHook, IUnlockCallback, Ownable2Step {
         int24
     ) internal override returns (bytes4) {
         address meme = _meme(poolKey);
-        if (sender == controller && poolTimestamps[meme] == 0) {
+        if (sender == i_controller && poolTimestamps[meme] == 0) {
             poolTimestamps[meme] = block.timestamp;
             emit PoolTimestampRecorded(meme, block.timestamp);
         }
@@ -330,7 +308,7 @@ contract HookManager is IHookManager, BaseHook, IUnlockCallback, Ownable2Step {
     /// @return payoutGas Gas to call the payout with.
     function _payoutGas(address meme) internal view returns (uint256 payoutGas) {
         uint256 conversionGas;
-        try IVault(vault).conversionGasRequired{gas: CONVERSION_QUERY_GAS}(meme) returns (
+        try IVault(i_vault).conversionGasRequired{gas: CONVERSION_QUERY_GAS}(meme) returns (
             uint256 gas_
         ) {
             conversionGas = gas_ < MAX_CONVERSION_GAS ? gas_ : MAX_CONVERSION_GAS;
@@ -394,7 +372,7 @@ contract HookManager is IHookManager, BaseHook, IUnlockCallback, Ownable2Step {
         address sender,
         uint256 amount
     ) internal view returns (uint256) {
-        uint256 bips = sender == controller
+        uint256 bips = sender == i_controller
             ? baseFeeBips(meme)
             : feeBipsAt(meme, block.timestamp);
         return (amount * bips) / BIPS;
@@ -418,6 +396,16 @@ contract HookManager is IHookManager, BaseHook, IUnlockCallback, Ownable2Step {
 
     function pairToken() external view returns (Currency) {
         return i_pairToken;
+    }
+
+    /// @notice Vault that receives every fee and splits it, fixed at deployment.
+    function vault() external view returns (address) {
+        return i_vault;
+    }
+
+    /// @notice GemoonController allowed into `onlyController` functions, fixed at deployment.
+    function controller() external view returns (address) {
+        return i_controller;
     }
 
     /// @notice Automatic payout, called by the hook itself at the end of every swap.
@@ -453,7 +441,7 @@ contract HookManager is IHookManager, BaseHook, IUnlockCallback, Ownable2Step {
         uint256 amount = accrued[meme];
         if (amount == 0) return;
 
-        address vault_ = vault;
+        address vault_ = i_vault;
         accrued[meme] = 0;
 
         poolManager.burn(address(this), i_pairToken.toId(), amount);

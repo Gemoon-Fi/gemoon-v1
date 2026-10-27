@@ -143,7 +143,7 @@ contract ReferralsIntegrationTest is Test {
             tokenConfig: TokenConfig({
                 imgUrl: "ipfs://meme",
                 description: "test meme",
-                socialMedia: SocialMedia({farcaster: "", twitterX: "", telegram: "", website: ""}),
+                socialMedia: SocialMedia({farcaster: "", twitter: "", telegram: "", website: ""}),
                 name: "Meme",
                 symbol: "MEME",
                 admins: admins

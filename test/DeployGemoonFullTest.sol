@@ -161,7 +161,7 @@ contract DeployGemoonFullTest is Test {
         DeployGemoon.FullDeployment memory d = _deploy(owner, new DeployGemoon.AssetRow[](0));
 
         assertEq(d.controller.owner(), owner, "controller: immediate");
-        assertEq(d.hook.owner(), owner, "hook: owner from the constructor");
+        assertEq(d.hook.controller(), address(d.controller), "hook: ownerless, controller fixed");
         assertEq(d.vault.pendingOwner(), owner, "vault pending");
         assertEq(d.referrals.pendingOwner(), owner, "referrals pending");
         assertEq(d.adapter.pendingOwner(), owner, "adapter pending");

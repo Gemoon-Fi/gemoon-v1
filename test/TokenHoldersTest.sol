@@ -13,7 +13,7 @@ function _newToken() returns (GemoonToken) {
         TokenConfig({
             imgUrl: "ipfs://meme",
             description: "holders",
-            socialMedia: SocialMedia({farcaster: "", twitterX: "", telegram: "", website: ""}),
+            socialMedia: SocialMedia({farcaster: "", twitter: "", telegram: "", website: ""}),
             name: "Meme",
             symbol: "MEME",
             admins: admins

@@ -31,7 +31,6 @@ contract HookFeeMathTest is Test {
         hook = script.deployHook(
             address(script),
             GemoonDeployBase.HookDeployParams({
-                owner: makeAddr("owner"),
                 poolManager: makeAddr("poolManager"),
                 pairToken: makeAddr("usdg"),
                 vault: makeAddr("vault"),
@@ -198,7 +197,6 @@ contract HookFeeMathTest is Test {
         return script.deployHook(
             address(script),
             GemoonDeployBase.HookDeployParams({
-                owner: makeAddr("owner"),
                 poolManager: makeAddr("poolManager"),
                 pairToken: makeAddr("usdg"),
                 vault: makeAddr("vault"),

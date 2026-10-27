@@ -121,7 +121,7 @@ contract ControllerDeployTokenTest is Test {
             tokenConfig: TokenConfig({
                 imgUrl: "ipfs://meme",
                 description: "test meme",
-                socialMedia: SocialMedia({farcaster: "", twitterX: "", telegram: "", website: ""}),
+                socialMedia: SocialMedia({farcaster: "", twitter: "", telegram: "", website: ""}),
                 name: "Meme",
                 symbol: "MEME",
                 admins: admins
@@ -316,11 +316,23 @@ contract ControllerDeployTokenTest is Test {
         assertEq(hook.poolTimestamps(b), t1 + gap, "second meme");
     }
 
-    /// @dev The hook accepts the notification only from its controller, so a hook wired to
+    /// @dev The hook accepts the notification only from its controller, so a hook built for
     /// another controller blocks `deployToken` entirely instead of silently skipping it.
     function test_DeployToken_HookControllerIsOther_Revert() external {
-        vm.prank(address(script));
-        hook.setController(makeAddr("otherController"));
+        HookManager other = script.deployHook(
+            address(script),
+            GemoonDeployBase.HookDeployParams({
+                poolManager: address(poolManager),
+                pairToken: address(usdg),
+                vault: address(vault),
+                controller: makeAddr("otherController"),
+                feeBips: 125
+            })
+        );
+        vm.startPrank(address(script));
+        vault.setHook(address(other));
+        controller.setHook(address(other));
+        vm.stopPrank();
 
         vm.prank(creator);
         vm.expectRevert(IHookManager.NotController.selector);
@@ -411,7 +423,6 @@ contract ControllerDeployTokenTest is Test {
         next = script.deployHook(
             address(script),
             GemoonDeployBase.HookDeployParams({
-                owner: address(script),
                 poolManager: address(poolManager),
                 pairToken: address(usdg),
                 vault: address(vault),
@@ -1285,14 +1296,13 @@ contract ControllerDeployTokenTest is Test {
         assertTrue(ok, "swap not blocked by the vault answer");
     }
 
-    /// @dev The audit scenario in full: the owner points the hook at a vault that burns every bit of
-    /// gas it gets, in the gas view and in the payout. The hook bounds both calls, so a swap with a
-    /// normal limit still trades; the payout fails inside its try/catch and the fee stays accrued.
+    /// @dev The audit scenario in full: the vault (upgradeable, so its code can change under the
+    /// hook) turns into one that burns every bit of gas it gets, in the gas view and in the payout.
+    /// The hook bounds both calls, so a swap with a normal limit still trades; the payout fails
+    /// inside its try/catch and the fee stays accrued.
     function test_Swap_VaultBurnsAllGas_SwapStillSucceeds() external {
         address token = _memeAboutToConvert();
-        address burner = address(new GasBurningVault());
-        vm.prank(hook.owner());
-        hook.setVault(burner);
+        vm.etch(address(vault), address(new GasBurningVault()).code);
         uint256 accruedBefore = hook.pendingFees(token);
 
         vm.recordLogs();
