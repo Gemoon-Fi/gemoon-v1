@@ -34,10 +34,17 @@ contract GemoonToken is
     /// @dev Swap fee split fixed at deployment.
     FeeInfo private _feeInfo;
 
+    /// @param config           Metadata and admins.
+    /// @param creator_         Reported by `creator()`: the caller of `GemoonController.deployToken`.
+    /// @param feeInfo_         Swap fee split, its parts must add up to the total.
+    /// @param supplyRecipient_ Receives the whole supply: the controller, which puts it into the
+    ///                         pool position. Explicit, because the token is created by a
+    ///                         TokenDeployer, not by the controller itself.
     constructor(
         TokenConfig memory config,
         address creator_,
-        FeeInfo memory feeInfo_
+        FeeInfo memory feeInfo_,
+        address supplyRecipient_
     )
         ERC20(config.name, config.symbol)
         ERC20Permit(config.name)
@@ -54,8 +61,8 @@ contract GemoonToken is
         _creator = creator_;
         _socialMedia = config.socialMedia;
 
-        /// @notice Minting the maximum supply of tokens to the deployer.
-        _mint(msg.sender, 1_000_000_000 * 10 ** uint256(_decimals));
+        // The whole fixed supply, there is no other mint.
+        _mint(supplyRecipient_, 1_000_000_000 * 10 ** uint256(_decimals));
     }
 
     /// @notice Number of addresses holding a non-zero balance of this token.

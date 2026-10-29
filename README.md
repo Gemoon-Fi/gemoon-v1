@@ -8,44 +8,51 @@
 
 | Контракт | Файл | Роль |
 |---|---|---|
-| GemoonController | `src/contracts/Gemoon.sol` | Точка входа: деплой токена, пула и позиции. Прокси, OwnableUpgradeable. |
+| GemoonController | `src/contracts/Gemoon.sol` | Точка входа: деплой мема — токен (через TokenDeployer), пул и позиция. Прокси, OwnableUpgradeable. |
+| TokenDeployer | `src/contracts/TokenDeployer.sol`, интерфейс `ITokenDeployer.sol` | Создаёт токен нового мема по вызову контроллера и возвращает его адрес, больше ничего: вся эмиссия минтится контроллеру. Вызывать `deployToken` может только контроллер, заданный в конструкторе. Не прокси, без владельца и состояния. Новый код токенов — новый TokenDeployer и `controller.setTokenDeployer`, без апгрейда контроллера; уже созданные мемы остаются со своим кодом. |
 | HookManager | `src/contracts/hooks/HookManager.sol`, интерфейс `IHookManager.sol` | Хук Uniswap V4: комиссия в USDG на каждом свопе (1%..5% по выбору создателя, первые 15 секунд пула от 80% линейно вниз), вся комиссия уходит в волт, делить её — дело волта. Не прокси (не обновляемый), без владельца: волт и контроллер заданы в конструкторе, админ-функций нет. Адрес майнится под биты разрешений. |
 | Vault | `src/contracts/vault/Vault.sol` | Один контракт, логический волт на каждый мем: приём всей комиссии от хука и её разбивка (доля протокола `protocolShareBps` → `protocolRecipient`, остальное создателю и стейкерам), стейкинг, конвертация, выплаты. Прокси, Ownable2Step. |
 | GmoonReferrals | `src/contracts/Referrals.sol`, интерфейс `IReferrals.sol` | Получатель протокольной доли (`Vault.protocolRecipient`): реферальные коды, привязка пользователя к рефереру, `refShareBips` протокольной комиссии мемов рефералов — рефереру, остальное протоколу. Прокси, Ownable2Step, Pausable (только выплаты рефералам). |
 | UniswapV3SwapAdapter | `src/contracts/adapters/UniswapV3SwapAdapter.sol` | Меняет USDG волта на наградные активы в пулах Uniswap V3, минимальный выход считает сам по TWAP пула. Ownable2Step, не прокси: волт меняет адаптер через `setSwapAdapter`. |
-| GemoonToken | `src/contracts/Token.sol` | ERC20 мема с метаданными и админами, ERC-1046 `tokenURI` (base64 JSON, собирается ончейн из данных токена; админ может задать свой URI через `setTokenURI`) и ERC-165, счётчик холдеров `totalHolders`, распределение комиссии `feeInfo` (общая, создателю, в волт, протоколу; фиксируется при деплое и попадает в `tokenURI`). Не обновляемый. |
+| GemoonToken | `src/contracts/Token.sol` | ERC20 мема с метаданными и админами, ERC-1046 `tokenURI` (base64 JSON, собирается ончейн из данных токена; админ может задать свой URI через `setTokenURI`) и ERC-165, счётчик холдеров `totalHolders`, распределение комиссии `feeInfo` (общая, создателю, в волт, протоколу; фиксируется при деплое и попадает в `tokenURI`). Создаётся TokenDeployer'ом, вся эмиссия — получателю из конструктора (контроллеру). Не обновляемый. |
+| ProjectToken | `src/contracts/ProjectToken.sol`, скрипт `script/DeployProjectToken.s.sol` | Отдельный токен проекта вне контроллера: копия GemoonToken без `feeInfo` и админов, `tokenURI` — простая ссылка (get/set), менять ссылку, картинку и описание может владелец (Ownable2Step, кошелёк деплоя). Весь supply (1 млрд) минтится деплоеру. Скрипт создаёт пул Uniswap V4 к USDG без хука (комиссия `PROJECT_POOL_FEE`) и кладёт весь supply в одностороннюю позицию, NFT позиции — деплоеру. Не обновляемый. Robinhood: `0xCef233054553A3e27d23f19D3DfBA1A86eC84C62`. |
 | PositionDeployer | `src/contracts/utils/PositionDeployer.sol` | Внутренняя библиотека, инлайнится в контроллер: минт позиции через PositionManager и Permit2. Отдельного адреса нет. |
-| Deployer, Ticks | `src/contracts/Deployer.sol`, `src/contracts/utils/Ticks.sol` | Внешние библиотеки, линкуются при деплое. |
+| Ticks, PriceMath | `src/contracts/utils/Ticks.sol`, `src/contracts/utils/Price.sol` | Внешние библиотеки, линкуются при деплое. |
 | GemoonLens | `src/contracts/lens/GemoonLens.sol`, интерфейс `IGemoonLens.sol` | Read-only батч-чтения для фронтенда: всё о списке мемов одним `eth_call`. Без состояния, владельца и средств, только `view`. Не прокси: при смене адресов протокола деплоится заново (CREATE2, `make deploy-lens`). |
 
 Все ключевые контракты стоят за `TransparentUpgradeableProxy`, у каждого свой `ProxyAdmin`.
 Исключение GemoonLens: он ничего не хранит, и обновлять его нечего, новая версия — это новый деплой.
+TokenDeployer тоже без прокси: его не обновляют, а заменяют (`setTokenDeployer`), чтобы код токенов
+новых мемов менялся без апгрейда контроллера.
 Pair-токен один на весь протокол: контроллер, хук и волт рассчитаны на одну и ту же USDG.
 
 ## Флоу взаимодействия
 
 ### Развёртывание, один раз
 
-`DeployGemoon` поднимает всё в одном прогоне в порядке Vault, GemoonController, GmoonReferrals,
-HookManager, UniswapV3SwapAdapter. Хук получает адреса волта, контроллера и рефералов (получатель
+`DeployGemoon` поднимает всё в одном прогоне в порядке Vault, GemoonController, TokenDeployer,
+GmoonReferrals, HookManager, UniswapV3SwapAdapter. Хук получает адреса волта, контроллера и рефералов (получатель
 протокольной доли) в `initialize`. Контроллер — единственный, кто может звать
 `onlyController`-функции хука (`notifyPoolCreated`). Адреса волта и контроллера хук получает в
 конструкторе и больше не меняет: владельца у хука нет.
-Контроллер получает хук, волт и PositionManager сеттерами,
+Контроллер получает хук, волт, TokenDeployer и PositionManager сеттерами,
 волт получает хук, контроллер и адаптер. Активы из `DEPLOY_ASSETS_FILE` (robinhood-активы)
 разрешаются в волте и получают маршрут на адаптере в том же прогоне, если их пул USDG/актив
 есть в фабрике и отдаёт TWAP; остальные пропускаются с причиной в отчёте. В конце владение уходит
 на `GEMOON_OWNER`; волту, рефералам и адаптеру нужен отдельный `acceptOwnership`.
 
-Полуразвёрнутое состояние безопасно: контроллер не деплоит токены без хука, волта и
+Полуразвёрнутое состояние безопасно: контроллер не деплоит токены без хука, волта, TokenDeployer и
 PositionManager, хук не пускает пулы незарегистрированных мемов, волт принимает комиссии только от
 своего хука.
 
 ### Жизненный цикл мема
 
 1. **Создание.** Создатель зовёт `GemoonController.deployToken(config)` с конфигом токена,
-   адресами наград и набором наградных активов с весами. Контроллер минтит токен себе, добавляет
-   себя и вызывающего в админы токена, регистрирует мем в волте, инициализирует пул Meme/USDG с
+   адресами наград и набором наградных активов с весами. Контроллер добавляет себя и вызывающего
+   в админы токена и создаёт токен через `tokenDeployer`: TokenDeployer деплоит токен, вся эмиссия
+   минтится контроллеру, `creator()` токена — вызывающий `deployToken`. Контроллер проверяет, что
+   получил ровно всю эмиссию (`INITIAL_SUPPLY_X18`), иначе `TokenSupplyMismatch`. Дальше он
+   регистрирует мем в волте, инициализирует пул Meme/USDG с
    хуком и нулевым LP fee и минтит всю эмиссию в одностороннюю позицию выше стартовой цены.
    NFT позиции остаётся у контроллера. События: `TokenCreated`, `PoolCreated`, `PositionCreated`.
    Если в `config.devBuy.memeAmount` не ноль, контроллер сразу после создания пула открывает
@@ -178,7 +185,8 @@ PositionManager, хук не пускает пулы незарегистрир�
 ### Администрирование
 
 - **Токен.** Админы меняют картинку и описание, состав админов меняется через
-  `GemoonController.changeAdmin`.
+  `GemoonController.changeAdmin`. Вызывать его может только админ этого мема: сам мем видит
+  вызывающим контроллер, тоже своего админа, поэтому вызывающего проверяет контроллер.
 - **Волт.** Владелец управляет allowlist активов, порогом конверсии, swap adapter, паузой, а
   также разбивкой комиссии: долей протокола (`setProtocolShare`, 0..100% комиссии, сразу для всех
   мемов) и её получателем (`setProtocolRecipient`). Владелец волта по итогам `TransferToGovernance`
@@ -192,7 +200,18 @@ PositionManager, хук не пускает пулы незарегистрир�
   в конструкторе и не меняются; разбивка комиссии живёт в волте. Волт и контроллер — прокси, их
   апгрейды хук не затрагивают; другой адрес волта или контроллера требует нового хука.
 - **Контроллер.** Владелец меняет хук, волт, PositionManager с Permit2, контракт рефералов
-  (`setReferrals`, ноль выключает регистрацию) и выводит средства с самого контроллера.
+  (`setReferrals`, ноль выключает регистрацию), TokenDeployer (`setTokenDeployer`) и выводит
+  средства с самого контроллера.
+- **TokenDeployer.** Владельца нет, админ-функций нет: контроллер задан в конструкторе, код токена
+  зашит в байткод. Код токенов новых мемов меняется заменой деплоера: `make deploy-token-deployer`
+  (скрипт `DeployTokenDeployer`) деплоит новый TokenDeployer с кодом токена текущего коммита и, если
+  broadcaster владеет контроллером, сразу зовёт `setTokenDeployer`; иначе печатает вызов для
+  владельца (после `TransferToGovernance` — операция таймлока). Контроллер при этом не обновляется,
+  уже созданные мемы не меняются. `setTokenDeployer` принимает только деплоер, привязанный к этому
+  контроллеру (`TokenDeployerControllerMismatch`). Новый код токена — доверенный: контроллер
+  проверяет только, что вся эмиссия пришла ему, всё остальное (например, отсутствие доп. минта)
+  ревьюится перед `setTokenDeployer` так же, как апгрейд контроллера. Конструктор токена нового
+  кода должен минтить всю эмиссию `INITIAL_SUPPLY_X18` вызывающему `deployToken` (контроллеру).
 - **Рефералы.** Владелец меняет `refShareBips` (не больше 100%), волт (`setVault`), хук, контроллер, ставит выплаты
   рефералам на паузу, выводит протокольную часть и спасает чужие токены (`rescueERC20`, кроме
   pair-токена).
@@ -353,6 +372,7 @@ Makefile и скрипты из `tools/scripts` падают с ошибкой. 
 | `VAULT_SWAP_ADAPTER`, `SWAP_ADAPTER`, `LENS_ADDRESS` | Заполняет `deploy.sh`. |
 | `GEMOON_OWNER`, `GEMOON_PROXY_ADMIN_OWNER` | Итоговый владелец контрактов и владелец ProxyAdmin. По умолчанию деплоер. |
 | `*_PROXY_ADDRESS`, `*_PROXY_ADMIN_ADDRESS` | Заполняются из логов деплоя, нужны апгрейдам и проверке. |
+| `TOKEN_DEPLOYER_ADDRESS` | Текущий TokenDeployer контроллера. Заполняет `deploy.sh`; после `make deploy-token-deployer` вписать напечатанный `TOKEN DEPLOYER`. Нужен `verify-token-deployer` и contracts-map, сам контроллер берёт деплоер из своего storage. |
 
 ```sh
 # Все цели ниже, кроме тестов и сборки, запускаются с ENVIRONMENT=dev|prod, например make verify-wiring ENVIRONMENT=dev
@@ -361,6 +381,7 @@ make deploy-gemoon            # то же без записи адресов и 
 make verify-wiring            # read-only проверка, что контракты указывают друг на друга
 make upgrade-vault-proxy      # новая имплементация волта
 make upgrade-controller-proxy # новая имплементация контроллера
+make deploy-token-deployer    # новый код токенов для новых мемов: TokenDeployer + setTokenDeployer, контроллер не трогается
 make deploy-vault             # отдельный волт, если нужно заменить существующий
 make deploy-swap-adapter      # UniswapV3SwapAdapter для существующего волта
 make deploy-referrals         # GmoonReferrals за прокси (USDG_ADDRESS, CONTROLLER_PROXY_ADDRESS, HOOK_ADDRESS)
@@ -439,13 +460,26 @@ make contracts-map [ARGS="--depth 2 --exclude allowedAssets"]  # read-only: гр
 `make set-protocol-share`. Иначе доля протокола остаётся 0, пока старые пулы торгуются.
 
 После деплоя `GEMOON_OWNER`, если он не деплоер, зовёт `acceptOwnership` у Vault, GmoonReferrals
-и UniswapV3SwapAdapter. Хук и контроллер принадлежат ему сразу. Отчёт деплоя
+и UniswapV3SwapAdapter. Контроллер принадлежит ему сразу, у хука и TokenDeployer владельца нет. Отчёт деплоя
 (`deploy-logs/deploy-<время>-report.md`) перечисляет адреса, назначение контрактов, связку,
 владельцев, результат по каждому активу и оставшиеся шаги. Подробно — `docs/DEPLOY.md`.
+
+Токен проекта (`ProjectToken`) деплоится отдельно, без контроллера:
+`forge script script/DeployProjectToken.s.sol:DeployProjectToken --rpc-url $RPC --private-key $PRIVATE_KEY --broadcast`
+с переменными `PROJECT_TOKEN_NAME`, `PROJECT_TOKEN_SYMBOL`, `PROJECT_TOKEN_URI` (необязательно), `PROJECT_POOL_FEE`
+(по умолчанию 10000 = 1%), `PROJECT_TOKENS_PER_PAIR` (по умолчанию 50 000 токенов за 1 USDG, капа $20k), плюс
+`USDG_ADDRESS`, `POOL_MANAGER`, `POSITION_MANAGER`, `PERMIT2` из env-файла.
 
 Хук деплоится через CREATE2 без прокси: адрес контракта должен нести биты разрешений.
 Скрипт сам подбирает соль и проверяет результат. В сети должен существовать детерминированный
 CREATE2-деплоер `0x4e59b44847b379578588920cA78FbF26c0B4956C`.
+
+**Новый код токенов без передеплоя контроллера.** Правка `Token.sol` (или новый контракт токена в
+`TokenDeployer`) → `make simulate-token-deployer ENVIRONMENT=…` → `make deploy-token-deployer ENVIRONMENT=…`
+от владельца контроллера → напечатанный `TOKEN DEPLOYER` в `TOKEN_DEPLOYER_ADDRESS` → `make verify-wiring`
+и `make -f verify.mk verify-token-deployer`. Мемы, созданные после `setTokenDeployer`, получают новый код,
+прежние остаются со своим. Если контроллер принадлежит таймлоку, скрипт только деплоит TokenDeployer и
+печатает calldata `setTokenDeployer` для Safe. Подробно — `docs/DEPLOY.md`, раздел 4.
 
 ## Тесты
 
@@ -457,10 +491,16 @@ forge test          # всё вместе; форк-тесты запустят�
 
 - `test/VaultTest.sol`, `test/VaultUpgradeTest.sol`: волт, включая автоконверсию по порогу,
   кулдаун, инварианты и апгрейд.
+- `test/VaultPrecisionTest.sol`: округление доли маленького стейка рядом с китами (800 млн /
+  100 млн / 1 мем) на параметрах продакшена, fuzz на границы потерь от округления.
 - `test/UniswapV3SwapAdapterTest.sol`: адаптер против мок-пула с настраиваемыми TWAP и спотом,
   fuzz на границу допуска, интеграция с настоящим волтом.
 - `test/DeployGemoonTest.sol`: логика скрипта деплоя, связка, владение, биты адреса хука,
-  доступ `onlyController` к хуку.
+  доступ `onlyController` к хуку, TokenDeployer в связке и замена деплоера скриптом
+  `DeployTokenDeployer` (от владельца контроллера и от постороннего).
+- `test/TokenDeployerTest.sol`: TokenDeployer сам по себе — вызывать может только свой контроллер
+  (fuzz по вызывающему), вся эмиссия уходит вызывающему, токен несёт переданные метаданные,
+  создателя и `feeInfo` (fuzz).
 - `test/DeployGemoonFullTest.sol`: полный деплой со всеми пятью контрактами, разбор файла
   активов, allowlist и маршруты с пропуском неконвертируемых активов (fuzz на инвариант
   «разрешён ⇔ есть маршрут»), владение, отчёт, `run()` из окружения.
@@ -468,7 +508,10 @@ forge test          # всё вместе; форк-тесты запустят�
   PositionManager и Permit2 из `lib/`, деплой через скрипт, `deployToken`, свопы, путь комиссии
   до протокола и волта, fuzz на инвариант «протокол + волт + начислено = вся взятая комиссия»,
   свопы в окне повышенной комиссии, dev buy: лимит, слиппедж, базовая ставка, fuzz на точный
-  выход, сохранение комиссии и монотонность стоимости.
+  выход, сохранение комиссии и монотонность стоимости. TokenDeployer: `setTokenDeployer` (доступ,
+  чужой контроллер), смена кода токенов новых мемов без апгрейда контроллера, fuzz на инвариант
+  «вся эмиссия в позиции или revert `TokenSupplyMismatch`» при любом коде токена. `changeAdmin`:
+  только админ мема, fuzz на инвариант «не-админ не меняет список админов».
 - `test/HookFeeMath.sol`: кривая комиссии хука, границы окна, fuzz на диапазон и монотонность.
 - `test/fork/ControllerDevnetForkTest.sol`: то же против девнета, anvil-форк Robinhood Chain с
   его Uniswap V4, chain id 1488 (адреса из `env/dev.mk`). Ничего не бродкастит, форк живёт внутри прогона. `DEVNET_BLOCK`
@@ -506,6 +549,12 @@ forge test          # всё вместе; форк-тесты запустят�
 - **`ProxyGemoonControllerUpgrade` зовёт `reinitialize`** под `reinitializer(GEMOON_VERSION)`, а
   версия равна 1, которую уже занял `initialize`. Апгрейд с вызовом упадёт, пока версия не
   поднята. Апгрейд волта пропускает вызов, если версия не изменилась.
+- **Контроллер, обновлённый с версии без TokenDeployer** (до вынесения деплоера в отдельный
+  контракт токен создавала внешняя библиотека `Deployer` прямо из контроллера), после апгрейда не
+  имеет `tokenDeployer`: `deployToken` падает с `TokenDeployerNotSet`, пока владелец не выполнит
+  `make deploy-token-deployer`. `make verify-wiring` до этого тоже падает. Мемы старой версии —
+  CREATE самого контроллера, новые — CREATE TokenDeployer: искать мемы по nonce контроллера больше
+  нельзя, источник — событие `TokenCreated`.
 - **`ProxyGemoonControllerUpgrade` берёт pair-токен из `USDG_ADDRESS`** и до отправки сверяет его
   с `pairToken()` текущего хука: `reinitialize` перезаписывает pair-токен контроллера.
 - **HookManager больше не за прокси (версия 2):** `initialize`/`reinitialize`, `ProxyHookUpgrade`,
@@ -528,3 +577,9 @@ forge test          # всё вместе; форк-тесты запустят�
   Владелец заполняет его повторным `setAssetAllowed(asset, true)` по каждому уже разрешённому
   активу, вызов идемпотентный.
 - **Мёртвый слот `_deployStrategies`** в контроллере сохранён ради storage layout прокси.
+- **Админы из `tokenConfig.admins` не попадают в мем.** `deployToken` резервирует под них места,
+  но не заполняет их: у мема только два неудаляемых админа, контроллер и вызывающий (README-ABI и
+  NatSpec `deployToken` описывают иначе), поэтому заменять через `changeAdmin` пока некого.
+  Контроллеры до проверки `NotTokenAdmin` пропускали `changeAdmin` от кого угодно: мем видит
+  вызывающим контроллер, а тот его админ. Чинить копирование админов можно только вместе с
+  апгрейдом контроллера на версию с этой проверкой.

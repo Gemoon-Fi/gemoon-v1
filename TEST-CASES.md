@@ -29,6 +29,35 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | `test_SetPositionManager_ZeroAddress_Revert` | Нулевые адреса в `setPositionManager` | Нельзя сломать связку нулём | revert `InvalidAddress` для обоих параметров |
 | `test_SetPositionManager_NotOwner_Revert` | `setPositionManager` не от владельца | Доступ только владельцу | revert |
 
+### Деплоер токенов (TokenDeployer)
+
+Токен мема создаёт отдельный контракт `TokenDeployer`, контроллер хранит его адрес (`tokenDeployer`) и меняет его `setTokenDeployer`. Моки: `TokenDeployerV2Mock` (новый код токена — `GemoonTokenV2Mock` с `tokenVersion() = 2`), `SplitSupplyTokenDeployer` (ERC20, минтящий заданные суммы контроллеру и третьему адресу).
+
+| Тест | Что проверяет | Инварианты | Ожидаемый результат |
+|---|---|---|---|
+| `test_DeployToken_TokenCreatedByTokenDeployer_CreatorIsCaller` | Мем, который создаёт не `creatorAddress` из конфига, а другой адрес (трейдер) | Токен — CREATE текущего TokenDeployer; `creator()` токена — вызывающий `deployToken`; контроллер и вызывающий — админы; деплоеру ничего не остаётся | Адрес = `computeCreateAddress(tokenDeployer, nonce)`, `creator()` = трейдер, создатель в волте = `creatorAddress`, оба админа, баланс деплоера 0 |
+| `test_DeployToken_TokenDeployerNotSet_Revert` | Контроллер с хуком, волтом и PositionManager, но без TokenDeployer | Деплой невозможен в полунастроенном состоянии | revert `TokenDeployerNotSet` |
+| `test_SetTokenDeployer_SetsAndEmits` | Замена деплоера владельцем | Контроллер использует последний заданный деплоер | Событие `TokenDeployerUpdated(next)`, `tokenDeployer()` = next |
+| `test_SetTokenDeployer_ZeroAddress_Revert` | Нулевой адрес | Нельзя сломать связку нулём | revert `InvalidAddress` |
+| `test_SetTokenDeployer_DeployerOfOtherController_Revert` | Деплоер, привязанный к другому контроллеру | Контроллер принимает только деплоер, который обслуживает именно его (иначе каждый `deployToken` падал бы) | revert `TokenDeployerControllerMismatch(other, controller)` |
+| `test_SetTokenDeployer_NoCode_Revert` | Адрес без кода | В сеттер нельзя передать не-деплоер | revert |
+| `testFuzz_SetTokenDeployer_NotOwner_Revert` (fuzz) | `setTokenDeployer` от любого адреса, кроме владельца | Код токенов новых мемов выбирает только владелец | revert, `tokenDeployer()` не изменился |
+| `test_SetTokenDeployer_NewTokenCode_NewMemesOnlyControllerUnchanged` | Мем → смена деплоера на версию с новым кодом токена → ещё мем | Новый код токенов без апгрейда контроллера; уже созданный мем не меняется; оба мема полноценные | Слот имплементации прокси тот же; у нового мема `tokenVersion() = 2`, у старого такой функции нет; у обоих supply 1 млрд, у контроллера < 1 токена пыли, волт зарегистрирован, после двух покупок `pendingFees` = 0 и волт получил свою часть |
+| `test_DeployToken_TokenDeployerKeepsSupply_Revert` | Код токена минтит всю эмиссию самому деплоеру | Мем не создаётся, если вся эмиссия не у контроллера | revert `TokenSupplyMismatch(1 млрд, 0)` |
+| `testFuzz_DeployToken_AnySupplySplit_WholeSupplyInPositionOrRevert` (fuzz) | Любой код токена: ERC20, минтящий контроллеру 0..2 млрд и третьему адресу 0..1 млрд (в части прогонов ровно вся эмиссия контроллеру) | Мем создаётся ⇔ у контроллера ровно вся эмиссия (1 млрд) и других держателей нет; тогда вся она в позиции. Подходит любой ERC20 с такой эмиссией | Иначе revert `TokenSupplyMismatch(всего, у контроллера)`; при успехе supply 1 млрд, у контроллера < 1 токена пыли, позиция у контроллера с ликвидностью > 0 |
+
+### Админы мема (`changeAdmin`)
+
+Мем видит вызывающим контроллер, а контроллер — его неудаляемый админ, поэтому вызывающего `changeAdmin` проверяет сам контроллер. Мем с заменяемым админом создаётся в тесте напрямую (`_memeWithRemovableAdmin`: заменяемый админ, контроллер, создатель): у мемов из `deployToken` заменяемых админов нет.
+
+| Тест | Что проверяет | Инварианты | Ожидаемый результат |
+|---|---|---|---|
+| `test_ChangeAdmin_NotTokenAdmin_Revert` | Посторонний через контроллер заменяет заменяемого админа мема на себя (регрессия: проверка самого мема видит контроллер и всегда проходит) | Админов мема меняет только его админ, контроллер не одалживает свои права | revert `NotTokenAdmin(token, посторонний)`, старый админ на месте, посторонний не админ |
+| `testFuzz_ChangeAdmin_AnyNonAdmin_Revert` (fuzz) | `changeAdmin` от любого адреса, не являющегося админом мема (кроме ProxyAdmin контроллера), с любым новым админом | Не-админ ничего не меняет в списке админов | revert `NotTokenAdmin(token, caller)`, `getAdmins()` не изменился |
+| `test_ChangeAdmin_ByTokenAdmin_ReplacesRemovableAdmin` | Создатель (неудаляемый админ) заменяет заменяемого админа | Админ мема меняет заменяемого админа через контроллер | Старый адрес больше не админ, новый — админ на том же месте, `removable` остался `true` |
+| `test_ChangeAdmin_ByRemovableAdminItself_HandsOverSeat` | Заменяемый админ передаёт своё место другому адресу | Заменяемый админ может заменить сам себя | Старый адрес больше не админ, новый — админ |
+| `test_ChangeAdmin_DeployedMeme_ControllerAndCallerNotRemovable_Revert` | Мем из `deployToken`: вызвавший его адрес пытается заменить контроллер и себя | Контроллер и вызвавший `deployToken` остаются админами навсегда | Оба вызова revert `Admin is not removable!`, оба по-прежнему админы, новый адрес не админ |
+
 ### Путь комиссии
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
@@ -121,11 +150,11 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 
 ## test/DeployGemoonFullTest.sol
 
-Полный деплой `DeployGemoon.deployFull` / `run`: Vault, GemoonController, GmoonReferrals, HookManager, UniswapV3SwapAdapter, наградные активы с маршрутами, владение, отчёт. Uniswap V3 — моки `MockV3Factory` / `MockV3Pool` (fee tier 3000, история TWAP включается флагом), окно 600 с, допуск 100 bps.
+Полный деплой `DeployGemoon.deployFull` / `run`: Vault, GemoonController с TokenDeployer, GmoonReferrals, HookManager, UniswapV3SwapAdapter, наградные активы с маршрутами, владение, отчёт. Uniswap V3 — моки `MockV3Factory` / `MockV3Pool` (fee tier 3000, история TWAP включается флагом), окно 600 с, допуск 100 bps.
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
-| `test_DeployFull_Wiring_AllContractsPointAtEachOther` | Связка всех пяти контрактов | Каждый указывает на нужных соседей, рефералы — получатель протокольной доли | `checkWiring`, `checkReferralsWiring`, `checkAdapterWiring` проходят; `vault.protocolRecipient = referrals`, `referrals.vault = vault`, `vault.protocolShareBps = 2500`, `vault.swapAdapter = adapter`, параметры адаптера и рефералов из params |
+| `test_DeployFull_Wiring_AllContractsPointAtEachOther` | Связка всех пяти контрактов и TokenDeployer | Каждый указывает на нужных соседей, рефералы — получатель протокольной доли, TokenDeployer привязан к контроллеру | `checkWiring`, `checkTokenDeployerWiring`, `checkReferralsWiring`, `checkAdapterWiring` проходят; `tokenDeployer.controller = controller`, `vault.protocolRecipient = referrals`, `referrals.vault = vault`, `vault.protocolShareBps = 2500`, `vault.swapAdapter = adapter`, параметры адаптера и рефералов из params |
 | `test_DeployFull_Ownership_TwoStepPendingUntilAccepted` | Передача владения при `owner ≠ deployer` | Ownable2Step не отдаёт владение без accept; ProxyAdmin у `proxyAdminOwner` | Контроллер сразу у owner; у хука владельца нет, контроллер зашит; vault, referrals, adapter — pending до `acceptOwnership`, после — у owner; ProxyAdmin vault, controller, referrals у `proxyAdminOwner`; у хука ProxyAdmin нет |
 | `test_DeployFull_OwnerIsDeployer_NothingPending` | Владелец = деплоер | Нет лишних pending-передач | Все контракты у деплоера, `pendingOwner = 0` |
 | `test_DeployFull_RoutableAssets_AllowedAndRouted` | Активы с фабричным пулом и историей TWAP | Разрешён ⇔ есть маршрут на пул из файла | Статус `Routed`, актив в allowlist, маршрут: пул, fee 3000, допуск 100; allowlist = 2 |
@@ -137,8 +166,8 @@ End-to-end в процессе теста: настоящие PoolManager, Posit
 | `test_ParseAssets_Csv_SkipsHeaderAndBlankLines` | Разбор CSV с `\r\n`, пробелами, пустой строкой и пустой колонкой пула | Заголовок и пустые строки не дают строк | 2 строки, тикеры и адреса без пробелов, пустой пул = 0 |
 | `test_ParseAssets_RowWithoutAddress_Revert` | Строка без колонки адреса | Битый файл не проходит молча | revert `InvalidAssetRow(2)` |
 | `test_ParseAssets_RepoAssetFile_AllRowsHaveAssetAndPool` | Реальный `tools/scripts/robinhood-assets.csv` | Файл в репозитории разбирается целиком | Все строки с тикером, адресом актива и пула |
-| `test_BuildReport_ListsContractsOwnershipAndAssets` | Отчёт деплоя | В отчёте есть всё, что нужно оператору | Адреса пяти контрактов, строка актива, причина пропуска, to-do `acceptOwnership`, итог «Allowed: 1, skipped: 1» |
-| `test_Run_FromEnv_DeploysWiresAndWritesReport` | `run()` из env, активы из файла, отчёт в файл | Пустые env-переменные = значения по умолчанию | Связка проходит; комиссия хука 300, доля протокола 2500, реферера 2500, окно 600, допуск 100; актив из файла и USDG из `VAULT_ALLOWED_ASSETS` разрешены; ProxyAdmin у `GEMOON_OWNER`; отчёт записан и содержит адаптер |
+| `test_BuildReport_ListsContractsOwnershipAndAssets` | Отчёт деплоя | В отчёте есть всё, что нужно оператору | Адреса пяти контрактов и TokenDeployer, строка актива, причина пропуска, to-do `acceptOwnership`, итог «Allowed: 1, skipped: 1» |
+| `test_Run_FromEnv_DeploysWiresAndWritesReport` | `run()` из env, активы из файла, отчёт в файл | Пустые env-переменные = значения по умолчанию | Связка (включая TokenDeployer) проходит; комиссия хука 300, доля протокола 2500, реферера 2500, окно 600, допуск 100; актив из файла и USDG из `VAULT_ALLOWED_ASSETS` разрешены; ProxyAdmin у `GEMOON_OWNER`; отчёт записан и содержит адаптер |
 
 ## test/fork/ControllerDevnetForkTest.sol
 
@@ -224,7 +253,7 @@ End-to-end в процессе теста: настоящие PoolManager/Positi
 
 ## test/fork/GemoonLensDevnetForkTest.sol
 
-Девнет: Anvil-форк Robinhood (chain id 1488) с развёрнутым протоколом, адреса из ТЗ. Lens деплоится внутри форка, ничего не отправляется. Мемы — последние 70 CREATE контроллера. Без `DEVNET_RPC` или на другой сети пропускается.
+Девнет: Anvil-форк Robinhood (chain id 1488) с развёрнутым протоколом, адреса из ТЗ. Lens деплоится внутри форка, ничего не отправляется. Мемы — последние 70 CREATE текущего TokenDeployer контроллера, затем самого контроллера (мемы версии до TokenDeployer); контроллер без `tokenDeployer()` просматривается только по своему nonce. Без `DEVNET_RPC` или на другой сети пропускается.
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
@@ -511,8 +540,24 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 | `invariant_CreatorShare_Immutable` | Доля создателя после любой последовательности действий. | `creatorShareBps` не меняется после регистрации | `creatorShareBpsOf(meme)` = 1000 |
 | `invariant_Balances_CoverAccounted` | Балансы хранилища против учёта. | Баланс ≥ учтённого; баланс MEME = `totalStaked` | `usdg ≥ accounted`, `meme ≥ accounted`, `meme == totalStaked` |
 | `invariant_Claimable_NeverExceedsNotified` | pending + выплаченное + начисленное (стейкеры + создатель). | Сумма наград ≤ пришедшей комиссии за вычетом доли протокола | ≤ `ghostNotified` |
-| `invariant_Accounted_CoversClaimable` | Все обязательства против учтённого USDG. | Учтённое покрывает все долги | pending + earned + creatorAccrued ≤ `accounted(usdg)` || `invariant_ProtocolRecipient_GetsExactShareOfEveryNotify` | Баланс получателя протокола. | Протокол получает ровно floor(amount × share / BPS) каждой выплаты при текущей доле, ни единицы из части мема | баланс получателя = `ghostProtocol` |
+| `invariant_Accounted_CoversClaimable` | Все обязательства против учтённого USDG. | Учтённое покрывает все долги | pending + earned + creatorAccrued ≤ `accounted(usdg)` |
+| `invariant_ProtocolRecipient_GetsExactShareOfEveryNotify` | Баланс получателя протокола. | Протокол получает ровно floor(amount × share / BPS) каждой выплаты при текущей доле, ни единицы из части мема | баланс получателя = `ghostProtocol` |
 | `invariant_ProtocolShare_NeverAboveBps` | Доля после любых `setProtocolShare`. | Доля ≤ BPS | `protocolShareBps ≤ 10000` |
+
+## test/VaultPrecisionTest.sol
+
+Округление доли маленького стейка рядом с китами на параметрах продакшена: USDG 6 знаков, мем 18, доля протокола 25%, создателю 10% (фикстура `VaultTest`), порог конверсии 5 USDG, комиссия 1.25 USDG на своп ($100 при 1.25%), 6 свопов на эпоху. Стейки: кит 1 — 800 млн, кит 2 — 100 млн, пыль — 1 мем (1/900 млн всего стейка). Курсы адаптера: 1 USDG → 0.005 AAPL (18 знаков, $200), 1 USDG → 1 000 сат WBTC (8 знаков, $100k). «Единица» — минимальная единица USDG, 0.000001 USDG.
+
+| Тест | Что проверяет | Инварианты | Ожидаемый результат |
+|---|---|---|---|
+| `test_Earned_DustStakeUsdgVault_ProRataAfterManyEpochs` | 200 эпох, 1 200 свопов, стейкерам 1 012.5 USDG; актив — USDG | Доля пыли не теряется между эпохами (накопитель K); никто не получает больше pro rata; сумма наград ≤ учтённого | Точная доля пыли 1.12 единицы → `earned` = 1, клейм переводит 1; киты в пределах 2 единиц от pro rata |
+| `test_PendingCredit_DustShareTenthOfUnit_AccumulatesToWholeUnit` | Доля пыли в каждой комиссии ≈ 0.1 единицы (0.0000001 USDG), 10 комиссий в одной эпохе (порог 0) | На каждой комиссии доля стейкера не округляется, она копится в `accUsdPerShare` (1e36 на wei мема) | `pendingCreditOf` = 0 после 1..9 комиссий, 1 после десятой; после конвертации `earned` = 1 |
+| `test_Claim_DustShareTenthOfUnitClaimedEveryFee_FlooredToZero` | Те же комиссии, пыль клеймит после каждой | Вниз округляет только чекпоинт самого стейкера, чужие стейки он не трогает | `earned` и баланс пыли = 0, у кита 1 > 0 |
+| `test_Earned_DustStakeAssetVault_AaplPreciseWbtcZero` | 200 эпох, активы AAPL/WBTC 60/40 | В 18-значном активе доля пыли считается через K без потерь, кроме первой эпохи (её кредит в USDG округлён до 0); WBTC: 2 025 сат на эпоху всем стейкерам, пыли 0.0000022 сат | AAPL пыли 3 358 124 996 wei из точных 3 374 999 996 (минус одна эпоха); WBTC = 0; суммы ≤ учтённого по обоим активам |
+| `test_Earned_DustStakeWbtc_SubSatoshiCarriedAcrossEpochsUnlessClaimed` | Единственный актив WBTC (8 знаков), 5 063 сат стейкерам за эпоху; два одинаковых стейка по 1 мему рядом с 316 454 мемами, по 0.016 сат за эпоху каждому; первый не трогает стейк, второй клеймит после каждой эпохи, 64 эпохи | Дробная часть начисления переносится между эпохами (K), обрезается только чекпоинтом самого стейкера | Не клеймивший: 0 после 63 эпох, 1 сат после 64; клеймивший каждую эпоху: 0 |
+| `test_Claim_DustStakeEveryEpoch_EachEpochFlooredInUsdg` | 20 эпох, пыль клеймит после каждой | Кредит эпохи (0.0056 единицы) округляется в USDG до конвертации, поэтому даже AAPL не начисляется; потеря меньше 1 единицы USDG на клейм | Балансы AAPL и WBTC пыли = 0 |
+| `testFuzz_Earned_DustStakeAmongWhales_AtMostTwoUnitsBelowProRata` (fuzz) | Киты по 1..1 млрд мемов, пыль от 1 wei до 1 мема, 1..60 комиссий до 1M USDG, в конце открытая эпоха конвертируется | Стейкер без промежуточных чекпоинтов получает не больше точной доли и не больше чем на 2 единицы меньше; сумма наград ≤ учтённого | `exact − 2 ≤ earned ≤ exact` для всех трёх |
+| `testFuzz_Claim_DustStakeEveryFee_NeverAboveProRata` (fuzz) | Пыль от 1 wei до 1 мема клеймит после каждой из 1..40 комиссий | Частые клеймы не дают больше pro rata, каждый теряет меньше 1 единицы | `exact − (число клеймов) ≤ получено ≤ exact` |
 
 ## test/VaultUpgradeTest.sol
 
@@ -612,6 +657,16 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 | `test_SetVault_UsdgMismatch_Revert` | Подключение к контроллеру vault с другим USDG. | Пара-токен контроллера и USDG vault совпадают | Откат `VaultPairTokenMismatch(aapl, usdg)` |
 | `test_CheckWiring_VaultOfOtherHook_Revert` | `checkWiring` с hook из другого деплоя. | Проверка связей ловит чужой hook | Откат `WiringMismatch("controller.hook")` |
 
+### TokenDeployer в деплое и его замена (`DeployTokenDeployer`)
+
+| Тест | Что проверяет | Инварианты | Ожидаемый результат |
+|---|---|---|---|
+| `test_DeployAll_TokenDeployer_ServesControllerNoOwnerNoProxy` | TokenDeployer после `deployAll` | Контроллер получает деплоер, привязанный к нему; деплоер, как и хук, без прокси и владельца | `tokenDeployer` ≠ 0, его `controller()` = контроллер, `checkTokenDeployerWiring` проходит, EIP-1967 admin = 0, `owner()` нет |
+| `test_CheckTokenDeployerWiring_NotSet_Revert` | Проверка связки у контроллера без деплоера | Проверка ловит контроллер, который не может создавать мемы | Откат `WiringMismatch("controller.tokenDeployer")` |
+| `test_DeployAndSwitch_SenderOwnsController_Switches` | `deployAndSwitch` от владельца контроллера (`make deploy-token-deployer`) | Новый код токенов включается одним прогоном | Новый деплоер, контроллер переключён на него, возвращён прежний, `switched` = true |
+| `test_DeployAndSwitch_SenderNotOwner_DeploysOnly` | `deployAndSwitch` не от владельца (контроллер у таймлока) | Посторонний не меняет деплоер контроллера | `switched` = false, у контроллера прежний деплоер, новый привязан к контроллеру; владелец переключает его сам |
+| `test_DeployAndSwitch_ControllerWithoutTokenDeployer_Revert` | Контроллер без `tokenDeployer()` (имплементация до TokenDeployer) | Скрипт ничего не деплоит под необновлённый контроллер | revert, nonce скрипта не изменился |
+
 ### HookManager: контроллер
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
@@ -659,6 +714,22 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 | `test_Constructor_FallbackFeeAboveMax_Revert` | Резервная ставка 80.01% | Резервная ставка ≤ `MAX_FEE_BIPS` | Revert `InvalidFeeBips` |
 | `testFuzz_Constructor_FallbackFeeUpToMax_Accepted` (fuzz) | Любая резервная ставка 0..80% | Допустимая ставка принимается как есть; доли протокола в хуке нет, разбивка в волте | `TOTAL_FEE_BIPS` = переданной ставке |
 
+## test/TokenDeployerTest.sol
+
+`TokenDeployer` сам по себе, контроллер — обычный адрес. Сторона контроллера — ControllerDeployTokenTest, раздел «Деплоер токенов», сторона скрипта — DeployGemoonTest.
+
+| Тест | Что проверяет | Инварианты | Ожидаемый результат |
+|---|---|---|---|
+| `test_Constructor_ZeroController_Revert` | Конструктор с нулевым контроллером | Деплоер всегда привязан к контроллеру | revert `ZeroAddress` |
+| `test_Controller_IsConstructorArgument` | `controller()` | Контроллер фиксирован при деплое | = аргумент конструктора |
+| `test_DeployToken_FromController_WholeSupplyToController` | Токен, созданный по вызову контроллера | Вся эмиссия у вызывающего контроллера, деплоеру ничего | supply 1 млрд у контроллера, у деплоера 0, 1 холдер, 18 decimals |
+| `test_DeployToken_FromController_TokenCarriesInputs` | Данные нового токена | Токен несёт ровно то, что передал контроллер; `creator()` — аргумент, а не `msg.sender` | name, symbol, картинка, описание, соцсети, `creator()`, `feeInfo()`, админы совпадают с входом |
+| `test_DeployToken_Twice_NewTokenEachTimeAtNextNonce` | Два вызова подряд | Каждый вызов — новый токен по CREATE деплоера | Адреса = `computeCreateAddress(deployer, nonce)`, разные; эмиссия второго тоже у контроллера |
+| `test_DeployToken_NotController_Revert` | Вызов не от контроллера | Создавать токены может только свой контроллер | revert `NotController` |
+| `testFuzz_DeployToken_AnyCallerButController_Revert` (fuzz) | Любой вызывающий, кроме контроллера | Токен деплоера всегда мем своего контроллера | revert `NotController`, nonce деплоера не изменился |
+| `testFuzz_DeployToken_AnyCreatorAndFees_SupplyToControllerInputsKept` (fuzz) | Любой создатель и любое разбиение комиссии с сошедшейся суммой | Вся эмиссия у контроллера при любом входе; токен хранит переданные `creator` и `feeInfo` | supply и баланс контроллера 1 млрд, `creator()` и `feeInfo()` = входу |
+| `test_DeployToken_FeePartsDoNotAddUp_Revert` | Части комиссии не сходятся с итогом | Проверка токена срабатывает и через деплоер | revert `InvalidFeeInfo` |
+
 ## test/TokenTest.sol
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
@@ -671,10 +742,12 @@ End-to-end: настоящие PoolManager и PositionManager, Gemoon через
 | `testTokenChangeDescription` | Админ меняет описание | — | `description()` = "New description" |
 | `testTokenChangeDescriptionFailBecauseUserIsNotAdmin` | Не-админ меняет описание | Только админ меняет метаданные токена | Revert "Caller is not an admin" |
 | `testGetTokenInfo` | Геттеры метаданных после конструктора | — | description, name "Test Token", symbol "TEST", 4 ссылки на соцсети совпадают с конфигом |
+| `test_Constructor_WholeSupplyToRecipientNotDeployer` | Получатель эмиссии из конструктора | Вся эмиссия у получателя (в протоколе — контроллер), деплоер (TokenDeployer) ничего не получает | supply 1 млрд у получателя, у деплоера 0, 1 холдер |
+| `test_Constructor_ZeroSupplyRecipient_Revert` | Нулевой получатель эмиссии | Эмиссия не может уйти в никуда | revert `ERC20InvalidReceiver(0)` |
 
 ## test/TokenHoldersTest.sol
 
-`totalHolders` = число адресов с ненулевым балансом. Вся эмиссия минтится деплоеру (тесту), он единственный холдер на старте.
+`totalHolders` = число адресов с ненулевым балансом. Вся эмиссия минтится получателю из конструктора — самому тесту, он единственный холдер на старте.
 
 | Тест | Что проверяет | Инварианты | Ожидаемый результат |
 |---|---|---|---|
@@ -796,3 +869,20 @@ ERC-1046 `tokenURI` токена: свой URI админа (`setTokenURI`), е�
 | `test_TransferToGovernance_NotOwner_Reverts` | Отправитель не владелец | Передать может только текущий владелец | откат |
 | `test_TransferToGovernance_SafeWithoutCode_Reverts` | Safe без кода (опечатка, EOA, другая сеть) | Таймлок не может остаться без управляющего | `SafeHasNoCode` и при деплое таймлока, и при передаче |
 | `test_TransferToGovernance_ZeroSafe_Reverts` | Safe = 0 | Владение не уходит в нулевой адрес | `ZeroAddress` |
+
+## test/ProjectTokenTest.sol
+
+Отдельный токен проекта `ProjectToken`: `tokenURI` — хранимая ссылка, метаданные меняет только владелец.
+
+| Тест | Сценарий | Инварианты | Ожидаемый результат |
+|---|---|---|---|
+| `test_Constructor_MintsSupplyToDeployerAndSetsOwner` | Деплой | Весь supply у деплоера, владелец задан | supply 1 млрд у деплоера, `owner`, 1 холдер, 18 decimals |
+| `test_TokenURI_ReturnsStoredLinkAsIs` | Чтение `tokenURI` | Ссылка отдаётся как есть, без base64 | исходная ссылка |
+| `test_SetTokenURI_Owner_UpdatesAndEmits` | Владелец меняет ссылку | Изменение видно и логируется | новая ссылка, `UpdateTokenURI` |
+| `test_SetTokenURI_NotOwner_Reverts` | Чужой адрес меняет ссылку | Только владелец | `OwnableUnauthorizedAccount` |
+| `test_UpdateImageAndDescription_NotOwner_Reverts` | Чужой адрес меняет картинку/описание | Только владелец | `OwnableUnauthorizedAccount` |
+| `test_UpdateImageAndDescription_Owner_Updates` | Владелец меняет картинку и описание | Изменения сохраняются | новые значения |
+| `test_SupportsInterface_ERC1046AndERC20_True` | ERC-165 | Заявлены ERC-1046 и ERC-20 | true, для `0xffffffff` false |
+| `testFuzz_SetTokenURI_AnyString_RoundTrips` (fuzz) | Любая строка | Что записали, то и читается | равенство |
+| `testFuzz_SetTokenURI_AnyNonOwner_Reverts` (fuzz) | Любой не владелец | Только владелец | откат |
+| `testFuzz_Transfer_SupplyConstantAndHoldersConsistent` (fuzz) | Перевод любой суммы любому адресу | supply не меняется, `totalHolders` = число ненулевых балансов | инварианты держатся |

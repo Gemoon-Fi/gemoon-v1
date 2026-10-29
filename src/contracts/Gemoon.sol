@@ -3,7 +3,7 @@ pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "./interfaces/IGemoon.sol";
-import "./Deployer.sol";
+import {ITokenDeployer} from "./interfaces/ITokenDeployer.sol";
 import "./interfaces/IToken.sol";
 import "./utils/Admin.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -56,8 +56,15 @@ contract GemoonController is
     error HookVaultMismatch(address hookVault, address vault);
     error VaultPairTokenMismatch(address vaultUsdg, address pairToken);
     error PositionManagerNotSet();
+    error TokenDeployerNotSet();
+    /// @dev `setTokenDeployer` got a deployer that serves another controller.
+    error TokenDeployerControllerMismatch(address tokenDeployerController, address controller);
+    /// @dev The token deployer did not leave this contract the whole supply, `INITIAL_SUPPLY_X18`.
+    error TokenSupplyMismatch(uint256 totalSupply, uint256 controllerBalance);
     /// @dev `unlockCallback` called by anyone but the PoolManager.
     error NotPoolManager();
+    /// @dev `changeAdmin` called by an account that is not an admin of the token.
+    error NotTokenAdmin(address token, address caller);
 
     event HookUpdated(address indexed hook);
     event VaultUpdated(address indexed vault);
@@ -66,6 +73,7 @@ contract GemoonController is
         address indexed permit2
     );
     event ReferralsUpdated(address indexed referrals);
+    event TokenDeployerUpdated(address indexed tokenDeployer);
 
     address private _weth;
 
@@ -86,6 +94,9 @@ contract GemoonController is
     /// @notice Hook the pool of a Meme was created with, zero for Memes deployed before it was
     ///         recorded. Hooks are not upgradeable: `setHook` only changes the hook of new Memes.
     mapping(address meme => address) public hookOf;
+    /// @notice Creates the token of every new Meme. Replaced with `setTokenDeployer` to give new
+    ///         Memes new token code without a new controller implementation.
+    ITokenDeployer public tokenDeployer;
 
     /// @dev Version of the Gemoon contract.
     uint64 public constant GEMOON_VERSION = 1;
@@ -180,10 +191,25 @@ contract GemoonController is
         emit ReferralsUpdated(referrals_);
     }
 
+    /// @notice Sets the contract that creates the token of new Memes. Memes deployed before keep
+    ///         their token code.
+    /// @dev Only owner. The deployer must serve this controller, otherwise every `deployToken`
+    /// would revert in it.
+    /// @param tokenDeployer_ TokenDeployer (not upgradeable: new token code is a new deployer).
+    function setTokenDeployer(address tokenDeployer_) external onlyOwner {
+        if (tokenDeployer_ == address(0)) revert InvalidAddress();
+        address deployerController = ITokenDeployer(tokenDeployer_).controller();
+        if (deployerController != address(this))
+            revert TokenDeployerControllerMismatch(deployerController, address(this));
+        tokenDeployer = ITokenDeployer(tokenDeployer_);
+        emit TokenDeployerUpdated(tokenDeployer_);
+    }
+
     /// @notice Entry point for deploying a Meme: token, its vault, the Meme/pair pool and the
     ///         initial one-sided position holding the whole supply, owned by this contract.
     /// @dev If `rewardRecipient` is not set in `rewardsConfig`, it defaults to `creatorAddress`.
-    /// Admins of the token are the given ones plus this contract and the caller.
+    /// Admins of the token are the given ones plus this contract and the caller. The token itself
+    /// is created by `tokenDeployer`, which mints the whole supply to this contract.
     /// A non-zero `config.devBuy.memeAmount` makes the caller the first buyer of the pool, in this
     /// same transaction: see `_devBuy`. With `referrals` set, the Meme is attributed to the referrer
     /// of the caller.
@@ -194,10 +220,12 @@ contract GemoonController is
     ) external payable override returns (address) {
         address hook_ = hook;
         IVault vault_ = vault;
+        ITokenDeployer tokenDeployer_ = tokenDeployer;
         if (hook_ == address(0)) revert HookNotSet();
         if (address(vault_) == address(0)) revert VaultNotSet();
         if (address(positionManager) == address(0))
             revert PositionManagerNotSet();
+        if (address(tokenDeployer_) == address(0)) revert TokenDeployerNotSet();
         address hookVault = IHookManager(hook_).vault();
         if (hookVault != address(vault_))
             revert HookVaultMismatch(hookVault, address(vault_));
@@ -230,16 +258,23 @@ contract GemoonController is
         tokenConfig.admins = newAdmins;
 
         // The whole supply is minted to this contract and goes into the position below.
-        address deployedToken = Deployer.deployToken(
+        address deployedToken = tokenDeployer_.deployToken(
             tokenConfig,
+            msg.sender,
             _feeInfo(
                 config.rewardsConfig.swapFeeBips,
                 vault_.protocolShareBps(),
                 config.vaultCreatorShareBps
             )
         );
+        // The token code is replaceable: whatever it is, the whole supply must be here, or the
+        // position below would not hold all of it.
+        uint256 totalSupply = IERC20(deployedToken).totalSupply();
+        uint256 controllerBalance = IERC20(deployedToken).balanceOf(address(this));
+        if (totalSupply != INITIAL_SUPPLY_X18 || controllerBalance != totalSupply)
+            revert TokenSupplyMismatch(totalSupply, controllerBalance);
 
-        // Recorded before any call out: the pool below is created with this hook for good.
+        // Recorded before the pool exists: the pool below is created with this hook for good.
         hookOf[deployedToken] = hook_;
 
         // The hook accepts the pool only if the vault of the Meme already exists.
@@ -466,11 +501,15 @@ contract GemoonController is
         return "";
     }
 
+    /// @dev This contract is an admin of every Meme, so the Meme sees it, not the caller, as
+    /// `msg.sender` and its own admin check always passes: the caller is checked here, or anyone
+    /// could replace a removable admin through this contract.
     function changeAdmin(
         address token,
         address oldAdmin,
         address newAdmin
     ) external override {
+        if (!Admin(token).isAdmin(msg.sender)) revert NotTokenAdmin(token, msg.sender);
         Admin(token).replaceAdmin(newAdmin, oldAdmin);
     }
 

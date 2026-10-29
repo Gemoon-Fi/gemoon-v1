@@ -46,6 +46,14 @@ import {
 } from "../src/contracts/interfaces/IToken.sol";
 import {IERC1046} from "../src/contracts/interfaces/IERC1046.sol";
 import {MintableToken} from "./mocks/MintableToken.sol";
+import {TokenDeployer} from "../src/contracts/TokenDeployer.sol";
+import {GemoonToken} from "../src/contracts/Token.sol";
+import {Admin} from "../src/contracts/utils/Admin.sol";
+import {
+    GemoonTokenV2Mock,
+    TokenDeployerV2Mock,
+    SplitSupplyTokenDeployer
+} from "./mocks/TokenDeployerMocks.sol";
 
 /// @notice End-to-end: real PoolManager, PositionManager and Permit2 deployed in-process, the
 /// Gemoon contracts deployed through the deploy script, then a Meme is deployed through the
@@ -406,6 +414,304 @@ contract ControllerDeployTokenTest is Test {
         assertEq(usdg.balanceOf(protocolRecipient), toProtocol, "protocol share");
         assertEq(usdg.balanceOf(address(vault)), fee - toProtocol, "vault share");
         assertEq(vault.accounted(address(usdg)), fee - toProtocol, "vault accounted");
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Token deployer: the token code is a replaceable dependency of the controller
+    // ---------------------------------------------------------------------------------------------
+
+    /// @dev EIP-1967 implementation slot of the controller proxy.
+    bytes32 constant IMPLEMENTATION_SLOT =
+        0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+
+    function _setTokenDeployer(address tokenDeployer) internal {
+        vm.prank(address(script));
+        controller.setTokenDeployer(tokenDeployer);
+    }
+
+    /// @dev The token is a CREATE of the token deployer; its creator is the caller of
+    /// `deployToken`, not `rewardsConfig.creatorAddress`; controller and caller are its admins.
+    function test_DeployToken_TokenCreatedByTokenDeployer_CreatorIsCaller() external {
+        address tokenDeployer = address(controller.tokenDeployer());
+        address expected = vm.computeCreateAddress(tokenDeployer, vm.getNonce(tokenDeployer));
+
+        vm.prank(trader);
+        address token = controller.deployToken(_config());
+
+        assertEq(token, expected, "CREATE of the token deployer");
+        assertEq(IGemoonToken(token).creator(), trader, "creator = caller of deployToken");
+        assertEq(vault.vaultInfo(token).creator, creator, "vault creator = creatorAddress");
+        assertTrue(Admin(token).isAdmin(address(controller)), "controller is admin");
+        assertTrue(Admin(token).isAdmin(trader), "caller is admin");
+        assertEq(IERC20(token).balanceOf(tokenDeployer), 0, "token deployer keeps nothing");
+    }
+
+    function test_DeployToken_TokenDeployerNotSet_Revert() external {
+        GemoonController fresh = script.deployController(
+            address(script),
+            GemoonDeployBase.ControllerDeployParams({
+                proxyAdminOwner: makeAddr("proxyAdminOwner"),
+                poolManager: address(poolManager),
+                pairToken: address(usdg)
+            })
+        );
+        vm.startPrank(address(script));
+        fresh.setHook(address(hook));
+        fresh.setVault(address(vault));
+        fresh.setPositionManager(address(positionManager), address(permit2));
+        vm.stopPrank();
+
+        vm.expectRevert(GemoonController.TokenDeployerNotSet.selector);
+        vm.prank(creator);
+        fresh.deployToken(_config());
+    }
+
+    function test_SetTokenDeployer_SetsAndEmits() external {
+        TokenDeployer next = new TokenDeployer(address(controller));
+
+        vm.expectEmit(true, false, false, false, address(controller));
+        emit GemoonController.TokenDeployerUpdated(address(next));
+        _setTokenDeployer(address(next));
+
+        assertEq(address(controller.tokenDeployer()), address(next));
+    }
+
+    function test_SetTokenDeployer_ZeroAddress_Revert() external {
+        vm.prank(address(script));
+        vm.expectRevert(GemoonController.InvalidAddress.selector);
+        controller.setTokenDeployer(address(0));
+    }
+
+    /// @dev A deployer bound to another controller would revert every `deployToken` with
+    /// `NotController`: the setter refuses it up front.
+    function test_SetTokenDeployer_DeployerOfOtherController_Revert() external {
+        address other = makeAddr("otherController");
+        TokenDeployer foreign = new TokenDeployer(other);
+
+        vm.prank(address(script));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                GemoonController.TokenDeployerControllerMismatch.selector,
+                other,
+                address(controller)
+            )
+        );
+        controller.setTokenDeployer(address(foreign));
+    }
+
+    function test_SetTokenDeployer_NoCode_Revert() external {
+        vm.prank(address(script));
+        vm.expectRevert();
+        controller.setTokenDeployer(makeAddr("eoa"));
+    }
+
+    /// @dev Invariant: only the owner picks the token code of new Memes.
+    function testFuzz_SetTokenDeployer_NotOwner_Revert(address caller) external {
+        vm.assume(caller != address(script));
+        address before = address(controller.tokenDeployer());
+        TokenDeployer next = new TokenDeployer(address(controller));
+
+        vm.prank(caller);
+        vm.expectRevert();
+        controller.setTokenDeployer(address(next));
+
+        assertEq(address(controller.tokenDeployer()), before, "unchanged");
+    }
+
+    /// @dev The point of the token deployer: new token code for new Memes without touching the
+    /// controller. The implementation behind the proxy stays, the Meme deployed before keeps its
+    /// code, both Memes trade and pay fees.
+    function test_SetTokenDeployer_NewTokenCode_NewMemesOnlyControllerUnchanged() external {
+        (address oldMeme,) = _deployMeme();
+        bytes32 implementation = vm.load(address(controller), IMPLEMENTATION_SLOT);
+
+        _setTokenDeployer(address(new TokenDeployerV2Mock(address(controller))));
+        (address newMeme,) = _deployMeme();
+
+        assertEq(vm.load(address(controller), IMPLEMENTATION_SLOT), implementation, "no upgrade");
+        assertEq(GemoonTokenV2Mock(newMeme).tokenVersion(), 2, "new Meme has the new code");
+        (bool hasMarker,) = oldMeme.staticcall(abi.encodeWithSignature("tokenVersion()"));
+        assertFalse(hasMarker, "old Meme keeps the old code");
+
+        // Both are full Memes: whole supply in the position, registered, tradable, fees paid.
+        address[2] memory memes = [oldMeme, newMeme];
+        for (uint256 i; i < memes.length; ++i) {
+            assertEq(IERC20(memes[i]).totalSupply(), INITIAL_SUPPLY_X18, "supply");
+            assertLt(IERC20(memes[i]).balanceOf(address(controller)), 1e18, "only dust left");
+            assertTrue(vault.isRegistered(memes[i]), "registered");
+            _buyMeme(memes[i], 1_000 * PAIR_UNIT);
+            _buyMeme(memes[i], 1_000 * PAIR_UNIT);
+            assertGt(IERC20(memes[i]).balanceOf(trader), 0, "trader bought");
+            assertEq(hook.pendingFees(memes[i]), 0, "fees paid out");
+            assertGt(vault.pendingUSDG(memes[i]), 0, "vault got its part");
+        }
+    }
+
+    /// @dev Token code that mints the supply anywhere but to the controller is refused: the
+    /// position could not hold the whole supply.
+    function test_DeployToken_TokenDeployerKeepsSupply_Revert() external {
+        address tokenDeployer = vm.computeCreateAddress(address(this), vm.getNonce(address(this)));
+        _setTokenDeployer(
+            address(
+                new SplitSupplyTokenDeployer(
+                    address(controller), 0, tokenDeployer, INITIAL_SUPPLY_X18
+                )
+            )
+        );
+
+        vm.prank(creator);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                GemoonController.TokenSupplyMismatch.selector, INITIAL_SUPPLY_X18, 0
+            )
+        );
+        controller.deployToken(_config());
+    }
+
+    /// @dev Invariant: whatever token code is plugged in, `deployToken` either reverts with
+    /// `TokenSupplyMismatch` or the controller got exactly the whole supply and put it into the
+    /// position (only rounding dust stays). Any plain ERC20 with the right supply works.
+    function testFuzz_DeployToken_AnySupplySplit_WholeSupplyInPositionOrRevert(
+        uint256 toController,
+        uint256 toOther,
+        bool exact
+    ) external {
+        if (exact) {
+            toController = INITIAL_SUPPLY_X18;
+            toOther = 0;
+        } else {
+            toController = bound(toController, 0, 2 * INITIAL_SUPPLY_X18);
+            toOther = bound(toOther, 0, INITIAL_SUPPLY_X18);
+        }
+        _setTokenDeployer(
+            address(
+                new SplitSupplyTokenDeployer(
+                    address(controller), toController, makeAddr("other"), toOther
+                )
+            )
+        );
+
+        bool whole = toController == INITIAL_SUPPLY_X18 && toOther == 0;
+        uint256 positionId = positionManager.nextTokenId();
+        if (!whole) {
+            vm.expectRevert(
+                abi.encodeWithSelector(
+                    GemoonController.TokenSupplyMismatch.selector,
+                    toController + toOther,
+                    toController
+                )
+            );
+        }
+        vm.prank(creator);
+        address token = controller.deployToken(_config());
+        if (!whole) return;
+
+        assertEq(IERC20(token).totalSupply(), INITIAL_SUPPLY_X18);
+        assertLt(IERC20(token).balanceOf(address(controller)), 1e18, "only dust left");
+        assertEq(positionManager.ownerOf(positionId), address(controller), "position owner");
+        assertGt(positionManager.getPositionLiquidity(positionId), 0, "liquidity");
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // Admins: changeAdmin replaces a removable admin, on behalf of an admin of the Meme only
+    // ---------------------------------------------------------------------------------------------
+
+    address removableAdmin = makeAddr("removableAdmin");
+
+    /// @dev A Meme whose admins are `removableAdmin` (removable), the controller and the creator
+    /// (both non-removable). Created directly, to control its admin list.
+    function _memeWithRemovableAdmin() internal returns (address token) {
+        AdminConfig[] memory admins = new AdminConfig[](3);
+        admins[0] = AdminConfig({admin: removableAdmin, removable: true});
+        admins[1] = AdminConfig({admin: address(controller), removable: false});
+        admins[2] = AdminConfig({admin: creator, removable: false});
+        TokenConfig memory tokenConfig = _config().tokenConfig;
+        tokenConfig.admins = admins;
+        FeeInfo memory fees =
+            FeeInfo({totalPpm: 12_500, creatorPpm: 833, vaultPpm: 7_501, protocolPpm: 4_166});
+        token = address(new GemoonToken(tokenConfig, creator, fees, address(this)));
+    }
+
+    /// @dev ProxyAdmin of the controller (EIP-1967 admin slot): the proxy does not forward its
+    /// calls to the implementation.
+    function _controllerProxyAdmin() internal view returns (address) {
+        bytes32 slot = bytes32(uint256(keccak256("eip1967.proxy.admin")) - 1);
+        return address(uint160(uint256(vm.load(address(controller), slot))));
+    }
+
+    /// @dev Regression: the Meme sees the controller, one of its admins, as the caller, so its own
+    /// admin check passed for anyone calling through the controller.
+    function test_ChangeAdmin_NotTokenAdmin_Revert() external {
+        address token = _memeWithRemovableAdmin();
+
+        vm.expectRevert(
+            abi.encodeWithSelector(GemoonController.NotTokenAdmin.selector, token, trader)
+        );
+        vm.prank(trader);
+        controller.changeAdmin(token, removableAdmin, trader);
+
+        assertTrue(Admin(token).isAdmin(removableAdmin), "admin kept");
+        assertFalse(Admin(token).isAdmin(trader), "outsider is not an admin");
+    }
+
+    /// @dev Invariant: an account that is not an admin of the Meme changes nothing in its admins.
+    function testFuzz_ChangeAdmin_AnyNonAdmin_Revert(address caller, address newAdmin) external {
+        address token = _memeWithRemovableAdmin();
+        vm.assume(caller != address(0) && caller != _controllerProxyAdmin());
+        vm.assume(!Admin(token).isAdmin(caller));
+        vm.assume(newAdmin != address(0));
+        bytes32 adminsBefore = keccak256(abi.encode(Admin(token).getAdmins()));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(GemoonController.NotTokenAdmin.selector, token, caller)
+        );
+        vm.prank(caller);
+        controller.changeAdmin(token, removableAdmin, newAdmin);
+
+        assertEq(keccak256(abi.encode(Admin(token).getAdmins())), adminsBefore, "admins unchanged");
+    }
+
+    function test_ChangeAdmin_ByTokenAdmin_ReplacesRemovableAdmin() external {
+        address token = _memeWithRemovableAdmin();
+        address next = makeAddr("nextAdmin");
+
+        vm.prank(creator);
+        controller.changeAdmin(token, removableAdmin, next);
+
+        assertFalse(Admin(token).isAdmin(removableAdmin), "old admin removed");
+        assertTrue(Admin(token).isAdmin(next), "new admin");
+        AdminConfig[] memory admins = Admin(token).getAdmins();
+        assertEq(admins[0].admin, next, "same seat");
+        assertTrue(admins[0].removable, "still removable");
+    }
+
+    function test_ChangeAdmin_ByRemovableAdminItself_HandsOverSeat() external {
+        address token = _memeWithRemovableAdmin();
+        address next = makeAddr("nextAdmin");
+
+        vm.prank(removableAdmin);
+        controller.changeAdmin(token, removableAdmin, next);
+
+        assertFalse(Admin(token).isAdmin(removableAdmin), "old admin removed");
+        assertTrue(Admin(token).isAdmin(next), "new admin");
+    }
+
+    /// @dev The controller and the caller of `deployToken` are admins of the Meme for good.
+    function test_ChangeAdmin_DeployedMeme_ControllerAndCallerNotRemovable_Revert() external {
+        vm.prank(trader);
+        address token = controller.deployToken(_config());
+        address next = makeAddr("nextAdmin");
+
+        vm.startPrank(trader);
+        vm.expectRevert("Admin is not removable!");
+        controller.changeAdmin(token, address(controller), next);
+        vm.expectRevert("Admin is not removable!");
+        controller.changeAdmin(token, trader, next);
+        vm.stopPrank();
+
+        assertTrue(Admin(token).isAdmin(address(controller)), "controller is an admin");
+        assertTrue(Admin(token).isAdmin(trader), "caller is an admin");
+        assertFalse(Admin(token).isAdmin(next), "no new admin");
     }
 
     // ---------------------------------------------------------------------------------------------

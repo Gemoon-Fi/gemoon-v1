@@ -39,8 +39,8 @@ GAS_PRICE ?= $$(cast base-fee --rpc-url $(RPC) | awk '{ printf "%d", $$1 * $(GAS
 GAS_ESTIMATE_MULTIPLIER ?= 200
 GAS_FLAGS = --legacy --with-gas-price $(GAS_PRICE) --gas-estimate-multiplier $(GAS_ESTIMATE_MULTIPLIER)
 
-# Full deployment in one run: Vault, GemoonController, GmoonReferrals, HookManager, UniswapV3SwapAdapter,
-# wired; reward assets of DEPLOY_ASSETS_FILE allowed and routed; report into DEPLOY_REPORT. Prefer ./deploy.sh,
+# Full deployment in one run: Vault, GemoonController with its TokenDeployer, GmoonReferrals, HookManager,
+# UniswapV3SwapAdapter, wired; reward assets of DEPLOY_ASSETS_FILE allowed and routed; report into DEPLOY_REPORT. Prefer ./deploy.sh,
 # it also writes the addresses into env/$(ENVIRONMENT).mk, checks the wiring, deploys the Lens and completes the report.
 deploy-gemoon:
 	forge script --via-ir ./script/GemoonDeploy.sol:DeployGemoon --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
@@ -60,6 +60,17 @@ deploy-hook:
 # Same as deploy-hook without --broadcast.
 simulate-deploy-hook:
 	forge script --via-ir ./script/GemoonDeploy.sol:DeployHook -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY)
+
+# New token code for new Memes, the controller stays: a new ownerless TokenDeployer for
+# CONTROLLER_PROXY_ADDRESS, switched on with setTokenDeployer if the broadcaster owns the controller
+# (otherwise the call for the owner is printed). Memes deployed before keep their code. Put the
+# printed TOKEN DEPLOYER into TOKEN_DEPLOYER_ADDRESS.
+deploy-token-deployer:
+	forge script --via-ir ./script/GemoonDeploy.sol:DeployTokenDeployer --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast
+
+# Same as deploy-token-deployer without --broadcast.
+simulate-token-deployer:
+	forge script --via-ir ./script/GemoonDeploy.sol:DeployTokenDeployer -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY)
 
 deploy-swap-adapter:
 	forge script --via-ir ./script/GemoonDeploy.sol:DeployUniswapV3SwapAdapter --slow -vvvv --rpc-url=$(RPC) --private-key=$(PRIVATE_KEY) $(GAS_FLAGS) --broadcast

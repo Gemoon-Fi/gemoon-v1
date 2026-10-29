@@ -114,6 +114,11 @@ interface IGemoonController {
         DeployConfig memory config
     ) external payable returns (address);
 
+    /// @notice Replaces the admin `oldAdmin` of the Meme `token` with `newAdmin`. Only an admin of
+    ///         `token` may call it, and only an admin added as removable can be replaced.
+    /// @param token    Meme whose admin is replaced.
+    /// @param oldAdmin Removable admin to replace.
+    /// @param newAdmin Its replacement, non-zero.
     function changeAdmin(
         address token,
         address oldAdmin,

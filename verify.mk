@@ -6,7 +6,8 @@
 # Run from the commit the contracts were deployed from: the sources must match the deployed code.
 #
 # From env/<ENVIRONMENT>.mk: RPC, BLOCKSCOUT_API_KEY (verify-* only), POOL_MANAGER, USDG_ADDRESS,
-# HOOK_ADDRESS, VAULT_PROXY_ADDRESS, CONTROLLER_PROXY_ADDRESS, HOOK_TOTAL_FEE_BIPS.
+# HOOK_ADDRESS, VAULT_PROXY_ADDRESS, CONTROLLER_PROXY_ADDRESS, HOOK_TOTAL_FEE_BIPS,
+# TOKEN_DEPLOYER_ADDRESS.
 
 ifndef ENVIRONMENT
 $(error ENVIRONMENT is not set: make -f verify.mk <target> ENVIRONMENT=dev|prod|sepolia)
@@ -43,7 +44,12 @@ HOOK_ARGS = $$(cast abi-encode "constructor(address,address,address,address,uint
 	$(POOL_MANAGER) $(USDG_ADDRESS) $(VAULT_PROXY_ADDRESS) \
 	$(CONTROLLER_PROXY_ADDRESS) $(HOOK_TOTAL_FEE_BIPS))
 
-.PHONY: check-api-key verify-hook verify-hook-sourcify verify-tokens-sourcify standard-json-hook
+# TokenDeployer (no proxy, no owner): TokenDeployer(controller). Its bytecode carries the GemoonToken
+# code of the commit it was deployed from: verify from that commit.
+TOKEN_DEPLOYER_CONTRACT := src/contracts/TokenDeployer.sol:TokenDeployer
+TOKEN_DEPLOYER_ARGS = $$(cast abi-encode "constructor(address)" $(CONTROLLER_PROXY_ADDRESS))
+
+.PHONY: check-api-key verify-hook verify-hook-sourcify verify-token-deployer verify-tokens-sourcify standard-json-hook
 
 check-api-key:
 	@[ -n "$(BLOCKSCOUT_API_KEY)" ] || { echo "BLOCKSCOUT_API_KEY is empty in $(ENV_FILE)" >&2; exit 1; }
@@ -53,6 +59,11 @@ check-api-key:
 verify-hook: check-api-key
 	@echo "Verifying HookManager $(HOOK_ADDRESS)"
 	@forge verify-contract $(HOOK_ADDRESS) $(HOOK_CONTRACT) --constructor-args $(HOOK_ARGS) $(VERIFIER_FLAGS)
+
+verify-token-deployer: check-api-key
+	@[ -n "$(TOKEN_DEPLOYER_ADDRESS)" ] || { echo "TOKEN_DEPLOYER_ADDRESS is empty in $(ENV_FILE)" >&2; exit 1; }
+	@echo "Verifying TokenDeployer $(TOKEN_DEPLOYER_ADDRESS)"
+	@forge verify-contract $(TOKEN_DEPLOYER_ADDRESS) $(TOKEN_DEPLOYER_CONTRACT) --constructor-args $(TOKEN_DEPLOYER_ARGS) $(VERIFIER_FLAGS)
 
 # Fallback when the Blockscout API keeps answering "Unable to verify": Sourcify API v2 with the
 # standard JSON input (no key, constructor args are read from the creation tx). Blockscout shows

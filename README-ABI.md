@@ -10,8 +10,8 @@
 
 <!-- ADDRESSES -->
 
-Все контракты, кроме токенов мемов, HookManager и GemoonLens, стоят за прокси: адреса постоянные, версия
-читается через `getVersion()` (`IGemoonable.json`). HookManager и GemoonLens без прокси и не обновляются:
+Все контракты, кроме токенов мемов, HookManager, TokenDeployer и GemoonLens, стоят за прокси: адреса постоянные, версия
+читается через `getVersion()` (`IGemoonable.json`). HookManager, TokenDeployer и GemoonLens без прокси и не обновляются:
 новая версия получает новый адрес. Пулы мема навсегда привязаны к хуку, с которым созданы, поэтому
 хук конкретного мема берите из `GemoonController.hookOf(meme)` (ноль — мем старого контроллера, тогда
 `controller.hook()`), а не из `controller.hook()`: тот указывает на хук для новых мемов. Ключ пула и
@@ -117,6 +117,12 @@ allowlist отдаёт `Vault.allowedAssets()`, проверка одного а
 при любой доле.
 
 Контроллер и вызывающий адрес добавляются в админы токена автоматически и не удаляются.
+
+Сам токен создаёт отдельный контракт TokenDeployer по вызову контроллера (`GemoonController.tokenDeployer()`),
+поэтому в эксплорере создатель контракта токена — TokenDeployer, а не контроллер; транзакция
+по-прежнему идёт на контроллер, события те же. Адрес токена берите из возврата `deployToken` или из
+`TokenCreated`, не вычисляйте по nonce контроллера. Код токенов новых мемов может смениться вместе
+с TokenDeployer (`TokenDeployerUpdated`), уже созданные мемы не меняются.
 
 ### Dev buy
 
@@ -266,6 +272,7 @@ Vault, разбивка комиссии:
 `IGemoonToken`: ERC20 плюс permit и burn.
 
 - Чтение: `creator()`, `imageAddress()`, `description()`, `getSocialMedia()`, `showAdmins()`.
+  `creator()` — адрес, вызвавший `deployToken`; получатель наград создателя в волте — `Vault.creatorOf(meme)`.
 - `feeInfo()`: распределение комиссии свопа, зафиксированное при деплое мема, в миллионных долях
   суммы свопа (1 000 000 = 100%, 12 500 = 1.25%): `totalPpm` — вся комиссия, `creatorPpm` —
   создателю (получателю наград) через волт, `vaultPpm` — стейкерам в волте, `protocolPpm` —
@@ -303,14 +310,16 @@ Vault, разбивка комиссии:
   задаёт свой URI метаданных (`ipfs://`, `https://`, `data:`): пока он не пустой, `tokenURI()`
   отдаёт его как есть, без ончейн JSON и без проверки содержимого. Пустая строка возвращает
   ончейн JSON.
-- Замена админа: `GemoonController.changeAdmin(token, oldAdmin, newAdmin)`. Заменить можно
-  только админа с `removable = true`.
+- Замена админа: `GemoonController.changeAdmin(token, oldAdmin, newAdmin)`. Вызывать может
+  только админ этого мема (иначе `NotTokenAdmin(token, caller)`), заменить можно только админа с
+  `removable = true`. Контроллер и адрес, вызвавший `deployToken`, неудаляемые.
 
 ## События для индексации
 
 | Контракт | Событие | Смысл |
 |---|---|---|
 | Controller | `TokenCreated`, `PoolCreated`, `PositionCreated` | новый мем |
+| Controller | `TokenDeployerUpdated(tokenDeployer)` | сменился TokenDeployer: мемы после этого блока создаются с другим кодом токена |
 | Vault | `VaultRegistered(meme, creator, creatorShareBps, assets)` | волт мема создан |
 | Vault | `FeesNotified(meme, toStakers, toCreator)` | пришла комиссия в USDG (часть мема, после доли протокола) |
 | Vault | `ProtocolFeePaid(meme, recipient, amount)` | доля протокола из комиссии мема ушла получателю |
@@ -354,7 +363,7 @@ await referrals.paused();                      // true — выплаты вре
 
 | Ошибка | Причина |
 |---|---|
-| `HookNotSet`, `VaultNotSet`, `PositionManagerNotSet` | контроллер ещё не сконфигурирован |
+| `HookNotSet`, `VaultNotSet`, `PositionManagerNotSet`, `TokenDeployerNotSet` | контроллер ещё не сконфигурирован |
 | `InvalidMemeFeeBips(feeBips)` | `swapFeeBips` вне 100..500 |
 | `Token symbol is required`, `Token name is required`, `Token image required.`, `At least one admin address is required.` | пустые поля конфига |
 | `AssetNotAllowed`, `DuplicateAsset`, `InvalidAssetsLength`, `InvalidWeights` | неверный `vaultAssets` |
@@ -364,6 +373,7 @@ await referrals.paused();                      // true — выплаты вре
 | `EnforcedPause` | волт на паузе: стейк, клейм и конвертация недоступны, вывод стейка работает |
 | `NotCreator`, `NotPendingCreator` | смена создателя не тем адресом |
 | `Caller is not an admin` | метаданные токена меняет не админ |
+| `NotTokenAdmin(token, caller)`, `Admin is not removable!` | `changeAdmin` вызвал не админ мема или заменяемый админ неудаляемый |
 | `InvalidCode`, `CodeTaken`, `CodeNotFound` | реферальный код неверного формата, занят или не существует |
 | `ReferrerAlreadySet`, `SelfReferral` | реферер уже привязан или свой код |
 | `NothingToClaim` | рефереру нечего выплачивать |

@@ -4,6 +4,7 @@ import "forge-std/Test.sol";
 import "../src/contracts/Token.sol";
 import "../src/contracts/utils/Admin.sol";
 import "../src/contracts/interfaces/IToken.sol";
+import {IERC20Errors} from "@openzeppelin/contracts/interfaces/draft-IERC6093.sol";
 import {console} from "forge-std/console.sol";
 
 /// @dev 1.25% fee, a third to the protocol, 10% of the vault part to the creator.
@@ -35,7 +36,8 @@ contract TokenTest is Test {
                 admins: initAdminsStruct(initAdmins, removables)
             }),
             CREATOR,
-            FEES()
+            FEES(),
+            address(this)
         );
 
         assertEq(token.creator(), CREATOR);
@@ -65,7 +67,8 @@ contract TokenTest is Test {
                 admins: initAdminsStruct(initAdmins, removables)
             }),
             CREATOR,
-            FEES()
+            FEES(),
+            address(this)
         );
 
         assertEq(Admin(token).getAdmins().length, 2, "Not enough admins");
@@ -115,7 +118,8 @@ contract TokenTest is Test {
                 admins: initAdminsStruct(initAdmins, removables)
             }),
             CREATOR,
-            FEES()
+            FEES(),
+            address(this)
         );
 
         assertEq(Admin(token).isAdmin(msg.sender), true, "Should be admin");
@@ -145,7 +149,8 @@ contract TokenTest is Test {
                 admins: initAdminsStruct(initAdmins, removables)
             }),
             CREATOR,
-            FEES()
+            FEES(),
+            address(this)
         );
 
         assertEq(Admin(token).isAdmin(address(this)), true, "Should be admin");
@@ -178,7 +183,8 @@ contract TokenTest is Test {
                 admins: initAdminsStruct(initAdmins, removables)
             }),
             CREATOR,
-            FEES()
+            FEES(),
+            address(this)
         );
 
         assertEq(Admin(token).isAdmin(address(this)), false, "Should be admin");
@@ -210,7 +216,8 @@ contract TokenTest is Test {
                 admins: initAdminsStruct(initAdmins, removables)
             }),
             CREATOR,
-            FEES()
+            FEES(),
+            address(this)
         );
 
         token.changeDescription("New description");
@@ -240,7 +247,8 @@ contract TokenTest is Test {
                 admins: initAdminsStruct(initAdmins, removables)
             }),
             CREATOR,
-            FEES()
+            FEES(),
+            address(this)
         );
 
         vm.expectRevert(bytes("Caller is not an admin"));
@@ -271,7 +279,8 @@ contract TokenTest is Test {
                 admins: initAdminsStruct(initAdmins, removables)
             }),
             CREATOR,
-            FEES()
+            FEES(),
+            address(this)
         );
 
         assertEq(token.description(), "A test token", "Invalid description");
@@ -297,6 +306,37 @@ contract TokenTest is Test {
             "https://test.com",
             "Invalid website social media URL"
         );
+    }
+
+    function _config() internal view returns (TokenConfig memory) {
+        address[] memory initAdmins = new address[](1);
+        bool[] memory removables = new bool[](1);
+        initAdmins[0] = msg.sender;
+        return TokenConfig({
+            imgUrl: "https://a.com",
+            description: "A test token",
+            socialMedia: SocialMedia({farcaster: "", twitter: "", telegram: "", website: ""}),
+            name: "Test Token",
+            symbol: "TEST",
+            admins: initAdminsStruct(initAdmins, removables)
+        });
+    }
+
+    /// @dev The supply goes to the recipient argument, not to the deployer (in the protocol the
+    /// deployer is the TokenDeployer, the recipient the controller).
+    function test_Constructor_WholeSupplyToRecipientNotDeployer() external {
+        address recipient = makeAddr("recipient");
+        GemoonToken token = new GemoonToken(_config(), CREATOR, FEES(), recipient);
+
+        assertEq(token.totalSupply(), 1_000_000_000 * 1e18, "fixed supply");
+        assertEq(token.balanceOf(recipient), token.totalSupply(), "all to the recipient");
+        assertEq(token.balanceOf(address(this)), 0, "deployer gets nothing");
+        assertEq(token.totalHolders(), 1);
+    }
+
+    function test_Constructor_ZeroSupplyRecipient_Revert() external {
+        vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InvalidReceiver.selector, address(0)));
+        new GemoonToken(_config(), CREATOR, FEES(), address(0));
     }
 }
 

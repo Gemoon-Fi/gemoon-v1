@@ -40,6 +40,7 @@ const PROBE_ABI = parseAbi([
 // variables hold the same address (SWAP_ADAPTER and VAULT_SWAP_ADAPTER, for example).
 const SEEDS = [
 	["CONTROLLER_PROXY_ADDRESS", "GemoonController", "Gemoon.sol:GemoonController"],
+	["TOKEN_DEPLOYER_ADDRESS", "TokenDeployer", "TokenDeployer.sol:TokenDeployer"],
 	["HOOK_ADDRESS", "HookManager", "HookManager.sol:HookManager"],
 	["VAULT_PROXY_ADDRESS", "Vault", "Vault.sol:Vault"],
 	["REFERRALS_PROXY_ADDRESS", "GmoonReferrals", "Referrals.sol:GmoonReferrals"],

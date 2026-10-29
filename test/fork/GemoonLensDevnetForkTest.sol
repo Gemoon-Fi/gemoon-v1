@@ -20,8 +20,10 @@ interface IStateView {
 /// @notice GemoonLens against the live devnet: the Anvil fork of Robinhood chain (chain id 1488)
 /// with the deployed protocol. The Lens is deployed inside the fork, nothing is broadcast.
 /// @dev Env: DEVNET_RPC enables the suite (skipped when empty or on another chain), DEVNET_BLOCK
-/// pins the block (latest when empty). The Memes are found from the controller nonce: every Meme
-/// is a CREATE of the controller, so the last N nonces are the last N Memes.
+/// pins the block (latest when empty). The Memes are found from CREATE nonces: a Meme is a CREATE
+/// of the controller's current TokenDeployer or, deployed before the TokenDeployer existed, of the
+/// controller itself, so their last nonces are the last Memes (Memes of an older TokenDeployer are
+/// not looked for).
 contract GemoonLensDevnetForkTest is Test {
     uint256 constant CHAIN_ID = 1488;
     /// @dev Current devnet deployment, overridden by CONTROLLER_PROXY_ADDRESS / VAULT_PROXY_ADDRESS
@@ -55,9 +57,18 @@ contract GemoonLensDevnetForkTest is Test {
         if (block.chainid != CHAIN_ID || VAULT.code.length == 0) return;
 
         lens = new GemoonLens(CONTROLLER, VAULT, HOOK, POOL_MANAGER);
-        uint256 nonce = vm.getNonce(CONTROLLER);
+        // A controller implementation older than the TokenDeployer has no `tokenDeployer()`.
+        (bool ok, bytes memory ret) = CONTROLLER.staticcall(abi.encodeWithSignature("tokenDeployer()"));
+        if (ok && ret.length == 32) _collectMemes(abi.decode(ret, (address)));
+        _collectMemes(CONTROLLER);
+    }
+
+    /// @dev Adds the registered Memes among the last CREATEs of `creator`, newest first, up to BATCH.
+    function _collectMemes(address creator) internal {
+        if (creator == address(0)) return;
+        uint256 nonce = vm.getNonce(creator);
         for (uint256 k = nonce; k > 0 && memes.length < BATCH; --k) {
-            address meme = vm.computeCreateAddress(CONTROLLER, k - 1);
+            address meme = vm.computeCreateAddress(creator, k - 1);
             if (meme.code.length != 0 && IVault(VAULT).isRegistered(meme)) memes.push(meme);
         }
     }

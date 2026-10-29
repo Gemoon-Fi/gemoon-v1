@@ -43,7 +43,9 @@ Makefile и скрипты из `tools/scripts` падают с ошибкой. 
   CREATE2-деплоер, через него скрипт ставит хук (без прокси). Без него скрипт
   откажется работать. Проверка: `cast code 0x4e59b44847b379578588920cA78FbF26c0B4956C --rpc-url $RPC`.
 - Лимит размера контракта (EIP-170, 24 576 байт) все контракты проходят: самый большой,
-  GemoonController, ~12 КБ, Vault ~14 КБ (`forge build --sizes`).
+  TokenDeployer, ~17 КБ (в нём init-код токена, ~16 КБ), Vault ~16 КБ, GemoonController ~14 КБ
+  (`forge build --sizes`). Запас TokenDeployer ограничивает рост кода токена: init-код нового токена
+  должен остаться меньше ~23 КБ.
 - На деплоере есть нативный токен на газ. Весь прогон с 64 активами стоит порядка 40 млн газа
   (оценка симуляции на девнете), около половины уходит на allowlist и маршруты.
 - Адреса Uniswap V4 верные для этой сети. Скрипт их не проверяет, ошибку покажет только первый
@@ -78,7 +80,7 @@ ENVIRONMENT=prod ./deploy.sh --simulate  # то же для mainnet, из env/pr
 2. `make deploy-gemoon` (симуляция — `make simulate-gemoon`): весь деплой одним forge-скриптом,
    таблица шагов ниже.
 3. Читает из лога адреса и пишет их в `env/$ENVIRONMENT.mk`: `VAULT_/CONTROLLER_/REFERRALS_PROXY_ADDRESS`,
-   их `*_PROXY_ADMIN_ADDRESS`, `HOOK_ADDRESS` (у хука нет прокси), `SWAP_ADAPTER`, `VAULT_SWAP_ADAPTER`. Перед правкой делает копию
+   их `*_PROXY_ADMIN_ADDRESS`, `HOOK_ADDRESS` (у хука нет прокси), `TOKEN_DEPLOYER_ADDRESS`, `SWAP_ADAPTER`, `VAULT_SWAP_ADAPTER`. Перед правкой делает копию
    `env/$ENVIRONMENT.mk.bak.<время>`.
 4. `make verify-wiring`: read-only проверка связки по сети, включая рефералы и адаптер.
 5. `make deploy-lens`, адрес в `LENS_ADDRESS`.
@@ -114,24 +116,25 @@ ENVIRONMENT=prod ./deploy.sh --simulate  # то же для mainnet, из env/pr
 
 | # | Транзакция | Кто | Комментарий |
 |---|---|---|---|
-| 1 | Библиотеки `Deployer`, `Ticks` | деплоер | внешние библиотеки, forge линкует и ставит их сам |
+| 1 | Библиотеки `Ticks`, `PriceMath` | деплоер | внешние библиотеки, forge линкует и ставит их сам |
 | 2 | `Vault` имплементация и прокси, `initialize(deployer, USDG)` | деплоер | владелец пока деплоер, чтобы настроить в этом же прогоне. Прокси сам создаёт ProxyAdmin с владельцем `GEMOON_PROXY_ADMIN_OWNER` |
 | 3 | `Vault.setConversionThreshold`, `setAssetAllowed` на активы из `VAULT_ALLOWED_ASSETS` | деплоер | порог пропускается, если равен 0 |
 | 4 | `GemoonController` имплементация и прокси, `initialize(POOL_MANAGER, USDG, deployer)` | деплоер | владелец пока деплоер |
+| 4a | `TokenDeployer(controller)` | деплоер | без прокси и владельца: создаёт токен каждого нового мема, вся эмиссия контроллеру, вызывать может только этот контроллер. Код токена зашит в его байткод |
 | 5 | `GmoonReferrals` имплементация и прокси, `initialize(deployer, USDG, controller, 0, refShare)` | деплоер | до хука: хук получает рефералы как получателя протокольной доли в `initialize` |
 | 6 | `HookManager` через CREATE2, без прокси: `constructor(POOL_MANAGER, USDG, vault, controller, fee)` | деплоер | соль майнится под биты разрешений. Хук не обновляемый и без владельца: волт, контроллер и комиссии зафиксированы в конструкторе |
-| 7 | `Controller.setReferrals`, `Referrals.setHook`; `Vault.setHook`, `setController`; `Controller.setHook`, `setVault`, `setPositionManager` | деплоер | рефералы подключаются первыми: `deployToken` открывается с `setPositionManager`, мем до `setReferrals` остался бы без реферера. `setHook`/`setVault` контроллера проверяют, что pair-токен совпадает |
+| 7 | `Controller.setReferrals`, `Referrals.setHook`; `Vault.setHook`, `setController`; `Controller.setHook`, `setVault`, `setTokenDeployer`, `setPositionManager` | деплоер | рефералы подключаются первыми: `deployToken` открывается с `setPositionManager`, мем до `setReferrals` остался бы без реферера. `setHook`/`setVault` контроллера проверяют, что pair-токен совпадает, `setTokenDeployer` — что деплоер привязан к этому контроллеру |
 | 8 | `UniswapV3SwapAdapter(deployer, UNISWAP_V3_FACTORY, vault, USDG, window)`, `Vault.setSwapAdapter` | деплоер | адаптер не прокси, привязан к этому волту |
 | 9 | на каждую строку файла активов: `Vault.setAssetAllowed`, `Adapter.setRoute(asset, fee, slippage)` | деплоер | только если актив имеет код, пул — фабричный пул USDG/актив своего fee-tier и отдаёт TWAP за окно. Иначе строка пропускается, причина в отчёте. Уже разрешённое и с тем же маршрутом не отправляется |
 | 10 | `transferOwnership(GEMOON_OWNER)` у Vault, Controller, Referrals, Adapter | деплоер | только если владелец отличается от деплоера. Контроллер переходит сразу, остальные остаются pending до `acceptOwnership` |
-| 11 | `checkWiring`, `checkReferralsWiring`, `checkAdapterWiring`, `checkAssets` | view | скрипт падает, если что-то не сошлось |
+| 11 | `checkWiring`, `checkTokenDeployerWiring`, `checkReferralsWiring`, `checkAdapterWiring`, `checkAssets` | view | скрипт падает, если что-то не сошлось |
 
 Активы без маршрута в allowlist не попадают: мемы с таким активом не смогли бы конвертировать
 комиссии. Пропущенные строки после исправления пула добиваются `make set-asset-allowed` и
 `make set-route` с тем же файлом (раздел 3a).
 
 **Если скрипт упал посередине.** Ничего страшного: контроллер не деплоит токены, пока не заданы
-хук, волт и PositionManager, хук отвергает пулы незарегистрированных мемов, волт принимает
+хук, волт, TokenDeployer и PositionManager, хук отвергает пулы незарегистрированных мемов, волт принимает
 комиссии только от своего хука. Варианты:
 
 - Повторить `make deploy-gemoon`. Будет новый полный набор контрактов, старые останутся
@@ -144,8 +147,8 @@ ENVIRONMENT=prod ./deploy.sh --simulate  # то же для mainnet, из env/pr
 1. Прочитать отчёт `deploy-logs/deploy-<время>-report.md`: раздел «Left to do» и строки
    `SKIPPED` / `WARNING` в таблице активов. `deploy.sh` уже перенёс адреса в `env/$ENVIRONMENT.mk`.
 2. Если `GEMOON_OWNER` не деплоер, он принимает владение: `acceptOwnership()` на Vault,
-   GmoonReferrals и UniswapV3SwapAdapter. До этого ими владеет деплоер. Хук и контроллер уже
-   принадлежат `GEMOON_OWNER`.
+   GmoonReferrals и UniswapV3SwapAdapter. До этого ими владеет деплоер. Контроллер уже
+   принадлежит `GEMOON_OWNER`, у хука и TokenDeployer владельца нет.
 3. `make verify-wiring` (deploy.sh уже запускал): read-only, печатает владельцев, pending
    владельцев, ProxyAdmin, адаптер, размер allowlist, падает при расхождении.
 4. Пропущенные активы, если есть: исправить пул (см. 3a), затем `make set-asset-allowed` и
@@ -154,6 +157,9 @@ ENVIRONMENT=prod ./deploy.sh --simulate  # то же для mainnet, из env/pr
 6. Верифицировать контракты в эксплорере. Для хука есть готовые цели в `verify.mk` (Blockscout PRO API,
    ключ `BLOCKSCOUT_API_KEY` в `env/$ENVIRONMENT.mk`; аргументы конструкторов собираются из env):
    `make -f verify.mk verify-hook ENVIRONMENT=prod` — сам хук (прокси нет);
+   `make -f verify.mk verify-token-deployer ENVIRONMENT=prod` — TokenDeployer (аргумент конструктора —
+   `CONTROLLER_PROXY_ADDRESS`, адрес — `TOKEN_DEPLOYER_ADDRESS`; в его байткоде код токена, поэтому
+   запускать с коммита, с которого он задеплоен);
    `make -f verify.mk standard-json-hook ENVIRONMENT=prod` — standard JSON input в
    `deploy-logs/standard-json/` для ручной верификации, ничего не отправляет. Запускать с коммита,
    с которого шёл деплой. Если Blockscout отвечает `Unable to verify`, есть Sourcify (Blockscout
@@ -161,7 +167,8 @@ ENVIRONMENT=prod ./deploy.sh --simulate  # то же для mainnet, из env/pr
    Токены мемов: `make -f verify.mk verify-tokens-sourcify ENVIRONMENT=prod [SOURCE_REF=<коммит>]`
    верифицирует в Sourcify все токены из событий `TokenCreated` контроллера одним standard JSON
    (исходники в версии `SOURCE_REF`, по умолчанию `HEAD`), уже верифицированные пропускает, так что
-   запускать можно повторно для новых токенов. Остальные контракты вручную, аргументы конструкторов:
+   запускать можно повторно для новых токенов. Мемы разных TokenDeployer — разный код токена:
+   каждому нужен свой `SOURCE_REF`, мемы другой версии в прогоне отмечаются как неуспешные. Остальные контракты вручную, аргументы конструкторов:
 
 ```sh
 # имплементации волта и контроллера: без аргументов
@@ -232,7 +239,7 @@ make deploy-swap-adapter
 
 | Что | Кому | Как вступает в силу |
 |---|---|---|
-| 4 ProxyAdmin (апгрейды), контроллер | `TimelockController` | сразу |
+| 4 ProxyAdmin (апгрейды), контроллер (в том числе выбор TokenDeployer, то есть кода токенов новых мемов) | `TimelockController` | сразу |
 | Vault (в том числе доля протокола и её получатель), GmoonReferrals, UniswapV3SwapAdapter | Safe | после `acceptOwnership()` из Safe |
 
 Таймлок новый: задержка `TIMELOCK_MIN_DELAY` (по умолчанию 172800 = 48 ч), proposer, executor и
@@ -279,6 +286,37 @@ HookManager не обновляется: у него нет прокси. Сме
 обязан вызвать `setHook`, `setVault` и `setPositionManager(positionManager, permit2)`, иначе
 `deployToken` падает на `HookNotSet` / `VaultNotSet` / `PositionManagerNotSet`. Старый слот
 `_deployStrategies` в storage остаётся, его трогать нельзя.
+
+**Новый код токенов (TokenDeployer).** Токен мема создаёт не контроллер, а отдельный контракт
+TokenDeployer, адрес которого хранит контроллер (`tokenDeployer`, в конце storage). TokenDeployer
+не обновляется (без прокси и владельца), его заменяют: код токенов новых мемов меняется без
+апгрейда контроллера.
+
+```sh
+make simulate-token-deployer ENVIRONMENT=dev   # ничего не отправляет
+make deploy-token-deployer ENVIRONMENT=dev     # скрипт DeployTokenDeployer
+```
+
+`DeployTokenDeployer` читает `CONTROLLER_PROXY_ADDRESS`, деплоит `TokenDeployer(controller)` с кодом
+токена текущего коммита и, если broadcaster владеет контроллером, зовёт `setTokenDeployer` и проверяет
+связку. Иначе (контроллер у таймлока после `TransferToGovernance`) только деплоит и печатает
+calldata `setTokenDeployer(address)`: Safe ставит её в `schedule` таймлока. Напечатанный
+`TOKEN DEPLOYER` вписать в `TOKEN_DEPLOYER_ADDRESS`, затем `make verify-wiring` и
+`make -f verify.mk verify-token-deployer`. Мемы, созданные до переключения, остаются со своим кодом.
+
+Правила для нового кода токена: конструктор минтит всю эмиссию (`INITIAL_SUPPLY_X18`, 18 знаков)
+вызывающему `deployToken` — контроллеру; иначе `deployToken` откатится с `TokenSupplyMismatch`.
+Вход TokenDeployer фиксирован интерфейсом `ITokenDeployer` (`TokenConfig`, `creator`, `FeeInfo`):
+если новому токену нужны другие данные, без апгрейда контроллера не обойтись. Остальное поведение
+токена контроллер не проверяет, поэтому новый TokenDeployer ревьюится как апгрейд.
+
+**Апгрейд контроллера на версию с TokenDeployer.** Раньше токен создавала внешняя библиотека
+`Deployer` прямо из контроллера. После апгрейда `tokenDeployer` пуст: `deployToken` падает с
+`TokenDeployerNotSet`, `make verify-wiring` тоже, пока не выполнен `make deploy-token-deployer`.
+Порядок: `make upgrade-controller-proxy` (см. ограничение по `reinitialize` в таблице выше) → сразу
+`make deploy-token-deployer` от владельца контроллера → `TOKEN_DEPLOYER_ADDRESS` → `make verify-wiring`.
+Между апгрейдом и `setTokenDeployer` новые мемы создать нельзя, средства при этом не затрагиваются.
+Старые мемы — CREATE самого контроллера, новые — CREATE TokenDeployer.
 
 ## 5. Девнет
 
@@ -332,7 +370,7 @@ anvil-аккаунт `0xf39F…2266` на девнете пуст, на него
 - [ ] CREATE2-деплоер есть в сети
 - [ ] симуляция `DeployGemoon` без broadcast прошла
 - [ ] `./deploy.sh --simulate`: в отчёте нет неожиданных SKIPPED / WARNING
-- [ ] `./deploy.sh`, в отчёте «Result»: broadcast OK, wiring OK
+- [ ] `./deploy.sh`, в отчёте «Result»: broadcast OK, wiring OK (в том числе `controller.tokenDeployer`), `TOKEN_DEPLOYER_ADDRESS` записан
 - [ ] `GEMOON_OWNER` вызвал `acceptOwnership` на Vault, GmoonReferrals, UniswapV3SwapAdapter
 - [ ] пропущенные активы добиты (`set-asset-allowed`, `set-route`) или осознанно оставлены
 - [ ] контракты верифицированы

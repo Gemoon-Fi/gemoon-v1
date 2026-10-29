@@ -3,6 +3,7 @@ pragma solidity ^0.8.21;
 
 import "forge-std/Script.sol";
 import {GemoonController} from "../src/contracts/Gemoon.sol";
+import {TokenDeployer} from "../src/contracts/TokenDeployer.sol";
 import {HookManager} from "../src/contracts/hooks/HookManager.sol";
 import {Vault} from "../src/contracts/vault/Vault.sol";
 import {UniswapV3SwapAdapter} from "../src/contracts/adapters/UniswapV3SwapAdapter.sol";
@@ -21,9 +22,10 @@ import {TimelockController} from "@openzeppelin/contracts/governance/TimelockCon
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 
 /// @notice Shared deployment and upgrade logic of the Gemoon contracts.
-/// @dev Every contract but HookManager lives behind a TransparentUpgradeableProxy. The proxy
-/// creates its own ProxyAdmin, owned by `proxyAdminOwner`, so the upgrade key is set at deployment
-/// and never has to be transferred afterwards.
+/// @dev Every contract but HookManager and TokenDeployer lives behind a TransparentUpgradeableProxy.
+/// The proxy creates its own ProxyAdmin, owned by `proxyAdminOwner`, so the upgrade key is set at
+/// deployment and never has to be transferred afterwards. TokenDeployer is replaced instead of
+/// upgraded: new token code is a new TokenDeployer set with `GemoonController.setTokenDeployer`.
 ///
 /// HookManager is not upgradeable: pools reference it directly, so its code and fee rates can
 /// never change under a live pool. How a fee is split (protocol share and recipient) lives in the
@@ -228,6 +230,30 @@ abstract contract GemoonDeployBase is Script {
     }
 
     // ---------------------------------------------------------------------------------------------
+    // TokenDeployer
+    // ---------------------------------------------------------------------------------------------
+
+    /// @notice Deploys a TokenDeployer serving `controller`. Not upgradeable and ownerless: the
+    ///         controller is fixed in its constructor, the token code in its bytecode.
+    /// @dev The controller starts using it only after `GemoonController.setTokenDeployer`.
+    /// @param controller     GemoonController proxy, the only caller of `deployToken`.
+    /// @return tokenDeployer TokenDeployer.
+    function deployTokenDeployer(address controller) public returns (TokenDeployer tokenDeployer) {
+        tokenDeployer = new TokenDeployer(controller);
+    }
+
+    /// @notice Reverts unless the controller has a token deployer and that deployer serves it.
+    /// @dev A controller implementation older than the TokenDeployer has no `tokenDeployer()`, the
+    /// call then reverts without data.
+    function checkTokenDeployerWiring(GemoonController controller) public view {
+        address tokenDeployer = address(controller.tokenDeployer());
+        if (tokenDeployer == address(0)) revert WiringMismatch("controller.tokenDeployer");
+        if (TokenDeployer(tokenDeployer).controller() != address(controller)) {
+            revert WiringMismatch("tokenDeployer.controller");
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // Referrals
     // ---------------------------------------------------------------------------------------------
 
@@ -348,17 +374,17 @@ abstract contract GemoonDeployBase is Script {
     }
 }
 
-/// @notice Full Gemoon deployment in one run: Vault, GemoonController, GmoonReferrals, HookManager
-/// and UniswapV3SwapAdapter, wired together, the reward assets of `DEPLOY_ASSETS_FILE` allowed in
-/// the vault with their swap routes on the adapter, ownership handed over, and a report of what was
-/// deployed where and why.
-/// @dev Order (`deployFull`): vault -> controller -> referrals (protocol recipient of the vault) ->
-/// hook (takes vault and controller in its constructor) -> setters -> adapter -> assets and
-/// routes -> ownership -> checks.
+/// @notice Full Gemoon deployment in one run: Vault, GemoonController with its TokenDeployer,
+/// GmoonReferrals, HookManager and UniswapV3SwapAdapter, wired together, the reward assets of
+/// `DEPLOY_ASSETS_FILE` allowed in the vault with their swap routes on the adapter, ownership handed
+/// over, and a report of what was deployed where and why.
+/// @dev Order (`deployFull`): vault -> controller -> token deployer (takes the controller in its
+/// constructor) -> referrals (protocol recipient of the vault) -> hook (takes vault and controller
+/// in its constructor) -> setters -> adapter -> assets and routes -> ownership -> checks.
 /// The deployer owns vault, controller, referrals and adapter during the run so it can configure
-/// them; the hook is owned by the final owner right away. A half-finished run is safe: the
-/// controller reverts on `deployToken` until hook, vault and PositionManager are set, the hook
-/// rejects pools of unregistered Memes and the vault accepts fees only from its hook.
+/// them; the hook and the token deployer have no owner. A half-finished run is safe: the
+/// controller reverts on `deployToken` until hook, vault, token deployer and PositionManager are
+/// set, the hook rejects pools of unregistered Memes and the vault accepts fees only from its hook.
 ///
 /// Reward assets: a row of the asset file is allowed and routed only if the asset has code, its
 /// pool is the factory USDG pool for the pool's fee tier and the pool can serve a TWAP over the
@@ -487,6 +513,7 @@ contract DeployGemoon is GemoonDeployBase {
         _logProxy("VAULT", address(d.vault));
         console.log("HOOK: ", address(d.hook));
         _logProxy("CONTROLLER", address(d.controller));
+        console.log("TOKEN DEPLOYER: ", address(d.controller.tokenDeployer()));
         _logProxy("REFERRALS", address(d.referrals));
         console.log("SWAP ADAPTER: ", address(d.adapter));
 
@@ -581,8 +608,10 @@ contract DeployGemoon is GemoonDeployBase {
     {
         Params memory core = params.core;
 
-        // 1. Vault and controller, kept by the deployer until they are configured.
+        // 1. Vault and controller, kept by the deployer until they are configured, and the token
+        // deployer of the controller (ownerless).
         (d.vault, d.controller) = _deployVaultAndController(deployer, core);
+        TokenDeployer tokenDeployer = deployTokenDeployer(address(d.controller));
 
         // 2. Referrals, the protocol recipient of the vault.
         d.referrals = deployReferrals(
@@ -605,7 +634,7 @@ contract DeployGemoon is GemoonDeployBase {
         d.controller.setReferrals(address(d.referrals));
         d.vault.setProtocolRecipient(address(d.referrals));
         d.referrals.setVault(address(d.vault));
-        _wireCore(d.vault, d.controller, d.hook, core);
+        _wireCore(d.vault, d.controller, d.hook, tokenDeployer, core);
 
         // 5. Swap adapter, owned by the deployer until the routes are set.
         d.adapter = new UniswapV3SwapAdapter(
@@ -626,30 +655,34 @@ contract DeployGemoon is GemoonDeployBase {
 
         // 8. Sanity.
         checkWiring(d.controller, d.hook, d.vault);
+        checkTokenDeployerWiring(d.controller);
         checkReferralsWiring(d.controller, d.vault, d.referrals);
         checkAdapterWiring(d.vault, d.adapter);
         checkAssets(d.vault, d.adapter, d.assets);
     }
 
-    /// @notice Deploys and wires vault, controller and hook only. Must be called by `deployer`.
+    /// @notice Deploys and wires vault, controller with its token deployer and hook only. Must be
+    ///         called by `deployer`.
     /// @dev Used by tests that need the core without referrals and adapter.
     /// @param deployer        Calling account; owns vault and controller during the run.
     /// @param create2Deployer Account CREATE2 is executed from, see `GemoonDeployBase`.
     /// @param params          Deployment parameters, `protocolRecipient` must be non-zero.
-    /// @return d              Deployed proxies.
+    /// @return d              Deployed proxies and hook; the token deployer is `controller.tokenDeployer()`.
     function deployAll(address deployer, address create2Deployer, Params memory params)
         public
         returns (Deployment memory d)
     {
         (d.vault, d.controller) = _deployVaultAndController(deployer, params);
+        TokenDeployer tokenDeployer = deployTokenDeployer(address(d.controller));
         d.hook = _deployCoreHook(create2Deployer, params, d.vault, d.controller);
-        _wireCore(d.vault, d.controller, d.hook, params);
+        _wireCore(d.vault, d.controller, d.hook, tokenDeployer, params);
 
         if (params.owner != deployer) {
             d.vault.transferOwnership(params.owner);
             d.controller.transferOwnership(params.owner);
         }
         checkWiring(d.controller, d.hook, d.vault);
+        checkTokenDeployerWiring(d.controller);
     }
 
     /// @notice Allows every routable asset in the vault and sets its route on the adapter.
@@ -810,6 +843,11 @@ contract DeployGemoon is GemoonDeployBase {
                 address(d.controller),
                 "Entry point `deployToken`: deploys the Meme, its V4 pool with the hook, the initial position and the optional dev buy, registers the Meme in the vault and referrals."
             ),
+            _row(
+                "TokenDeployer",
+                address(d.controller.tokenDeployer()),
+                "Creates the token of every new Meme for the controller, the whole supply minted to the controller. Not upgradeable, no owner: new token code is a new TokenDeployer set with `controller.setTokenDeployer`, Memes deployed before keep their code."
+            ),
             _proxyRows(
                 "GmoonReferrals",
                 address(d.referrals),
@@ -863,6 +901,8 @@ contract DeployGemoon is GemoonDeployBase {
             _row("controller.hook", d.controller.hook(), "Pools of new Memes are created with this hook."),
             _row("controller.vault", address(d.controller.vault()), "New Memes are registered in this vault."),
             _row("controller.positionManager", address(d.controller.positionManager()), "Mints the initial position."),
+            _row("controller.tokenDeployer", address(d.controller.tokenDeployer()), "Creates the token of new Memes."),
+            _row("tokenDeployer.controller", d.controller.tokenDeployer().controller(), "The only caller of `deployToken` (immutable)."),
             _row("controller.referrals", address(d.controller.referrals()), "New Memes are attributed to the referrer of their creator."),
             _row("hook.vault", d.hook.vault(), "Receives every fee and splits it."),
             _row("hook.controller", d.hook.controller(), "The only caller of the hook's controller functions."),
@@ -902,7 +942,7 @@ contract DeployGemoon is GemoonDeployBase {
             _ownerRow("GemoonController", d.controller.owner(), address(0)),
             _ownerRow("GmoonReferrals", d.referrals.owner(), d.referrals.pendingOwner()),
             _ownerRow("UniswapV3SwapAdapter", d.adapter.owner(), d.adapter.pendingOwner()),
-            "\nGemoonController is plain Ownable, ownership moves at once. The others are Ownable2Step: a pending owner becomes the owner only after calling `acceptOwnership()`. HookManager has no owner: vault, controller and fees are fixed in its constructor.\n"
+            "\nGemoonController is plain Ownable, ownership moves at once. The others are Ownable2Step: a pending owner becomes the owner only after calling `acceptOwnership()`. HookManager has no owner: vault, controller and fees are fixed in its constructor. TokenDeployer has no owner either: its controller is fixed in its constructor, which one is used decides the controller owner (`setTokenDeployer`).\n"
         );
     }
 
@@ -1077,16 +1117,19 @@ contract DeployGemoon is GemoonDeployBase {
         );
     }
 
+    /// @dev `setPositionManager` goes last: it is the setter that opens `deployToken`.
     function _wireCore(
         Vault vault,
         GemoonController controller,
         HookManager hook,
+        TokenDeployer tokenDeployer,
         Params memory params
     ) internal {
         vault.setHook(address(hook));
         vault.setController(address(controller));
         controller.setHook(address(hook));
         controller.setVault(address(vault));
+        controller.setTokenDeployer(address(tokenDeployer));
         controller.setPositionManager(params.positionManager, params.permit2);
     }
 }
@@ -1189,6 +1232,61 @@ contract DeployHook is GemoonDeployBase {
     }
 }
 
+/// @notice Deploys a new TokenDeployer for an existing controller and switches the controller to
+///         it: Memes deployed from then on get the token code of this commit, Memes deployed before
+///         keep theirs. The way to change the token code without a new controller implementation.
+/// @dev Env: CONTROLLER_PROXY_ADDRESS (required). The controller must already have the
+/// `setTokenDeployer` implementation (`make upgrade-controller-proxy`), otherwise the run reverts
+/// in simulation and nothing is sent. The TokenDeployer is ownerless, anyone can deploy it;
+/// `setTokenDeployer` is sent only if the broadcaster owns the controller. Otherwise the run only
+/// deploys and logs the call the owner (e.g. the governance timelock) has to make.
+contract DeployTokenDeployer is GemoonDeployBase {
+    function run() external {
+        GemoonController controller =
+            GemoonController(payable(vm.envAddress("CONTROLLER_PROXY_ADDRESS")));
+
+        vm.startBroadcast();
+        (, address sender,) = vm.readCallers();
+        (TokenDeployer tokenDeployer, address previous, bool switched) =
+            deployAndSwitch(sender, controller);
+        vm.stopBroadcast();
+
+        console.log("TOKEN DEPLOYER: ", address(tokenDeployer));
+        console.log("PREVIOUS TOKEN DEPLOYER: ", previous);
+        if (switched) {
+            console.log("CONTROLLER SWITCHED TO THE NEW TOKEN DEPLOYER");
+        } else {
+            console.log("Left to do, by the controller owner", controller.owner());
+            console.log("  setTokenDeployer(TOKEN DEPLOYER) on", address(controller), "calldata:");
+            console.logBytes(
+                abi.encodeCall(GemoonController.setTokenDeployer, (address(tokenDeployer)))
+            );
+        }
+    }
+
+    /// @notice Deploys a TokenDeployer for `controller` and, if `sender` owns the controller,
+    ///         switches the controller to it. Must be called by `sender`.
+    /// @dev Reverts before deploying anything if the controller has no `tokenDeployer()` (an
+    /// implementation older than the TokenDeployer).
+    /// @param sender         Calling account.
+    /// @param controller     GemoonController proxy.
+    /// @return tokenDeployer New TokenDeployer.
+    /// @return previous      Token deployer of the controller before the call, zero if none.
+    /// @return switched      Whether the controller now uses `tokenDeployer`.
+    function deployAndSwitch(address sender, GemoonController controller)
+        public
+        returns (TokenDeployer tokenDeployer, address previous, bool switched)
+    {
+        previous = address(controller.tokenDeployer());
+        tokenDeployer = deployTokenDeployer(address(controller));
+        switched = controller.owner() == sender;
+        if (switched) {
+            controller.setTokenDeployer(address(tokenDeployer));
+            checkTokenDeployerWiring(controller);
+        }
+    }
+}
+
 /// @notice Upgrades the Vault proxy to a freshly deployed implementation.
 /// @dev Env:
 ///  - VAULT_PROXY_ADDRESS          Vault proxy (required)
@@ -1253,7 +1351,8 @@ contract ProxyVaultUpgrade is GemoonDeployBase {
 /// so it only succeeds when the new implementation bumps the version. `reinitialize` sets the
 /// owner again, so GEMOON_OWNER is required here: no fallback to the broadcaster.
 /// `reinitialize` also rewrites the pair token, so USDG_ADDRESS must match the pair token of the
-/// hook already wired to the controller.
+/// hook already wired to the controller. A controller upgraded from before the TokenDeployer has
+/// none: `deployToken` reverts with `TokenDeployerNotSet` until `make deploy-token-deployer`.
 contract ProxyGemoonControllerUpgrade is Script {
     error PairTokenMismatch(address expected, address actual);
 
@@ -1281,12 +1380,19 @@ contract ProxyGemoonControllerUpgrade is Script {
         );
 
         vm.stopBroadcast();
+
+        address tokenDeployer = address(GemoonController(payable(proxyAddress)).tokenDeployer());
+        console.log("CONTROLLER TOKEN DEPLOYER: ", tokenDeployer);
+        if (tokenDeployer == address(0)) {
+            console.log("deployToken reverts with TokenDeployerNotSet until make deploy-token-deployer");
+        }
     }
 }
 
 /// @notice Read-only check that a deployment is wired correctly. No broadcast.
 /// @dev Env: CONTROLLER_PROXY_ADDRESS, HOOK_ADDRESS, VAULT_PROXY_ADDRESS,
-/// REFERRALS_PROXY_ADDRESS (optional: checked only if set).
+/// REFERRALS_PROXY_ADDRESS (optional: checked only if set). The controller must have a token
+/// deployer serving it, so a controller implementation older than the TokenDeployer fails here.
 contract VerifyWiring is GemoonDeployBase {
     function run() external view {
         GemoonController controller =
@@ -1295,6 +1401,7 @@ contract VerifyWiring is GemoonDeployBase {
         Vault vault = Vault(vm.envAddress("VAULT_PROXY_ADDRESS"));
 
         checkWiring(controller, hook, vault);
+        checkTokenDeployerWiring(controller);
 
         _logProxy("VAULT", address(vault));
         console.log("VAULT OWNER: ", vault.owner());
@@ -1308,6 +1415,7 @@ contract VerifyWiring is GemoonDeployBase {
         console.log("CONTROLLER OWNER: ", controller.owner());
         console.log("CONTROLLER POSITION MANAGER: ", address(controller.positionManager()));
         console.log("CONTROLLER PERMIT2: ", address(controller.permit2()));
+        console.log("CONTROLLER TOKEN DEPLOYER: ", address(controller.tokenDeployer()));
         console.log("PAIR TOKEN: ", vault.usdg());
 
         address referralsAddress = _envAddressOr("REFERRALS_PROXY_ADDRESS", address(0));

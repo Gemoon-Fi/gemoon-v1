@@ -4,12 +4,15 @@
 # Usage:
 #   make -f verify.mk verify-tokens-sourcify ENVIRONMENT=prod [SOURCE_REF=<commit>]
 #
-# All tokens share one creation code and differ only in constructor args (Sourcify reads them from
-# the creation tx), so one standard JSON input serves all of them. It is generated from the working
-# tree with every changed source replaced by its SOURCE_REF version (default HEAD): the tokens on chain
-# were built by the deployed controller, not by uncommitted edits. Tokens come from the TokenCreated
-# events of the controller, read through the Blockscout API (no 500-block log limit as on the RPC).
-# Already verified tokens are reported and skipped, so the script can be rerun for new tokens.
+# Tokens created by one token code share one creation code and differ only in constructor args
+# (Sourcify reads them from the creation tx), so one standard JSON input serves all of them. It is
+# generated from the working tree with every changed source replaced by its SOURCE_REF version
+# (default HEAD): the tokens on chain were built by the deployed code, not by uncommitted edits.
+# The token code changes with the controller's TokenDeployer (setTokenDeployer): Memes of an older
+# TokenDeployer (or of the controller itself, before TokenDeployer existed) need the SOURCE_REF it was
+# deployed from, a run with another SOURCE_REF reports them as failed. Tokens come from the
+# TokenCreated events of the controller, read through the Blockscout API (no 500-block log limit as on
+# the RPC). Already verified tokens are reported and skipped, so the script can be rerun for new tokens.
 #
 # From env/$ENVIRONMENT.mk: RPC, BLOCKSCOUT_API_KEY, CONTROLLER_PROXY_ADDRESS.
 set -euo pipefail

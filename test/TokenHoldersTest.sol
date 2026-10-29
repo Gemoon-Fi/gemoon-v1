@@ -6,7 +6,8 @@ import {GemoonToken} from "../src/contracts/Token.sol";
 import {TokenConfig, SocialMedia, FeeInfo} from "../src/contracts/interfaces/IToken.sol";
 import {AdminConfig} from "../src/contracts/utils/Admin.sol";
 
-function _newToken() returns (GemoonToken) {
+/// @dev The whole supply goes to `supplyRecipient`.
+function _newToken(address supplyRecipient) returns (GemoonToken) {
     AdminConfig[] memory admins = new AdminConfig[](1);
     admins[0] = AdminConfig({admin: address(0xA11CE), removable: false});
     return new GemoonToken(
@@ -19,19 +20,20 @@ function _newToken() returns (GemoonToken) {
             admins: admins
         }),
         address(0xC0FFEE),
-        FeeInfo({totalPpm: 0, creatorPpm: 0, vaultPpm: 0, protocolPpm: 0})
+        FeeInfo({totalPpm: 0, creatorPpm: 0, vaultPpm: 0, protocolPpm: 0}),
+        supplyRecipient
     );
 }
 
 /// @notice `totalHolders` = number of addresses with a non-zero balance. The whole supply is minted
-/// to the deployer (this test), so it starts as the only holder.
+/// to this test (the supply recipient), so it starts as the only holder.
 contract TokenHoldersTest is Test {
     GemoonToken token;
     address alice = makeAddr("alice");
     address bob = makeAddr("bob");
 
     function setUp() external {
-        token = _newToken();
+        token = _newToken(address(this));
     }
 
     function test_TotalHolders_AfterMint_DeployerOnly() external view {
@@ -123,7 +125,7 @@ contract TokenHoldersHandler is Test {
     address[] public actors;
 
     constructor() {
-        token = _newToken();
+        token = _newToken(address(this));
         actors.push(address(this));
         for (uint256 i; i < 4; ++i) {
             actors.push(makeAddr(string.concat("holder", vm.toString(i))));

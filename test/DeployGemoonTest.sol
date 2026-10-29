@@ -10,8 +10,9 @@ import {Currency} from "@uniswap-v4-core/types/Currency.sol";
 import {PoolKey} from "@uniswap-v4-core/types/PoolKey.sol";
 import {IHooks} from "@uniswap-v4-core/interfaces/IHooks.sol";
 import {BaseHook} from "uniswap-hooks/base/BaseHook.sol";
-import {DeployGemoon, GemoonDeployBase} from "../script/GemoonDeploy.sol";
+import {DeployGemoon, DeployTokenDeployer, GemoonDeployBase} from "../script/GemoonDeploy.sol";
 import {GemoonController} from "../src/contracts/Gemoon.sol";
+import {TokenDeployer} from "../src/contracts/TokenDeployer.sol";
 import {HookManager} from "../src/contracts/hooks/HookManager.sol";
 import {Vault} from "../src/contracts/vault/Vault.sol";
 import {IHookManager} from "../src/contracts/interfaces/IHookManager.sol";
@@ -148,6 +149,88 @@ contract DeployGemoonTest is Test {
         DeployGemoon.Deployment memory b = _deploy(owner);
         assertTrue(address(a.hook) != address(b.hook));
         _assertWired(b);
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // TokenDeployer
+    // ---------------------------------------------------------------------------------------------
+
+    /// @dev The full core comes with a token deployer bound to the controller; like the hook it is
+    /// not a proxy and has no owner.
+    function test_DeployAll_TokenDeployer_ServesControllerNoOwnerNoProxy() external {
+        DeployGemoon.Deployment memory d = _deploy(owner);
+        address tokenDeployer = address(d.controller.tokenDeployer());
+
+        assertTrue(tokenDeployer != address(0), "set");
+        assertEq(TokenDeployer(tokenDeployer).controller(), address(d.controller), "bound");
+        script.checkTokenDeployerWiring(d.controller);
+        assertEq(Upgrades.getAdminAddress(tokenDeployer), address(0), "no proxy admin");
+        (bool hasOwner,) = tokenDeployer.call(abi.encodeWithSignature("owner()"));
+        assertFalse(hasOwner, "no owner");
+    }
+
+    function test_CheckTokenDeployerWiring_NotSet_Revert() external {
+        GemoonController controller = script.deployController(
+            address(script),
+            GemoonDeployBase.ControllerDeployParams({
+                proxyAdminOwner: proxyAdminOwner,
+                poolManager: poolManager,
+                pairToken: address(usdg)
+            })
+        );
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                GemoonDeployBase.WiringMismatch.selector, "controller.tokenDeployer"
+            )
+        );
+        script.checkTokenDeployerWiring(controller);
+    }
+
+    /// @dev `make deploy-token-deployer` run by the controller owner: a new deployer, the
+    /// controller switched to it, the previous one reported.
+    function test_DeployAndSwitch_SenderOwnsController_Switches() external {
+        DeployTokenDeployer switcher = new DeployTokenDeployer();
+        DeployGemoon.Deployment memory d = _deploy(address(switcher));
+        address before = address(d.controller.tokenDeployer());
+
+        (TokenDeployer next, address previous, bool switched) =
+            switcher.deployAndSwitch(address(switcher), d.controller);
+
+        assertTrue(switched, "switched");
+        assertEq(previous, before, "previous reported");
+        assertTrue(address(next) != before, "new deployer");
+        assertEq(address(d.controller.tokenDeployer()), address(next), "controller uses it");
+        assertEq(next.controller(), address(d.controller), "bound");
+    }
+
+    /// @dev Run by anyone else (e.g. the controller belongs to the governance timelock): the
+    /// deployer is created, the controller keeps its token deployer until its owner switches.
+    function test_DeployAndSwitch_SenderNotOwner_DeploysOnly() external {
+        DeployTokenDeployer switcher = new DeployTokenDeployer();
+        DeployGemoon.Deployment memory d = _deploy(owner);
+        address before = address(d.controller.tokenDeployer());
+
+        (TokenDeployer next,, bool switched) =
+            switcher.deployAndSwitch(address(switcher), d.controller);
+
+        assertFalse(switched, "not switched");
+        assertEq(address(d.controller.tokenDeployer()), before, "controller unchanged");
+        assertEq(next.controller(), address(d.controller), "bound, ready for the owner");
+        vm.prank(owner);
+        d.controller.setTokenDeployer(address(next));
+        assertEq(address(d.controller.tokenDeployer()), address(next), "owner switches later");
+    }
+
+    /// @dev A controller implementation older than the TokenDeployer has no `tokenDeployer()`:
+    /// nothing is deployed.
+    function test_DeployAndSwitch_ControllerWithoutTokenDeployer_Revert() external {
+        DeployTokenDeployer switcher = new DeployTokenDeployer();
+        DeployGemoon.Deployment memory d = _deploy(owner);
+        uint256 nonce = vm.getNonce(address(switcher));
+
+        vm.expectRevert();
+        switcher.deployAndSwitch(address(switcher), GemoonController(payable(address(d.vault))));
+        assertEq(vm.getNonce(address(switcher)), nonce, "nothing deployed");
     }
 
     function test_SetVault_UsdgMismatch_Revert() external {

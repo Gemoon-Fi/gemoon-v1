@@ -141,9 +141,13 @@ contract DeployGemoonFullTest is Test {
         DeployGemoon.FullDeployment memory d = _deploy(owner, new DeployGemoon.AssetRow[](0));
 
         script.checkWiring(d.controller, d.hook, d.vault);
+        script.checkTokenDeployerWiring(d.controller);
         script.checkReferralsWiring(d.controller, d.vault, d.referrals);
         script.checkAdapterWiring(d.vault, d.adapter);
 
+        assertEq(
+            d.controller.tokenDeployer().controller(), address(d.controller), "tokenDeployer.controller"
+        );
         assertEq(d.vault.protocolRecipient(), address(d.referrals), "referrals get protocol fee");
         assertEq(d.referrals.vault(), address(d.vault), "referrals accept the vault");
         assertEq(d.vault.protocolShareBps(), 2_500, "protocol share in the vault");
@@ -383,10 +387,11 @@ contract DeployGemoonFullTest is Test {
 
         string memory report = script.buildReport(address(script), p, d);
 
-        string[7] memory expected = [
+        string[8] memory expected = [
             vm.toString(address(d.vault)),
             vm.toString(address(d.hook)),
             vm.toString(address(d.controller)),
+            vm.toString(address(d.controller.tokenDeployer())),
             vm.toString(address(d.referrals)),
             vm.toString(address(d.adapter)),
             "| AAPL | ",
@@ -436,6 +441,7 @@ contract DeployGemoonFullTest is Test {
         UniswapV3SwapAdapter adapter = script.deployedAdapter();
 
         script.checkWiring(controller, hook, vault);
+        script.checkTokenDeployerWiring(controller);
         script.checkReferralsWiring(controller, vault, referrals);
         script.checkAdapterWiring(vault, adapter);
         assertEq(hook.TOTAL_FEE_BIPS(), 300);

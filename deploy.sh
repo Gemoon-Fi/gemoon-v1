@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Full Gemoon deployment in one command:
-#   1. DeployGemoon (make deploy-gemoon): Vault, GemoonController, GmoonReferrals, HookManager and
-#      UniswapV3SwapAdapter, wired; reward assets of DEPLOY_ASSETS_FILE allowed in the vault with
-#      their swap routes; ownership handed to GEMOON_OWNER;
+#   1. DeployGemoon (make deploy-gemoon): Vault, GemoonController with its TokenDeployer,
+#      GmoonReferrals, HookManager and UniswapV3SwapAdapter, wired; reward assets of
+#      DEPLOY_ASSETS_FILE allowed in the vault with their swap routes; ownership handed to GEMOON_OWNER;
 #   2. addresses written into env/$ENVIRONMENT.mk;
 #   3. make verify-wiring (read-only, against the chain);
 #   4. GemoonLens (make deploy-lens), unless --no-lens;
@@ -140,6 +140,7 @@ VAULT_PROXY_ADMIN=$(extract "VAULT PROXY ADMIN" "$LOG")
 HOOK=$(extract "HOOK" "$LOG")
 CONTROLLER_PROXY=$(extract "CONTROLLER PROXY" "$LOG")
 CONTROLLER_PROXY_ADMIN=$(extract "CONTROLLER PROXY ADMIN" "$LOG")
+TOKEN_DEPLOYER=$(extract "TOKEN DEPLOYER" "$LOG")
 REFERRALS_PROXY=$(extract "REFERRALS PROXY" "$LOG")
 REFERRALS_PROXY_ADMIN=$(extract "REFERRALS PROXY ADMIN" "$LOG")
 ADAPTER=$(extract "SWAP ADAPTER" "$LOG")
@@ -149,6 +150,7 @@ require_address "VAULT PROXY ADMIN" "$VAULT_PROXY_ADMIN"
 require_address "HOOK" "$HOOK"
 require_address "CONTROLLER PROXY" "$CONTROLLER_PROXY"
 require_address "CONTROLLER PROXY ADMIN" "$CONTROLLER_PROXY_ADMIN"
+require_address "TOKEN DEPLOYER" "$TOKEN_DEPLOYER"
 require_address "REFERRALS PROXY" "$REFERRALS_PROXY"
 require_address "REFERRALS PROXY ADMIN" "$REFERRALS_PROXY_ADMIN"
 require_address "SWAP ADAPTER" "$ADAPTER"
@@ -160,6 +162,7 @@ ENV_KEYS=(
     "HOOK_ADDRESS=$HOOK"
     "CONTROLLER_PROXY_ADDRESS=$CONTROLLER_PROXY"
     "CONTROLLER_PROXY_ADMIN_ADDRESS=$CONTROLLER_PROXY_ADMIN"
+    "TOKEN_DEPLOYER_ADDRESS=$TOKEN_DEPLOYER"
     "REFERRALS_PROXY_ADDRESS=$REFERRALS_PROXY"
     "REFERRALS_PROXY_ADMIN_ADDRESS=$REFERRALS_PROXY_ADMIN"
     "SWAP_ADAPTER=$ADAPTER"

@@ -56,7 +56,8 @@ contract TokenURITest is Test {
                 admins: admins
             }),
             address(0xC0FFEE),
-            fees_
+            fees_,
+            address(this)
         );
     }
 
@@ -275,7 +276,8 @@ contract TokenURITest is Test {
         new GemoonToken(
             config,
             address(0xC0FFEE),
-            FeeInfo({totalPpm: 12_500, creatorPpm: 833, vaultPpm: 7_500, protocolPpm: 4_166})
+            FeeInfo({totalPpm: 12_500, creatorPpm: 833, vaultPpm: 7_500, protocolPpm: 4_166}),
+            address(this)
         );
     }
 
